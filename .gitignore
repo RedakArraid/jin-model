@@ -1,0 +1,6 @@
+model/
+data/
+feedback/
+*.zip
+.env
+.DS_Store
