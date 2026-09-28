@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JIN Model - Document AI</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">UNIVERSAL DOCUMENT AI V4.8</div>
+      <h1>JIN Model</h1>
+      <p>Test d'extraction de commandes, PDF, scans et documents métiers.</p>
+    </div>
+    <div id="health" class="health pending">API...</div>
+  </header>
+  <main class="layout">
+    <section class="panel upload-panel">
+      <h2>1. Charger un document</h2>
+      <label id="dropzone" class="dropzone">
+        <input id="fileInput" type="file" />
+        <span class="drop-title">Déposer un fichier ici</span>
+        <span class="drop-subtitle">PDF, image, DOCX, XLSX, PPTX, CSV, JSON...</span>
+      </label>
+      <div id="fileMeta" class="file-meta muted">Aucun fichier sélectionné</div>
+      <details>
+        <summary>Options avancées</summary>
+        <div class="form-grid">
+          <label>Type document forcé
+            <input id="documentType" type="text" placeholder="purchase_order" />
+          </label>
+          <label>Schéma JSON personnalisé
+            <textarea id="schemaJson" rows="6" placeholder='{"customer_reference":{"type":"string","aliases":["Référence client"]}}'></textarea>
+          </label>
+        </div>
+      </details>
+      <button id="extractBtn" class="primary" disabled>Analyser le document</button>
+      <div id="progress" class="progress hidden"><div></div></div>
+      <div id="error" class="error hidden"></div>
+    </section>
+    <section class="panel results-panel">
+      <div class="results-header">
+        <h2>2. Résultats</h2>
+        <button id="downloadBtn" class="secondary" disabled>Télécharger JSON</button>
+      </div>
+      <div id="emptyState" class="empty-state">Charge un fichier pour commencer.</div>
+      <div id="results" class="hidden">
+        <div id="metrics" class="metric-grid"></div>
+        <h3>Commande / document</h3>
+        <div id="summary" class="kv-grid"></div>
+        <h3>Adresses et rôles métier</h3>
+        <div id="addresses" class="cards"></div>
+        <h3>Lignes produit</h3>
+        <div class="table-wrap"><table id="linesTable"><thead><tr><th>#</th><th>Référence</th><th>Description</th><th>Qté</th><th>Unité</th><th>PU</th><th>Montant</th><th>Confiance</th></tr></thead><tbody></tbody></table></div>
+        <h3>Charges / éco-participations</h3>
+        <div class="table-wrap"><table id="chargesTable"><thead><tr><th>Type</th><th>Description</th><th>Réf.</th><th>Qté</th><th>PU</th><th>Montant</th></tr></thead><tbody></tbody></table></div>
+        <h3>Totaux</h3>
+        <div id="totals" class="kv-grid"></div>
+        <details open>
+          <summary>JSON complet</summary>
+          <pre id="jsonView"></pre>
+        </details>
+      </div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
