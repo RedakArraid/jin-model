@@ -12,7 +12,7 @@ from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import classification_report, accuracy_score
 
 STREET_TYPES={
- 'RUE','AVENUE','AV','BOULEVARD','BD','ROUTE','RTE','CHEMIN','CHE','ALLEE','ALLÉE','IMPASSE','PLACE','QUAI','COURS','PASSAGE','SQUARE','VOIE','ROND-POINT','RONDPOINT','MONTEE','MONTÉE','TRAVERSE','RESIDENCE','RÉSIDENCE'
+ 'RUE','AVENUE','AV','BOULEVARD','BD','ROUTE','RTE','CHEMIN','CHE','ALLEE','ALLÉE','IMPASSE','PLACE','QUAI','COURS','PASSAGE','SQUARE','VOIE','ROND-POINT','RONDPOINT','MONTEE','MONTÉE' ,'TRAVERSE'
 }
 BAD_POSTAL_CONTEXT={'ARTICLE','ART','REFERENCE','RÉFÉRENCE','CODE','QTE','QTÉ','QUANTITE','QUANTITÉ','PRIX','MONTANT','PU','TOTAL','TVA','HT','TTC','TEL','TÉL','FAX'}
 DATE_RE=re.compile(r'^(?:0?[1-9]|[12]\d|3[01])[/.\-](?:0?[1-9]|1[0-2])[/.\-](?:20\d{2}|\d{2})$')
@@ -88,7 +88,7 @@ def label_line(toks):
     bad=any(x in BAD_POSTAL_CONTEXT for x in ns)
     if not bad:
         for i,n in enumerate(ns):
-            if re.fullmatch(r'\d{5}',n) and 1000 <= int(n) <= 98999:
+            if re.fullmatch(r'\d{5}',texts[i].strip()) and 1000 <= int(n) <= 98999:
                 # require at least one alphabetic city token after it, no money punctuation
                 city=[]
                 for j in range(i+1,min(len(ns),i+7)):
