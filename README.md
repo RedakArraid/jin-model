@@ -4,6 +4,14 @@
 
 JIN commence maintenant à apprendre à partir des documents historiques corrigés au lieu d'évoluer uniquement par accumulation de règles.
 
+## V5.5.1 - durcissement géométrique
+
+Le test sur 9 bons de commande réels a révélé que certains PDF stockent une même ligne visuelle dans plusieurs blocs internes. V5.5.1 reconstruit donc les lignes par coordonnées Y et combine cette géométrie avec le modèle statistique V5.5.
+
+Sur ce lot de régression, les champs auparavant manquants passent à **9/9** pour le n° de commande, la date, le Total HT, le CP/ville fournisseur et le CP/ville livraison. Les faux candidats `RODAS DE` passent de 2 à 0 et les montants pris pour des codes postaux de 7 documents à 0.
+
+Les suggestions restent `requires_review=true`. Voir [V5.5.1 Geometry Hardening](docs/V5_5_1_GEOMETRY_HARDENING.md).
+
 ## V5.5 - apprentissage faible des champs
 
 JIN apprend maintenant aussi des **champs token/position** sur les vrais PDF, toujours en CPU. Le modèle V2 est entraîné sur la première page des 1 572 documents train avec des labels faibles déterministes haute précision, puis évalué sur les 396 documents validation.
@@ -202,4 +210,4 @@ La CI compile aussi les sources Python et valide les scripts shell.
 
 ## Version
 
-`5.5.0-weak-field-learning`
+`5.5.1-geometry-hardening`
