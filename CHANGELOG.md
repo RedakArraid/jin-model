@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.5.1-geometry-hardening
+
+- Reconstruct visual lines across PDF block boundaries using word Y-coordinates.
+- Recover order number, order date and Total HT from explicit visual anchors.
+- Join postal code/city across adjacent internal PDF blocks.
+- Add role-aware supplier/ship_to/bill_to geometry address candidates.
+- Attach ZI/ZA/ZAC/ZAE, building and BP/CS/TSA components to address candidates.
+- Enforce strict five-digit raw postal validation and a street-type whitelist.
+- Eliminate the nine-order regression false positives where monetary amounts became postal codes and `RODAS` became a street.
+- Harden future weak-label training so punctuation-stripped money cannot become a postal-code label.
+- Nine supplied-order regression: 9/9 on command number, date, Total HT, supplier/delivery/billing core address components; 0 monetary-CP false positives.
+
 ## 5.5.0-weak-field-learning
 
 - Added reproducible CPU weak-supervised token/field learning on real first-page PDF words and geometry.
