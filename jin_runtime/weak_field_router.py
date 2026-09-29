@@ -82,7 +82,7 @@ def _extract_first_page_lines(
                 image,
                 lang=ocr_languages,
                 output_type=pytesseract.Output.DICT,
-                config="--psm 6",
+                config="--psm 11",
             )
             scale_x = float(rect.width) / max(pixmap.width, 1)
             scale_y = float(rect.height) / max(pixmap.height, 1)
