@@ -1,8 +1,18 @@
-# JIN Model - Universal Document AI V5.5 Weak Field Learning
+# JIN Model - Universal Document AI V5.5.2 Template Generalization
 
 `RedakArraid/jin-model` contient la couche Docker/UI autour du moteur JIN empaqueté et une nouvelle couche d'apprentissage statistique versionnée.
 
 JIN commence maintenant à apprendre à partir des documents historiques corrigés au lieu d'évoluer uniquement par accumulation de règles.
+
+## V5.5.2 - généralisation multi-gabarits
+
+Le moteur géométrique ne dépend plus d'une disposition gauche/droite fixe. Il associe maintenant les blocs d'adresse à leurs ancres par proximité, sait lire des tableaux `N° Document / Pièce / N° Commande / Date`, les tableaux de synthèse `NET H.T. / TVA / TTC / NET A PAYER`, et normalise les plages `124 126`, `124,126`, `123 - 125`.
+
+Le nouveau lot de non-régression contient **17 documents réels** : les 9 précédents plus 8 documents WENDEL, SISCA, GARANKA, ISERBA/GAZ SERVICE RAPIDE et une offre SFCP. Les 9 anciens restent stables et les nouveaux champs critiques attendus sont retrouvés sans réintroduire les faux CP monétaires.
+
+Le routeur PDF passe aussi en V3 avec un a priori statistique appris `P(decision | family)` sur le train uniquement. Sur les 396 validations : décision **93,43 % -> 94,19 %**, sans réglage de poids sur le holdout.
+
+Voir [V5.5.2 Template Generalization](docs/V5_5_2_TEMPLATE_GENERALIZATION.md).
 
 ## V5.5.1 - durcissement géométrique
 
@@ -50,7 +60,7 @@ Le classifieur famille est calibré par validation croisée uniquement sur le sp
 Le modèle attendu par le runtime :
 
 ```text
-data/learning/jin-pdf-fusion-router-v2-cpu.joblib
+data/learning/jin-pdf-fusion-router-v3-cpu.joblib
 ```
 
 Voir [V5.4 - entraînement vrais PDF](docs/V5_4_REAL_PDF_TRAINING.md).
@@ -131,7 +141,7 @@ pip install -r requirements-pdf-training.txt
 python training/pdf/train_cpu_multimodal.py \
   --corpus-root /chemin/vers/corpus \
   --metadata-dir /chemin/vers/metadata \
-  --output data/learning/jin-pdf-fusion-router-v2-cpu.joblib \
+  --output data/learning/jin-pdf-fusion-router-v3-cpu.joblib \
   --metrics data/learning/jin-pdf-fusion-router-v2-cpu-metrics.json
 ```
 
@@ -210,4 +220,4 @@ La CI compile aussi les sources Python et valide les scripts shell.
 
 ## Version
 
-`5.5.1-geometry-hardening`
+`5.5.2-template-generalization`
