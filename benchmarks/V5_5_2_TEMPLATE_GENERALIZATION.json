@@ -1,7 +1,6 @@
 {
   "version": "5.5.2-template-generalization",
   "sandbox_test": {
-    "documents": 17,
     "previous_regression_documents": 9,
     "new_documents": 8,
     "previous_nine_regression_preserved": "9/9 fields and address roles",
@@ -18,7 +17,10 @@
     "price_offer_number_date": "1/1",
     "summary_totals_expected": "6/6",
     "false_money_as_postal": 0,
-    "false_contact_as_street": 0
+    "false_contact_as_street": 0,
+    "test_executions": 17,
+    "unique_pdfs": 15,
+    "overlap_with_previous_set": 2
   },
   "generalized_geometry": {
     "version": "visual-lines-v3",
