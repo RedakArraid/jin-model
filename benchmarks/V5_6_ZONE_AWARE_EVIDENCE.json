@@ -1,0 +1,56 @@
+{
+  "version": "5.6.0-zone-aware-evidence",
+  "goal": "Improve localization precision by separating exact value evidence, semantic regions and broader search zones.",
+  "regression": {
+    "native_text_executions": 16,
+    "raw_weak_spans": 272,
+    "kept_zone_consistent_spans": 217,
+    "suppressed_zone_inconsistent_spans": 55,
+    "suppressed_fraction": 0.20220588235294118,
+    "address_candidates": 46,
+    "meaningful_address_components": 277,
+    "components_with_exact_source_bbox": 277,
+    "exact_component_bbox_coverage": 1,
+    "ocr_scan_check": {
+      "document": "GARANKA scanned order",
+      "address_candidates": 2,
+      "meaningful_components": 10,
+      "components_with_exact_source_bbox": 10
+    }
+  },
+  "representative_suppressions": {
+    "ADDRESS_CITY:EUR": 12,
+    "ADDRESS_STREET_NAME:RAPIDE": 10,
+    "ADDRESS_POSTAL_CODE:469,30": 5,
+    "ADDRESS_POSTAL_CODE:000,00": 5,
+    "ADDRESS_POSTAL_CODE:65600_footer_duplicate": 2,
+    "ADDRESS_CITY:SEMEAC_footer_duplicate": 2,
+    "ADDRESS_STREET_TYPE:RODAS": 2,
+    "ADDRESS_STREET_NAME:DE_contact": 2,
+    "ADDRESS_CITY:LES_CHENES": 2,
+    "ADDRESS_STREET_NAME:FALLAVIER": 2,
+    "ADDRESS_CITY:Steven": 1
+  },
+  "output_contract": {
+    "component_evidence": true,
+    "region_bbox": true,
+    "search_zone_bbox": true,
+    "semantic_zones": true,
+    "raw_spans": true,
+    "suppressed_spans": true,
+    "coordinate_spaces": [
+      "normalized_0_1000_top_left",
+      "pymupdf_points_top_left",
+      "pdf_points_bottom_left"
+    ]
+  },
+  "fixes": [
+    "Correct runtime postal regex from literal-backslash pattern to real five-digit regex.",
+    "Gate weak address spans against exact component evidence.",
+    "Keep suppressed weak predictions for audit instead of silently discarding them.",
+    "Expose exact component/token boxes separately from address region and semantic search zone.",
+    "Expose both PyMuPDF top-left and standard PDF bottom-left coordinate representations.",
+    "Keep all weak-field outputs review-required."
+  ],
+  "qualification": "This is semantic-zone regression evidence, not a human-annotated IoU/mAP benchmark. Exact component coverage means the extracted component value was matched back to source words, not that a human validated every box."
+}
