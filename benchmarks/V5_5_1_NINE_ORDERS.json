@@ -1,0 +1,43 @@
+{
+  "version": "5.5.1-geometry-hardening",
+  "corpus": "9 real ISERBA/UNICIA/GAZ SERVICE RAPIDE purchase orders supplied by user",
+  "before": {
+    "order_number": "0/9",
+    "order_date": "0/9",
+    "total_ht": "0/9",
+    "supplier_city": "0/9",
+    "delivery_postal": "0/9",
+    "delivery_city": "0/9",
+    "false_address_candidates": 2,
+    "documents_with_false_postal_amount": 7
+  },
+  "after": {
+    "order_number": "9/9",
+    "order_date": "9/9",
+    "total_ht": "9/9",
+    "supplier_street": "9/9",
+    "supplier_postal": "9/9",
+    "supplier_city": "9/9",
+    "delivery_street": "9/9",
+    "delivery_postal": "9/9",
+    "delivery_city": "9/9",
+    "billing_street": "9/9",
+    "billing_postal": "9/9",
+    "billing_city": "9/9",
+    "billing_cedex": "9/9",
+    "billing_cs": "9/9",
+    "false_address_candidates": 0,
+    "documents_with_false_postal_amount": 0
+  },
+  "changes": [
+    "Reconstruct visual lines across PDF blocks using Y geometry",
+    "Strict raw five-digit postal validation; monetary tokens cannot be postal codes",
+    "Street type whitelist blocks contact-name false positives such as RODAS",
+    "Geometry anchors recover order number, date and Total HT",
+    "Cross-block/cross-line postal code + city association",
+    "Role-aware supplier/ship_to/bill_to address candidates",
+    "ZI/ZA/ZAC/ZAE, building and BP/CS/TSA attachment to address block",
+    "Weak-label training script no longer normalizes monetary punctuation into postal labels"
+  ],
+  "qualification": "Regression result on this 9-document set, not a universal accuracy claim. All V5.5.1 field suggestions remain requires_review=true."
+}
