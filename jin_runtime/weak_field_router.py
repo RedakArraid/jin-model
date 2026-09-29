@@ -14,6 +14,8 @@ import pytesseract
 from PIL import Image
 from sklearn.feature_extraction.text import HashingVectorizer
 
+from jin_runtime.geometry_fields import STREET_TYPES, extract_geometry_suggestions
+
 
 def _norm(value: Any) -> str:
     text = "".join(
@@ -450,6 +452,7 @@ class WeakFieldRouter:
         lines, text_source = _extract_first_page_lines(
             data, self.ocr_languages
         )
+        geometry = extract_geometry_suggestions(lines)
         spans: list[dict[str, Any]] = []
 
         for line_index, tokens in enumerate(lines):
@@ -501,17 +504,28 @@ class WeakFieldRouter:
                 item
                 for item in raw_spans
                 if item["label"] == "ADDRESS_STREET_TYPE"
+                and _norm(item["value"]) in STREET_TYPES
             ]
             postal_codes = [
                 item
                 for item in raw_spans
                 if item["label"] == "ADDRESS_POSTAL_CODE"
+                and re.fullmatch(r"\\d{5}", item["value"].strip())
+                and 1000 <= int(item["value"].strip()) <= 98999
             ]
 
             for item in raw_spans:
                 label = item["label"]
                 keep = True
-                if label in {
+                if label == "ADDRESS_STREET_TYPE":
+                    keep = _norm(item["value"]) in STREET_TYPES
+                elif label == "ADDRESS_POSTAL_CODE":
+                    raw_postal = item["value"].strip()
+                    keep = bool(
+                        re.fullmatch(r"\\d{5}", raw_postal)
+                        and 1000 <= int(raw_postal) <= 98999
+                    )
+                elif label in {
                     "ADDRESS_STREET_NAME",
                     "ADDRESS_HOUSE_NUMBER",
                     "ADDRESS_HOUSE_NUMBER_SUFFIX",
@@ -550,11 +564,42 @@ class WeakFieldRouter:
                     }
                 )
 
+        model_addresses = self._address_candidates(spans)
+        geometry_addresses = geometry.get("address_candidates") or []
+        geometry_fields = geometry.get("anchored_fields") or {}
+
+        if geometry_addresses:
+            trusted_postals = {
+                str(item.get("components", {}).get("postal_code") or "")
+                for item in geometry_addresses
+                if item.get("components", {}).get("postal_code")
+            }
+            trusted_cities = {
+                _norm(item.get("components", {}).get("city") or "")
+                for item in geometry_addresses
+                if item.get("components", {}).get("city")
+            }
+            spans = [
+                span
+                for span in spans
+                if not (
+                    span["label"] == "ADDRESS_POSTAL_CODE"
+                    and span["value"] not in trusted_postals
+                )
+                and not (
+                    span["label"] == "ADDRESS_CITY"
+                    and _norm(span["value"]) not in trusted_cities
+                )
+            ]
+
         return {
             "model_version": self.bundle["version"],
             "weak_supervision": True,
             "requires_review": True,
             "text_source": text_source,
             "spans": spans,
-            "address_candidates": self._address_candidates(spans),
+            "anchored_fields": geometry_fields,
+            "address_candidates": geometry_addresses or model_addresses,
+            "model_address_candidates": model_addresses,
+            "geometry_version": geometry.get("geometry_version"),
         }
