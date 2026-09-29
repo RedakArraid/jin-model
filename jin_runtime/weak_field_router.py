@@ -15,6 +15,7 @@ from PIL import Image
 from sklearn.feature_extraction.text import HashingVectorizer
 
 from jin_runtime.geometry_fields import STREET_TYPES, extract_geometry_suggestions
+from jin_runtime.zone_refiner import refine_zone_evidence
 
 
 def _norm(value: Any) -> str:
@@ -510,7 +511,7 @@ class WeakFieldRouter:
                 item
                 for item in raw_spans
                 if item["label"] == "ADDRESS_POSTAL_CODE"
-                and re.fullmatch(r"\\d{5}", item["value"].strip())
+                and re.fullmatch(r"\d{5}", item["value"].strip())
                 and 1000 <= int(item["value"].strip()) <= 98999
             ]
 
@@ -522,7 +523,7 @@ class WeakFieldRouter:
                 elif label == "ADDRESS_POSTAL_CODE":
                     raw_postal = item["value"].strip()
                     keep = bool(
-                        re.fullmatch(r"\\d{5}", raw_postal)
+                        re.fullmatch(r"\d{5}", raw_postal)
                         and 1000 <= int(raw_postal) <= 98999
                     )
                 elif label in {
@@ -565,41 +566,21 @@ class WeakFieldRouter:
                 )
 
         model_addresses = self._address_candidates(spans)
-        geometry_addresses = geometry.get("address_candidates") or []
-        geometry_fields = geometry.get("anchored_fields") or {}
-
-        if geometry_addresses:
-            trusted_postals = {
-                str(item.get("components", {}).get("postal_code") or "")
-                for item in geometry_addresses
-                if item.get("components", {}).get("postal_code")
-            }
-            trusted_cities = {
-                _norm(item.get("components", {}).get("city") or "")
-                for item in geometry_addresses
-                if item.get("components", {}).get("city")
-            }
-            spans = [
-                span
-                for span in spans
-                if not (
-                    span["label"] == "ADDRESS_POSTAL_CODE"
-                    and span["value"] not in trusted_postals
-                )
-                and not (
-                    span["label"] == "ADDRESS_CITY"
-                    and _norm(span["value"]) not in trusted_cities
-                )
-            ]
+        refined = refine_zone_evidence(lines, geometry, spans)
 
         return {
             "model_version": self.bundle["version"],
             "weak_supervision": True,
             "requires_review": True,
             "text_source": text_source,
-            "spans": spans,
-            "anchored_fields": geometry_fields,
-            "address_candidates": geometry_addresses or model_addresses,
+            "raw_spans": spans,
+            "spans": refined["spans"],
+            "suppressed_spans": refined["suppressed_spans"],
+            "anchored_fields": refined["anchored_fields"],
+            "address_candidates": refined["address_candidates"],
             "model_address_candidates": model_addresses,
+            "semantic_zones": refined["semantic_zones"],
+            "zone_refiner_version": refined["zone_refiner_version"],
+            "coordinate_space": refined["coordinate_space"],
             "geometry_version": geometry.get("geometry_version"),
         }
