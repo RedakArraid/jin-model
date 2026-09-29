@@ -1,1 +1,1 @@
-__version__ = "5.2.0-statistical-learning"
+__version__ = "5.3.0-corpus-learning-output-quality"
