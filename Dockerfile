@@ -21,7 +21,7 @@ COPY jin_runtime/ /app/jin_runtime/
 ENV JIN_FEEDBACK_PATH=/app/training/feedback/learning_feedback.jsonl \
     JIN_LEARNING_MODEL_DIR=/app/data/learning \
     JIN_CORPUS_ROUTER_MODEL=/app/data/learning/corpus_text_router.joblib \
-    JIN_PDF_ROUTER_MODEL=/app/data/learning/jin-pdf-fusion-router-v2-cpu.joblib \
+    JIN_PDF_ROUTER_MODEL=/app/data/learning/jin-pdf-fusion-router-v3-cpu.joblib \
     JIN_FIELD_ROUTER_MODEL=/app/data/learning/jin-field-weak-router-v2-cpu.joblib \
     JIN_FIELD_ROUTER_THRESHOLD=0.80 \
     JIN_OCR_LANGS=fra+eng+deu \
