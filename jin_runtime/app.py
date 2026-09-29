@@ -12,6 +12,7 @@ from jin_runtime.learning import StatisticalAddressLearner
 from jin_runtime.output_quality import audit_and_repair_output
 from jin_runtime.document_router import CorpusDocumentRouter
 from jin_runtime.pdf_cpu_router import CpuPdfRouter
+from jin_runtime.weak_field_router import WeakFieldRouter
 from uda.api import app as core_app
 
 app = FastAPI(
@@ -22,6 +23,7 @@ app = FastAPI(
 learner = StatisticalAddressLearner()
 document_router = CorpusDocumentRouter()
 pdf_router = CpuPdfRouter()
+field_router = WeakFieldRouter()
 
 
 def _forward_headers(request: Request) -> dict[str, str]:
@@ -73,8 +75,8 @@ def document_route(payload: dict[str, Any]) -> dict[str, Any]:
     return {"prediction": prediction, "router": document_router.status()}
 
 
-async def _predict_uploaded_pdf(request: Request) -> dict[str, Any] | None:
-    if not pdf_router.loaded or "multipart/form-data" not in request.headers.get("content-type", ""):
+async def _uploaded_pdf_bytes(request: Request) -> bytes | None:
+    if "multipart/form-data" not in request.headers.get("content-type", ""):
         return None
     try:
         form = await request.form()
@@ -82,9 +84,11 @@ async def _predict_uploaded_pdf(request: Request) -> dict[str, Any] | None:
         if uploaded is None or not hasattr(uploaded, "read"):
             return None
         data = await uploaded.read()
-        if not data.startswith(b"%PDF-"):
-            return None
-        return pdf_router.predict_bytes(data)
+        try:
+            await uploaded.seek(0)
+        except Exception:
+            pass
+        return data if data.startswith(b"%PDF-") else None
     except Exception:
         return None
 
@@ -102,6 +106,29 @@ async def pdf_document_route(file: UploadFile = File(...)) -> Response:
     except (ValueError, RuntimeError) as exc:
         return JSONResponse(status_code=422, content={"detail": str(exc), "router": pdf_router.status()})
     return JSONResponse(content={"prediction": prediction, "router": pdf_router.status()})
+
+
+@app.post("/learning/field-route")
+async def field_document_route(file: UploadFile = File(...)) -> Response:
+    if not field_router.loaded:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "CPU weak field router model is not mounted",
+                "router": field_router.status(),
+            },
+        )
+    data = await file.read()
+    try:
+        prediction = field_router.predict_bytes(data)
+    except (ValueError, RuntimeError) as exc:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": str(exc), "router": field_router.status()},
+        )
+    return JSONResponse(
+        content={"prediction": prediction, "router": field_router.status()}
+    )
 
 
 @app.post("/feedback")
@@ -128,6 +155,7 @@ async def health(request: Request) -> Response:
             "statistical_learning": learner.status(compact=True),
             "corpus_document_router": document_router.status(),
             "cpu_pdf_router": pdf_router.status(),
+            "weak_field_router": field_router.status(),
         }
     return JSONResponse(status_code=response.status_code, content=payload)
 
@@ -147,9 +175,18 @@ async def extract(request: Request) -> Response:
         route = document_router.predict_payload(payload)
         if route:
             payload["document_statistical_router"] = route
-        pdf_route = await _predict_uploaded_pdf(request)
-        if pdf_route:
-            payload["document_pdf_router"] = pdf_route
+        pdf_data = await _uploaded_pdf_bytes(request)
+        if pdf_data:
+            if pdf_router.loaded:
+                try:
+                    payload["document_pdf_router"] = pdf_router.predict_bytes(pdf_data)
+                except (ValueError, RuntimeError):
+                    pass
+            if field_router.loaded:
+                try:
+                    payload["weak_field_suggestions"] = field_router.predict_bytes(pdf_data)
+                except (ValueError, RuntimeError):
+                    pass
         payload.setdefault("runtime_layer_version", __version__)
     return JSONResponse(status_code=response.status_code, content=payload)
 

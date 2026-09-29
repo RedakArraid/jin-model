@@ -1,0 +1,46 @@
+{
+  "version": "5.5.0-weak-field-learning",
+  "model": {
+    "version": "jin-field-weak-router-v2-cpu",
+    "cpu_only": true,
+    "weak_supervision": true,
+    "first_page_only": true,
+    "artifact_bytes": 8674640,
+    "artifact_sha256": "1eae5cfe609c286d777a7ccc83dbaf233a917a989cf1408b681abaeedf467517",
+    "confidence_threshold": 0.8
+  },
+  "corpus": {
+    "train_docs": 1572,
+    "validation_docs": 396,
+    "train_native_text_docs": 1468,
+    "validation_native_text_docs": 372,
+    "train_scan_docs": 104,
+    "validation_scan_docs": 24
+  },
+  "weak_label_validation": {
+    "token_accuracy": 0.9897011436153409,
+    "macro_f1_all": 0.9782303796902433,
+    "qualification": "Agreement against deterministic weak labels only; not ground-truth field accuracy.",
+    "field_f1": {
+      "ADDRESS_HOUSE_NUMBER": 0.9964200477326969,
+      "ADDRESS_STREET_TYPE": 0.993543179983858,
+      "ADDRESS_STREET_NAME": 0.9940625,
+      "ADDRESS_POSTAL_CODE": 0.9834671705243269,
+      "ADDRESS_CITY": 0.977760736196319,
+      "ADDRESS_CEDEX": 0.9942748091603053,
+      "ADDRESS_BP": 0.9801324503311258,
+      "ADDRESS_CS": 1,
+      "ORDER_DATE": 0.9142857142857143,
+      "ORDER_NUMBER": 0.9508196721311475,
+      "TOTAL_VAT": 0.9515418502202643
+    }
+  },
+  "runtime": {
+    "native_pdf_text_preferred": true,
+    "tesseract_ocr_fallback": true,
+    "ocr_languages": "fra+eng+deu",
+    "suggestions_only": true,
+    "requires_review": true,
+    "mutates_core_fields": false
+  }
+}

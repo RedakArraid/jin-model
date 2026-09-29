@@ -1,5 +1,16 @@
 # Changelog
 
+## 5.5.0-weak-field-learning
+
+- Added reproducible CPU weak-supervised token/field learning on real first-page PDF words and geometry.
+- Training: 1,468 native-text train PDFs; holdout scoring: 372 native-text validation PDFs.
+- Weak-label agreement: 98.97% token accuracy and 97.82% macro-F1.
+- Added OCR fallback for image-only PDFs at inference time (Tesseract fra+eng+deu).
+- Added spatial guardrails for multi-column documents and structured review-required address candidates.
+- Added `POST /learning/field-route` and non-destructive `weak_field_suggestions` enrichment in `/extract`.
+- Explicitly keeps all weak-field outputs `requires_review=true`; no core field is overwritten.
+- Artifact: `jin-field-weak-router-v2-cpu.joblib`, SHA-256 `1eae5cfe609c286d777a7ccc83dbaf233a917a989cf1408b681abaeedf467517`.
+
 ## 5.4.0-real-pdf-cpu-learning
 
 - Validated and trained on 1,968 real PDFs / 2,877 pages: 1,572 train and 396 untouched validation documents.

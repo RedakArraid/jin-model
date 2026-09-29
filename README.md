@@ -1,8 +1,30 @@
-# JIN Model - Universal Document AI V5.4 Real PDF CPU Learning
+# JIN Model - Universal Document AI V5.5 Weak Field Learning
 
 `RedakArraid/jin-model` contient la couche Docker/UI autour du moteur JIN empaqueté et une nouvelle couche d'apprentissage statistique versionnée.
 
 JIN commence maintenant à apprendre à partir des documents historiques corrigés au lieu d'évoluer uniquement par accumulation de règles.
+
+## V5.5 - apprentissage faible des champs
+
+JIN apprend maintenant aussi des **champs token/position** sur les vrais PDF, toujours en CPU. Le modèle V2 est entraîné sur la première page des 1 572 documents train avec des labels faibles déterministes haute précision, puis évalué sur les 396 documents validation.
+
+Sur les 372 PDF validation disposant de texte natif, l'accord avec les labels faibles atteint **98,97 % token accuracy** et **97,82 % macro-F1**. Ces métriques ne sont pas présentées comme une accuracy terrain : chaque sortie reste `requires_review=true`.
+
+Le runtime préfère le texte/les coordonnées PDF natives et bascule sur Tesseract OCR pour les scans. Il propose notamment numéro, type/nom de voie, code postal, ville, CEDEX, BP/CS/TSA, n°/date de commande et certains totaux. Les suggestions sont exposées dans `weak_field_suggestions` et **ne remplacent jamais silencieusement les champs du moteur cœur**.
+
+Modèle attendu :
+
+```text
+data/learning/jin-field-weak-router-v2-cpu.joblib
+```
+
+Endpoint :
+
+```bash
+curl -F "file=@commande.pdf" http://localhost:8080/api/learning/field-route
+```
+
+Voir [V5.5 Weak Field Learning](docs/V5_5_WEAK_FIELD_LEARNING.md).
 
 ## V5.4 - apprentissage sur les vrais PDF
 
@@ -80,6 +102,7 @@ Accès :
 - santé : http://localhost:8080/api/health
 - apprentissage : http://localhost:8080/api/learning/status
 - routeur PDF CPU : POST http://localhost:8080/api/learning/pdf-route
+- suggestions champs CPU : POST http://localhost:8080/api/learning/field-route
 
 Le ZIP moteur doit contenir `requirements.txt` et le package `uda/`. `prepare-model.sh` accepte une archive V4.8 ou V5.x.
 
@@ -179,4 +202,4 @@ La CI compile aussi les sources Python et valide les scripts shell.
 
 ## Version
 
-`5.4.0-real-pdf-cpu-learning`
+`5.5.0-weak-field-learning`

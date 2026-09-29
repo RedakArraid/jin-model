@@ -1,1 +1,1 @@
-__version__ = "5.4.0-real-pdf-cpu-learning"\n
+__version__ = "5.5.0-weak-field-learning"\n
