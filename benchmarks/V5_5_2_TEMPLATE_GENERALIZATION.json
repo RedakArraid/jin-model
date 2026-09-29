@@ -1,0 +1,90 @@
+{
+  "version": "5.5.2-template-generalization",
+  "sandbox_test": {
+    "documents": 17,
+    "previous_regression_documents": 9,
+    "new_documents": 8,
+    "previous_nine_regression_preserved": "9/9 fields and address roles",
+    "new_document_families": [
+      "WENDEL CF",
+      "SISCA FELM",
+      "ISERBA/GAZ SERVICE RAPIDE CA",
+      "GARANKA scanned order",
+      "SFCP price offer"
+    ],
+    "new_purchase_orders": 7,
+    "new_price_offers": 1,
+    "purchase_order_number_date": "7/7",
+    "price_offer_number_date": "1/1",
+    "summary_totals_expected": "6/6",
+    "false_money_as_postal": 0,
+    "false_contact_as_street": 0
+  },
+  "generalized_geometry": {
+    "version": "visual-lines-v3",
+    "changes": [
+      "table header/value matching for N Document, Piece, N Commande and Date",
+      "summary table matching for NET HT, TOTAL HT, VALEUR/MONTANT TVA, TOTAL/MONTANT TTC and NET A PAYER",
+      "role anchors by geometric proximity rather than fixed left/right columns",
+      "house-number ranges 124 126, 124,126, 123 - 125 normalized as ranges",
+      "country-prefixed French postal forms F-93711 and FR-93711",
+      "offer_number and offer_date separated from order metadata",
+      "sparse-text OCR PSM 11 for scanned forms"
+    ]
+  },
+  "pdf_router_v3": {
+    "artifact": "jin-pdf-fusion-router-v3-cpu.joblib",
+    "sha256": "6ecee7438887929c41339e4c3ff7b7620ed17a16267ba60aabc8311f2e590c32",
+    "bytes": 1734027,
+    "family_validation_accuracy": 0.9974747474747475,
+    "raw_decision_validation_accuracy": 0.9343434343434344,
+    "decision_with_learned_family_prior_accuracy": 0.9419191919191919,
+    "decision_with_learned_family_prior_macro_f1": 0.8976,
+    "family_prior_source": "training split only with Laplace smoothing",
+    "prior_weight": 1,
+    "note": "No validation tuning of prior weight."
+  },
+  "new_eight_router_results": [
+    [
+      "WENDEL",
+      "CF",
+      "keep"
+    ],
+    [
+      "SFCP price offer",
+      "Autre",
+      "remove"
+    ],
+    [
+      "SISCA SO",
+      "FELM",
+      "keep"
+    ],
+    [
+      "SISCA 1673137",
+      "FELM",
+      "keep"
+    ],
+    [
+      "GAZ SERVICE RAPIDE NT3",
+      "CA",
+      "keep"
+    ],
+    [
+      "GAZ SERVICE RAPIDE NTE",
+      "CA",
+      "keep"
+    ],
+    [
+      "ISERBA COV",
+      "CA",
+      "keep"
+    ],
+    [
+      "GARANKA",
+      "Autre",
+      "keep"
+    ]
+  ],
+  "qualification": "17-document sandbox regression plus 396-document held-out router evaluation; not a universal extraction guarantee. Weak field suggestions remain requires_review=true."
+}
