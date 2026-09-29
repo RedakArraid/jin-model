@@ -9,6 +9,7 @@ services:
       JIN_FEEDBACK_PATH: /app/training/feedback/learning_feedback.jsonl
       JIN_LEARNING_MODEL_DIR: /app/data/learning
       JIN_CORPUS_ROUTER_MODEL: /app/data/learning/corpus_text_router.joblib
+      JIN_PDF_ROUTER_MODEL: /app/data/learning/jin-pdf-fusion-router-v2-cpu.joblib
       JIN_ROLE_OVERRIDE_THRESHOLD: "0.93"
       JIN_COMPONENT_FILL_THRESHOLD: "0.88"
       JIN_ALLOW_ROLE_OVERRIDE: "1"

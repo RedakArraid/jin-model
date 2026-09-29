@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.4.0-real-pdf-cpu-learning
+
+- Validated and trained on 1,968 real PDFs / 2,877 pages: 1,572 train and 396 untouched validation documents.
+- Verified zero Git LFS pointers and zero exact SHA-256 duplicates across train/validation.
+- Added CPU-only multimodal training from native PDF text, word/page geometry and first-page low-resolution vision.
+- Added calibrated family classifier: 99.75% family accuracy on the 396-document holdout.
+- Kept the stronger raw decision classifier: 93.43% keep/review/remove accuracy.
+- Added `CpuPdfRouter`, `POST /learning/pdf-route`, health status and automatic `document_pdf_router` enrichment on PDF extraction when the model is mounted.
+- Kept V5.3 output-quality repairs, including duplicated-city repair in `formatted_address`.
+- Documented that field-level extraction learning still requires reviewed field/region/token labels; GPU compute is not the blocker.
+- Added a weak-label bootstrap that projects corrected JIN JSON values onto native PDF word boxes and marks every generated region as review-required.
+- Added train-only temperature scaling (T=7.0) for decision confidence without changing keep/review/remove classes.
+
 ## 5.3.0-corpus-learning-output-quality
 
 - Trained a compact statistical document router from the supplied 1,968-document corpus evidence with the 396 validation documents held out.

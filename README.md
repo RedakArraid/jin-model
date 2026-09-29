@@ -1,8 +1,29 @@
-# JIN Model - Universal Document AI V5.3 Corpus Learning & Output Quality
+# JIN Model - Universal Document AI V5.4 Real PDF CPU Learning
 
 `RedakArraid/jin-model` contient la couche Docker/UI autour du moteur JIN empaqueté et une nouvelle couche d'apprentissage statistique versionnée.
 
 JIN commence maintenant à apprendre à partir des documents historiques corrigés au lieu d'évoluer uniquement par accumulation de règles.
+
+## V5.4 - apprentissage sur les vrais PDF
+
+Le corpus complet est maintenant matérialisé et utilisé réellement : **1 572 PDF d'entraînement + 396 PDF de validation = 1 968 PDF réels**, soit **2 877 pages**. Aucun pointeur Git LFS ne reste dans le corpus utilisé pour le benchmark et aucun SHA-256 identique ne traverse train/validation.
+
+La baseline de production est désormais **CPU-only** : texte PDF natif + géométrie des mots/pages + représentation visuelle 16×16 de la première page. Aucun GPU n'est requis.
+
+Résultats sur les 396 PDF de validation, jamais utilisés pour ajuster les poids :
+
+- famille documentaire : **99,75 %** (395/396), macro-F1 **99,30 %** ;
+- `keep/review/remove` : **93,43 %**, macro-F1 **88,12 %**.
+
+Le classifieur famille est calibré par validation croisée uniquement sur le split d'entraînement ; le classifieur de décision conserve le modèle brut, qui est plus précis sur ce corpus.
+
+Le modèle attendu par le runtime :
+
+```text
+data/learning/jin-pdf-fusion-router-v2-cpu.joblib
+```
+
+Voir [V5.4 - entraînement vrais PDF](docs/V5_4_REAL_PDF_TRAINING.md).
 
 ## V5.2
 
@@ -19,11 +40,9 @@ Voir [la documentation statistique](docs/STATISTICAL_LEARNING.md).
 
 ## Layout / vision
 
-Le dépôt prépare également la prochaine évolution : fine-tuning de `microsoft/layoutlmv3-base` (~133 M paramètres) sur les pages PDF complètes, positions de champs et cellules de tableaux.
+La voie de production ne dépend plus d'un GPU : le routeur V5.4 apprend directement les vrais PDF avec PyMuPDF, une représentation visuelle basse résolution, la géométrie et le texte natif.
 
-Au moment de cette évolution, aucun objet/pointeur PDF Git LFS réel n'était présent dans `jin-model`. Le pipeline est donc prêt, mais aucun entraînement sur ce corpus absent n'est prétendu.
-
-Voir [Git LFS et layout/vision](docs/LAYOUT_VISION_LFS.md).
+Le code LayoutLMv3 reste disponible comme piste de recherche, mais il n'est plus une dépendance de déploiement. Pour apprendre les **champs** eux-mêmes (adresses, lignes, totaux), le blocage restant est la présence de labels région/token revus, pas la puissance de calcul.
 
 ## Architecture
 
@@ -40,8 +59,10 @@ jin_runtime.app
         v
 Docker Compose / Nginx
 
-Corrections JSON ----------> modèles statistiques légers
-PDF Git LFS + annotations -> LayoutLMv3 (hors ligne / workflow manuel)
+Corrections JSON -----------------> mémoire statistique adresses
+Vrais PDF + labels documentaires -> routeur multimodal CPU V5.4
+JSON corrigés + vrais PDF --------> pré-annotations champs à revoir
+Annotations revues ---------------> futur extracteur champ-par-champ CPU
 ```
 
 ## Installation
@@ -58,6 +79,7 @@ Accès :
 - UI : http://localhost:8080
 - santé : http://localhost:8080/api/health
 - apprentissage : http://localhost:8080/api/learning/status
+- routeur PDF CPU : POST http://localhost:8080/api/learning/pdf-route
 
 Le ZIP moteur doit contenir `requirements.txt` et le package `uda/`. `prepare-model.sh` accepte une archive V4.8 ou V5.x.
 
@@ -69,6 +91,49 @@ curl -F "file=@commande.pdf" http://localhost:8080/api/extract
 curl http://localhost:8080/api/learning/status
 curl -X POST http://localhost:8080/api/feedback -H "Content-Type: application/json" -d @my-corrected-extraction.json
 ```
+
+## Entraînement CPU sur les vrais PDF
+
+```bash
+pip install -r requirements-pdf-training.txt
+
+python training/pdf/train_cpu_multimodal.py \
+  --corpus-root /chemin/vers/corpus \
+  --metadata-dir /chemin/vers/metadata \
+  --output data/learning/jin-pdf-fusion-router-v2-cpu.joblib \
+  --metrics data/learning/jin-pdf-fusion-router-v2-cpu-metrics.json
+```
+
+Le dossier corpus doit contenir `test/` et `validation/`. Le script vérifie les labels par SHA-256 lorsque le manifeste le permet.
+
+Test direct d'un PDF via l'API :
+
+```bash
+curl -F "file=@commande.pdf" http://localhost:8080/api/learning/pdf-route
+```
+
+## Préparer les labels champ-par-champ
+
+Le corpus actuel fournit des labels documentaires, pas des boîtes revues pour chaque champ. V5.4 ajoute donc un bootstrap à partir des **sorties JIN corrigées** :
+
+```bash
+python training/annotations/bootstrap_from_extractions.py \
+  --pdf-root /chemin/vers/corpus \
+  --extractions-dir /chemin/vers/json-corriges \
+  --output-dir corpus/annotations \
+  --report data/annotation_bootstrap_report.json
+```
+
+Le script retrouve les valeurs structurées dans les mots/coordonnées du PDF et produit des boîtes normalisées avec :
+
+```json
+{
+  "annotation_source": "jin_structured_output_weak_label",
+  "requires_review": true
+}
+```
+
+Ces pré-annotations ne sont **pas** considérées comme vérité terrain avant revue. Elles servent à construire le dataset nécessaire pour apprendre ensuite les adresses, lignes, dates, références et totaux au niveau champ.
 
 ## Entraînement statistique
 
@@ -114,4 +179,4 @@ La CI compile aussi les sources Python et valide les scripts shell.
 
 ## Version
 
-`5.3.0-corpus-learning-output-quality`
+`5.4.0-real-pdf-cpu-learning`

@@ -1,0 +1,51 @@
+{
+  "version": "5.4.0-real-pdf-cpu-learning",
+  "corpus": {
+    "train_docs": 1572,
+    "validation_docs": 396,
+    "total_docs": 1968,
+    "total_pages": 2877,
+    "train_pages": 2288,
+    "validation_pages": 589,
+    "native_text_docs": 1864,
+    "scan_docs": 128,
+    "cross_split_duplicate_sha256": 0,
+    "lfs_pointers": 0
+  },
+  "models": {
+    "text_layout": {
+      "family_accuracy": 0.9368686868686869,
+      "family_macro_f1": 0.8951330532212886,
+      "decision_accuracy": 0.8914141414141414,
+      "decision_macro_f1": 0.737482798772097
+    },
+    "visual_layout": {
+      "family_accuracy": 0.9949494949494949,
+      "family_macro_f1": 0.9892140151515152,
+      "decision_accuracy": 0.9292929292929293,
+      "decision_macro_f1": 0.8886687085103478
+    },
+    "fusion": {
+      "family_accuracy": 0.9974747474747475,
+      "family_macro_f1": 0.9930426716141002,
+      "decision_accuracy": 0.9343434343434344,
+      "decision_macro_f1": 0.8811527250728702,
+      "model_version": "jin-pdf-fusion-router-v2-cpu",
+      "cpu_only": true,
+      "family_calibrated": true,
+      "decision_temperature": 7,
+      "family_log_loss": 0.08651274073244991,
+      "decision_log_loss": 0.24010405986072217,
+      "artifact_sha256": "c225df1455376f2af32d7c953c440f5424b8481ee7e7989e221f24b98150da62",
+      "artifact_bytes": 1733706,
+      "validation_runtime_seconds": 18.259074449539185,
+      "validation_runtime_documents": 396,
+      "runtime_replay_matches_training_classes": true
+    }
+  },
+  "caveats": {
+    "field_level_layout_annotations": false,
+    "layoutlmv3_full_finetune": false,
+    "reason": "CPU-only production path selected. Field-level address/table extraction still needs reviewed region/token annotations; no GPU is required for the deployed V2 router."
+  }
+}
