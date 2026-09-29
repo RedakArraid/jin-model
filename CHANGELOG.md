@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.5.2-template-generalization
+
+- Generalized visual-line extraction across WENDEL, SISCA, GARANKA, ISERBA/GAZ SERVICE RAPIDE and SFCP offer layouts.
+- Added table header/value matching for N° Document, Pièce, N° Commande and Date.
+- Added summary financial anchors for NET/TOTAL HT, VAT, TTC and amount due.
+- Replaced fixed left/right address-role assumptions with proximity-based role anchor bands.
+- Normalized house-number ranges such as 124 126, 124,126 and 123 - 125.
+- Added F-/FR-prefixed French postal-code support.
+- Separated offer_number/offer_date from order metadata.
+- Switched scan fallback to Tesseract PSM 11 for sparse forms/tables.
+- Added learned P(decision|family) priors to the CPU PDF router; holdout decision accuracy improves from 93.43% to 94.19%.
+- Added 17-document multi-template regression benchmark; prior 9-document regression remains stable.
+
 ## 5.5.1-geometry-hardening
 
 - Reconstruct visual lines across PDF block boundaries using word Y-coordinates.
