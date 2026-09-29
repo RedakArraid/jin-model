@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse, Response
 
 from jin_runtime import __version__
 from jin_runtime.learning import StatisticalAddressLearner
+from jin_runtime.output_quality import audit_and_repair_output
+from jin_runtime.document_router import CorpusDocumentRouter
 from uda.api import app as core_app
 
 app = FastAPI(
@@ -17,6 +19,7 @@ app = FastAPI(
     description="Compatibility runtime adding statistical learning on top of the packaged JIN core engine.",
 )
 learner = StatisticalAddressLearner()
+document_router = CorpusDocumentRouter()
 
 
 def _forward_headers(request: Request) -> dict[str, str]:
@@ -57,6 +60,17 @@ def learning_status() -> dict[str, Any]:
     return learner.status()
 
 
+@app.post("/learning/document-route")
+def document_route(payload: dict[str, Any]) -> dict[str, Any]:
+    prediction = document_router.predict(
+        filename=str(payload.get("filename") or ""),
+        subject=str(payload.get("subject") or ""),
+        sender=str(payload.get("sender") or ""),
+        text=str(payload.get("text") or payload.get("text_preview") or ""),
+    )
+    return {"prediction": prediction, "router": document_router.status()}
+
+
 @app.post("/feedback")
 def record_feedback(payload: dict[str, Any]) -> dict[str, Any]:
     try:
@@ -79,6 +93,7 @@ async def health(request: Request) -> Response:
         payload["runtime_layer"] = {
             "version": __version__,
             "statistical_learning": learner.status(compact=True),
+            "corpus_document_router": document_router.status(),
         }
     return JSONResponse(status_code=response.status_code, content=payload)
 
@@ -93,7 +108,11 @@ async def extract(request: Request) -> Response:
     except json.JSONDecodeError:
         return _response_from_core(response)
     if isinstance(payload, dict):
+        payload = audit_and_repair_output(payload, repair=True)
         payload = learner.enrich(payload)
+        route = document_router.predict_payload(payload)
+        if route:
+            payload["document_statistical_router"] = route
         payload.setdefault("runtime_layer_version", __version__)
     return JSONResponse(status_code=response.status_code, content=payload)
 
