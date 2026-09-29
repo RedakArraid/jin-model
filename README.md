@@ -8,7 +8,7 @@ JIN commence maintenant à apprendre à partir des documents historiques corrig�
 
 Le moteur géométrique ne dépend plus d'une disposition gauche/droite fixe. Il associe maintenant les blocs d'adresse à leurs ancres par proximité, sait lire des tableaux `N° Document / Pièce / N° Commande / Date`, les tableaux de synthèse `NET H.T. / TVA / TTC / NET A PAYER`, et normalise les plages `124 126`, `124,126`, `123 - 125`.
 
-Le nouveau lot de non-régression contient **17 documents réels** : les 9 précédents plus 8 documents WENDEL, SISCA, GARANKA, ISERBA/GAZ SERVICE RAPIDE et une offre SFCP. Les 9 anciens restent stables et les nouveaux champs critiques attendus sont retrouvés sans réintroduire les faux CP monétaires.
+Le nouveau lot représente **17 exécutions sur 15 PDF uniques** : les 9 précédents plus 8 uploads WENDEL, SISCA, GARANKA, ISERBA/GAZ SERVICE RAPIDE et une offre SFCP, dont 2 PDF POISSY déjà présents dans le lot précédent. Les 9 anciens restent stables et les nouveaux champs critiques attendus sont retrouvés sans réintroduire les faux CP monétaires.
 
 Le routeur PDF passe aussi en V3 avec un a priori statistique appris `P(decision | family)` sur le train uniquement. Sur les 396 validations : décision **93,43 % -> 94,19 %**, sans réglage de poids sur le holdout.
 
