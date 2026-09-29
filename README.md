@@ -1,4 +1,4 @@
-# JIN Model - Universal Document AI V5.2 Statistical Learning
+# JIN Model - Universal Document AI V5.3 Corpus Learning & Output Quality
 
 `RedakArraid/jin-model` contient la couche Docker/UI autour du moteur JIN empaqueté et une nouvelle couche d'apprentissage statistique versionnée.
 
@@ -114,4 +114,4 @@ La CI compile aussi les sources Python et valide les scripts shell.
 
 ## Version
 
-`5.2.0-statistical-learning`
+`5.3.0-corpus-learning-output-quality`
