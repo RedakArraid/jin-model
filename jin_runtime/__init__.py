@@ -1,1 +1,1 @@
-__version__ = "5.5.2-template-generalization"\n
+__version__ = "5.6.0-zone-aware-evidence"\n
