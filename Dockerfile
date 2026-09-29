@@ -13,7 +13,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY model/ /app/
-RUN pip install --no-cache-dir -r requirements.txt
+COPY runtime-requirements.txt /tmp/jin-runtime-requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir -r /tmp/jin-runtime-requirements.txt
+COPY jin_runtime/ /app/jin_runtime/
+
+ENV JIN_FEEDBACK_PATH=/app/training/feedback/learning_feedback.jsonl \
+    JIN_LEARNING_MODEL_DIR=/app/data/learning \
+    JIN_ROLE_OVERRIDE_THRESHOLD=0.93 \
+    JIN_COMPONENT_FILL_THRESHOLD=0.88
 
 EXPOSE 8000
-CMD ["uvicorn", "uda.api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "jin_runtime.app:app", "--host", "0.0.0.0", "--port", "8000"]

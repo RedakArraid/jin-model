@@ -5,6 +5,13 @@ services:
       dockerfile: Dockerfile
     container_name: jin-model-api
     restart: unless-stopped
+    environment:
+      JIN_FEEDBACK_PATH: /app/training/feedback/learning_feedback.jsonl
+      JIN_LEARNING_MODEL_DIR: /app/data/learning
+      JIN_ROLE_OVERRIDE_THRESHOLD: "0.93"
+      JIN_COMPONENT_FILL_THRESHOLD: "0.88"
+      JIN_ALLOW_ROLE_OVERRIDE: "1"
+      JIN_FILL_MISSING_COMPONENTS: "1"
     volumes:
       - ./data:/app/data
       - ./feedback:/app/training/feedback

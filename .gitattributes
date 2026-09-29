@@ -1,0 +1,12 @@
+corpus/pdfs/*.pdf filter=lfs diff=lfs merge=lfs -text
+corpus/pdfs/**/*.pdf filter=lfs diff=lfs merge=lfs -text
+corpus/images/*.png filter=lfs diff=lfs merge=lfs -text
+corpus/images/**/*.png filter=lfs diff=lfs merge=lfs -text
+corpus/images/*.jpg filter=lfs diff=lfs merge=lfs -text
+corpus/images/**/*.jpg filter=lfs diff=lfs merge=lfs -text
+corpus/images/*.jpeg filter=lfs diff=lfs merge=lfs -text
+corpus/images/**/*.jpeg filter=lfs diff=lfs merge=lfs -text
+corpus/images/*.tif filter=lfs diff=lfs merge=lfs -text
+corpus/images/**/*.tif filter=lfs diff=lfs merge=lfs -text
+corpus/images/*.tiff filter=lfs diff=lfs merge=lfs -text
+corpus/images/**/*.tiff filter=lfs diff=lfs merge=lfs -text

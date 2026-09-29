@@ -1,80 +1,117 @@
-# JIN Model - Universal Document AI V4.8
+# JIN Model - Universal Document AI V5.2 Statistical Learning
 
-Interface web + API Docker Compose pour tester JIN Model V4.8 sur des bons de commande et autres documents metier.
+`RedakArraid/jin-model` contient la couche Docker/UI autour du moteur JIN empaqueté et une nouvelle couche d'apprentissage statistique versionnée.
 
-Le moteur traite notamment les PDF natifs, scans/images et documents Office, puis expose les numeros et dates de commande, acteurs, adresses avec roles metier, lignes produits, charges/eco-participations, totaux, validations financieres et scores de confiance.
+JIN commence maintenant à apprendre à partir des documents historiques corrigés au lieu d'évoluer uniquement par accumulation de règles.
+
+## V5.2
+
+La mémoire statistique apprend :
+
+- les rôles d'adresse (`ship_to`, `bill_to`, `supplier`, `buyer`, etc.) ;
+- les composants structurés d'une adresse : bâtiment, numéro, suffixe, type/nom de voie, zones, BP/TSA/CS, code postal, ville, CEDEX, INSEE, région, pays, etc.
+
+Les corrections sont envoyées à `POST /feedback`, persistées localement puis réutilisées sur les extractions suivantes.
+
+La couche reste prudente : elle complète d'abord les champs manquants, ne remplace un rôle que si le signal existant est faible et ne positionne jamais `is_verified_real_address=true`. La validation d'existence reste du ressort de la BAN/Géoplateforme ou d'un référentiel officiel approuvé.
+
+Voir [la documentation statistique](docs/STATISTICAL_LEARNING.md).
+
+## Layout / vision
+
+Le dépôt prépare également la prochaine évolution : fine-tuning de `microsoft/layoutlmv3-base` (~133 M paramètres) sur les pages PDF complètes, positions de champs et cellules de tableaux.
+
+Au moment de cette évolution, aucun objet/pointeur PDF Git LFS réel n'était présent dans `jin-model`. Le pipeline est donc prêt, mais aucun entraînement sur ce corpus absent n'est prétendu.
+
+Voir [Git LFS et layout/vision](docs/LAYOUT_VISION_LFS.md).
+
+## Architecture
+
+```text
+Moteur JIN empaqueté (model/ local)
+        |
+        v
+jin_runtime.app
+  |-- proxy des routes cœur
+  |-- enrichissement statistique de /extract
+  |-- POST /feedback
+  |-- GET /learning/status
+        |
+        v
+Docker Compose / Nginx
+
+Corrections JSON ----------> modèles statistiques légers
+PDF Git LFS + annotations -> LayoutLMv3 (hors ligne / workflow manuel)
+```
 
 ## Installation
-
-### 1. Cloner le depot
 
 ```bash
 git clone https://github.com/RedakArraid/jin-model.git
 cd jin-model
-```
-
-### 2. Ajouter le moteur V4.8
-
-Le code de deploiement et l'interface sont versionnes dans ce depot. Le connecteur GitHub utilise pour la publication ne pouvant pas transferer l'archive binaire du modele depuis le sandbox, place le fichier `jin-model-v4.8-source.zip` fourni avec la livraison dans la racine du depot.
-
-Puis :
-
-```bash
-chmod +x prepare-model.sh
-./prepare-model.sh jin-model-v4.8-source.zip
-```
-
-Le script cree le dossier local `model/`, ignore par Git.
-
-### 3. Lancer
-
-```bash
+./prepare-model.sh <jin-engine.zip>
 docker compose up --build
 ```
 
-Ouvrir ensuite :
+Accès :
 
-- Interface : **http://localhost:8080**
-- Health check : **http://localhost:8080/api/health**
+- UI : http://localhost:8080
+- santé : http://localhost:8080/api/health
+- apprentissage : http://localhost:8080/api/learning/status
 
-## Interface
-
-L'interface permet :
-
-- glisser-deposer ou selectionner un PDF/image/Office/CSV/JSON ;
-- forcer un type de document ou fournir un schema JSON ;
-- afficher le numero/date de commande ;
-- afficher acheteur, fournisseur et contacts ;
-- afficher les adresses avec roles metier (`buyer`, `supplier`, `ship_to`, `bill_to`, etc.) ;
-- afficher les lignes produits, quantites, unites, prix et montants ;
-- afficher DEEE, eco-participations et autres charges ;
-- afficher totaux, validation, confiance et besoin de revue humaine ;
-- consulter et telecharger le JSON complet.
+Le ZIP moteur doit contenir `requirements.txt` et le package `uda/`. `prepare-model.sh` accepte une archive V4.8 ou V5.x.
 
 ## API
 
 ```bash
 curl http://localhost:8080/api/health
 curl -F "file=@commande.pdf" http://localhost:8080/api/extract
+curl http://localhost:8080/api/learning/status
+curl -X POST http://localhost:8080/api/feedback -H "Content-Type: application/json" -d @my-corrected-extraction.json
 ```
 
-## Arreter la stack
+## Entraînement statistique
 
 ```bash
-docker compose down
+python training/train_statistical.py --feedback feedback/learning_feedback.jsonl --model-dir data/learning
 ```
 
-## Logs
+Seuils runtime par défaut :
+
+```text
+JIN_ROLE_OVERRIDE_THRESHOLD=0.93
+JIN_COMPONENT_FILL_THRESHOLD=0.88
+JIN_ALLOW_ROLE_OVERRIDE=1
+JIN_FILL_MISSING_COMPONENTS=1
+```
+
+## Corpus PDF Git LFS
+
+Les PDF réels doivent être placés sous `corpus/pdfs/` et suivis via `.gitattributes`.
 
 ```bash
-docker compose logs -f api
-docker compose logs -f web
+git lfs install
+./scripts/materialize-lfs-corpus.sh
+pip install -r requirements-vision.txt
+python training/vision/prepare_layout_dataset.py --manifest corpus/manifest.jsonl --output data/layout
+python training/vision/train_layoutlmv3.py --data data/layout --output artifacts/layoutlmv3-jin
 ```
 
-## Validation de la livraison
+Le workflow GitHub Actions **Train layout vision model** peut préparer les données et lancer le fine-tuning une fois le vrai corpus LFS disponible.
 
-La suite V4.8 a ete rejouee apres ajout de l'API/UI : **48/48 tests passent**.
+## Tests
 
-L'API a egalement ete lancee directement avec Uvicorn dans l'environnement de construction et `/health` a repondu avec la version **4.8.0**.
+```bash
+pip install -r runtime-requirements.txt
+python -m unittest discover -s tests -v
+```
 
-Le binaire Docker n'etait pas present dans cet environnement, donc l'execution de `docker compose up` n'a pas pu etre validee ici. La configuration Compose a ete preparee pour Docker Compose v2.
+La CI compile aussi les sources Python et valide les scripts shell.
+
+## Données
+
+`model/`, `data/`, `feedback/`, `artifacts/` et les ZIP locaux sont ignorés par Git. Les PDF clients doivent être stockés via Git LFS et soumis à la gouvernance de données applicable.
+
+## Version
+
+`5.2.0-statistical-learning`

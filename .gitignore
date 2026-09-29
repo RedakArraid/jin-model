@@ -1,6 +1,10 @@
 model/
 data/
 feedback/
+artifacts/
 *.zip
 .env
 .DS_Store
+__pycache__/
+*.pyc
+.pytest_cache/

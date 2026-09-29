@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  runtime-learning:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install runtime dependencies
+        run: pip install -r runtime-requirements.txt
+      - name: Compile Python sources
+        run: python -m compileall -q jin_runtime training
+      - name: Run statistical learning tests
+        run: python -m unittest discover -s tests -v
+      - name: Validate shell scripts
+        run: sh -n prepare-model.sh scripts/materialize-lfs-corpus.sh

@@ -1,0 +1,57 @@
+name: Train layout vision model
+
+on:
+  workflow_dispatch:
+    inputs:
+      train:
+        description: "Run full LayoutLMv3 fine-tuning after dataset preparation"
+        required: true
+        default: false
+        type: boolean
+      limit:
+        description: "Optional number of documents for preparation smoke test (0 = all)"
+        required: true
+        default: "0"
+        type: string
+
+jobs:
+  layout-training:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 1
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-lfs poppler-utils tesseract-ocr tesseract-ocr-fra tesseract-ocr-eng tesseract-ocr-deu
+      - name: Materialize Git LFS corpus
+        run: ./scripts/materialize-lfs-corpus.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install vision training dependencies
+        run: pip install -r requirements-vision.txt
+      - name: Prepare layout dataset
+        run: python training/vision/prepare_layout_dataset.py --manifest corpus/manifest.jsonl --output data/layout --limit "${{ inputs.limit }}"
+      - name: Train LayoutLMv3
+        if: ${{ inputs.train }}
+        run: python training/vision/train_layoutlmv3.py --data data/layout --output artifacts/layoutlmv3-jin
+      - name: Upload prepared dataset metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: jin-layout-prepared-metadata
+          path: |
+            data/layout/train.jsonl
+            data/layout/validation.jsonl
+            data/layout/labels.json
+          if-no-files-found: error
+      - name: Upload trained model
+        if: ${{ inputs.train }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: jin-layoutlmv3-model
+          path: artifacts/layoutlmv3-jin
+          if-no-files-found: error
