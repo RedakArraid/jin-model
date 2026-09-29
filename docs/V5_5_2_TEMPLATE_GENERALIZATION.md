@@ -4,7 +4,7 @@ V5.5.2 extends the geometry/CPU learning stack beyond the ISERBA-style template.
 
 ## Sandbox regression
 
-The test set now contains 17 real documents:
+The sandbox performed **17 regression executions over 15 unique real PDFs**. Two of the eight newly uploaded files were POISSY documents already present in the previous set:
 
 - the previous 9-order V5.5.1 regression set;
 - 8 additional documents covering WENDEL, SISCA, GARANKA, ISERBA/GAZ SERVICE RAPIDE and an SFCP price offer.
