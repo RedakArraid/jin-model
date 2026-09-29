@@ -41,9 +41,10 @@ def anchored_fields(rows):
             if cs:
                 ax=max(t['bbox'][2] for t in cs)
                 for t in toks:
-                    n=_norm(t['text'])
-                    if t['bbox'][0]>ax and len(n)>=7 and ORDER_CODE_RE.fullmatch(t['text'].strip()) and any(c.isdigit() for c in n) and any(c.isalpha() for c in n):
-                        out.setdefault('order_number',_field(t['text'].strip(),t['bbox'],t,.995));break
+                    raw=t['text'].strip().strip(':;')
+                    n=_norm(raw)
+                    if t['bbox'][0]>=ax-2 and len(n)>=7 and ORDER_CODE_RE.fullmatch(raw) and any(c.isdigit() for c in n) and any(c.isalpha() for c in n):
+                        out.setdefault('order_number',_field(raw,t['bbox'],t,.995));break
         if re.search(r'\bDATE\b',txt):
             ds=[t for t in toks if _norm(t['text'])=='DATE'];ax=max((t['bbox'][2] for t in ds),default=-1)
             for t in toks:
@@ -100,6 +101,20 @@ def _locality(row,anchor_x,neighbors):
         if any(c.isalpha() for c in t['text']):city.append(t);prev=t
     return {'postal':pc,'city':city,'cedex':cedex,'row':row} if city else None
 
+def _row_segments(row, gap=60):
+    toks=row['tokens']
+    if not toks:return []
+    groups=[];cur=[toks[0]]
+    for t in toks[1:]:
+        if t['bbox'][0]-cur[-1]['bbox'][2] > gap:
+            groups.append(cur);cur=[t]
+        else:cur.append(t)
+    groups.append(cur)
+    return [
+        {'index':row['index'],'cy':row['cy'],'tokens':group,'text':' '.join(t['text'] for t in group),'norms':[t.get('n') or _norm(t['text']) for t in group]}
+        for group in groups
+    ]
+
 def addresses(rows):
     anchors={}
     for r in rows:
@@ -108,7 +123,8 @@ def addresses(rows):
         if 'FACTURE A' in txt or 'FACTUREE A' in txt:anchors['bill_to']={'y':r['cy']}
     if not rows:return []
     pw=rows[0]['tokens'][0]['page_width'];out=[]
-    for row in rows:
+    street_rows=[segment for base_row in rows for segment in _row_segments(base_row)]
+    for row in street_rows:
         s=_street(row)
         if not s:continue
         y=row['cy'];x=s['bbox'][0];role='unknown';ship=anchors.get('ship_to');bill=anchors.get('bill_to')
