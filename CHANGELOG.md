@@ -1,5 +1,14 @@
 # Changelog
 
+## 5.3.0-corpus-learning-output-quality
+
+- Trained a compact statistical document router from the supplied 1,968-document corpus evidence with the 396 validation documents held out.
+- Added family and keep/review/remove predictions without overriding the core engine.
+- Added structured `formatted_address` repair for duplicated city output.
+- Added JSON-wide output-quality auditing for address verification, coordinates, lines and totals.
+- Added corpus training and output-quality documentation.
+- Confirmed the uploaded PDF archive contains Git LFS pointers only; layout/vision training remains gated on materialized PDF objects.
+
 ## 5.2.0-statistical-learning
 
 - Couche runtime versionnée au-dessus du moteur JIN empaqueté.
