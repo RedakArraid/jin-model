@@ -20,6 +20,7 @@ COPY jin_runtime/ /app/jin_runtime/
 
 ENV JIN_FEEDBACK_PATH=/app/training/feedback/learning_feedback.jsonl \
     JIN_LEARNING_MODEL_DIR=/app/data/learning \
+    JIN_CORPUS_ROUTER_MODEL=/app/data/learning/corpus_text_router.joblib \
     JIN_ROLE_OVERRIDE_THRESHOLD=0.93 \
     JIN_COMPONENT_FILL_THRESHOLD=0.88
 
