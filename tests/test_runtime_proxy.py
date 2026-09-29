@@ -47,7 +47,7 @@ class RuntimeProxyTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["version"], "core-test")
-        self.assertEqual(body["runtime_layer"]["version"], "5.2.0-statistical-learning")
+        self.assertEqual(body["runtime_layer"]["version"], "5.3.0-corpus-learning-output-quality")
         self.assertIn("statistical_learning", body["runtime_layer"])
 
     def test_extract_keeps_core_payload_and_adds_learning_metadata(self):
@@ -55,7 +55,7 @@ class RuntimeProxyTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["business_addresses"][0]["address"]["postal_code"], "37705")
-        self.assertEqual(body["runtime_layer_version"], "5.2.0-statistical-learning")
+        self.assertEqual(body["runtime_layer_version"], "5.3.0-corpus-learning-output-quality")
         self.assertIn("statistical_memory", body["learning"])
 
 
