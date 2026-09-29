@@ -1,1 +1,1 @@
-__version__ = "5.5.1-geometry-hardening"\n
+__version__ = "5.5.2-template-generalization"\n
