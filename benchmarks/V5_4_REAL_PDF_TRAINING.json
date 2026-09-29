@@ -40,7 +40,16 @@
       "artifact_bytes": 1733706,
       "validation_runtime_seconds": 18.259074449539185,
       "validation_runtime_documents": 396,
-      "runtime_replay_matches_training_classes": true
+      "runtime_replay_matches_training_classes": true,
+      "training_environment": {
+        "python": "3.13.5",
+        "scikit_learn": "1.8.0",
+        "numpy": "2.3.5",
+        "scipy": "1.17.0",
+        "pymupdf": "1.26.7",
+        "pillow": "12.3.0",
+        "joblib": "1.5.3"
+      }
     }
   },
   "caveats": {
