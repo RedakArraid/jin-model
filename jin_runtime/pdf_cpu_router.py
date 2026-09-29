@@ -118,7 +118,7 @@ class CpuPdfRouter:
             model_path
             or os.getenv(
                 "JIN_PDF_ROUTER_MODEL",
-                "/app/data/learning/jin-pdf-fusion-router-v2-cpu.joblib",
+                "/app/data/learning/jin-pdf-fusion-router-v3-cpu.joblib",
             )
         )
         self.bundle: dict[str, Any] = {}
@@ -157,6 +157,7 @@ class CpuPdfRouter:
             "version": self.bundle.get("version"),
             "family_validation_accuracy": (metrics.get("family") or {}).get("accuracy"),
             "decision_validation_accuracy": (metrics.get("decision") or {}).get("accuracy"),
+            "decision_with_family_prior_validation_accuracy": (metrics.get("decision_with_family_prior") or {}).get("validation_accuracy"),
             "cpu_only": True,
         }
 
@@ -185,19 +186,45 @@ class CpuPdfRouter:
             "model_version": self.bundle["version"],
             "layout_summary": layout_summary,
         }
+        predicted_family: str | None = None
         for target, model in self.bundle["models"].items():
             raw_probabilities = model.predict_proba(matrix)[0]
             predicted = str(model.predict(matrix)[0])
             probabilities = raw_probabilities
             temperature = 1.0
+
+            if target == "family":
+                predicted_family = predicted
+
             if target == "decision":
+                family_priors = self.bundle.get("family_decision_priors") or {}
+                prior_weight = float(self.bundle.get("decision_family_prior_weight", 0.0) or 0.0)
+                prior = family_priors.get(predicted_family or "") or {}
+                if prior and prior_weight > 0:
+                    prior_vector = np.array(
+                        [float(prior.get(str(label), 1.0 / len(model.classes_))) for label in model.classes_],
+                        dtype=float,
+                    )
+                    log_scores = np.log(np.clip(raw_probabilities, 1e-12, 1.0))
+                    log_scores += prior_weight * np.log(np.clip(prior_vector, 1e-12, 1.0))
+                    predicted = str(model.classes_[int(log_scores.argmax())])
+                    logits = log_scores - log_scores.max()
+                    probabilities = np.exp(logits)
+                    probabilities /= probabilities.sum()
+                    output["decision_family_prior_weight"] = prior_weight
+                    output["decision_family_prior"] = {
+                        str(label): float(prior_vector[index])
+                        for index, label in enumerate(model.classes_)
+                    }
+
                 temperature = float(self.bundle.get("decision_temperature", 1.0) or 1.0)
                 if temperature > 0 and temperature != 1.0:
-                    clipped = np.clip(raw_probabilities, 1e-12, 1.0)
+                    clipped = np.clip(probabilities, 1e-12, 1.0)
                     logits = np.log(clipped) / temperature
                     logits -= logits.max()
                     probabilities = np.exp(logits)
                     probabilities /= probabilities.sum()
+
             class_index = int(np.where(model.classes_ == predicted)[0][0])
             output[target] = predicted
             output[f"{target}_confidence"] = float(probabilities[class_index])
