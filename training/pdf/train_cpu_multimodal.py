@@ -10,6 +10,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
+from collections import Counter, defaultdict
 
 import fitz
 import joblib
@@ -261,8 +262,50 @@ def train(rows, visuals, output: Path, metrics_path: Path):
             decision_temperature = float(confidence_temperature)
         print(target, metrics[target]["accuracy"], metrics[target]["macro_f1"], flush=True)
 
+    # Learn P(decision | family) from the training split only.
+    decision_classes = [str(label) for label in models["decision"].classes_]
+    family_decision_counts: dict[str, Counter] = defaultdict(Counter)
+    for row_index in train_idx:
+        family = str(rows[row_index].get("family") or "")
+        decision = str(rows[row_index].get("decision") or "")
+        if family and decision:
+            family_decision_counts[family][decision] += 1
+
+    family_decision_priors: dict[str, dict[str, float]] = {}
+    for family, counts in family_decision_counts.items():
+        total = sum(counts.values()) + len(decision_classes)
+        family_decision_priors[family] = {
+            decision: float((counts[decision] + 1) / total)
+            for decision in decision_classes
+        }
+
+    # Evaluate the hierarchical prior without tuning its weight on validation.
+    family_validation = models["family"].predict(matrix[validation_idx])
+    decision_raw_probabilities = models["decision"].predict_proba(matrix[validation_idx])
+    decision_labels = np.array([str(rows[index].get("decision") or "") for index in validation_idx], dtype=object)
+    prior_predictions = []
+    for family, raw_probabilities in zip(family_validation, decision_raw_probabilities):
+        prior = family_decision_priors.get(str(family)) or {}
+        prior_vector = np.array(
+            [float(prior.get(label, 1.0 / len(decision_classes))) for label in decision_classes],
+            dtype=float,
+        )
+        log_scores = np.log(np.clip(raw_probabilities, 1e-12, 1.0))
+        log_scores += np.log(np.clip(prior_vector, 1e-12, 1.0))
+        prior_predictions.append(decision_classes[int(log_scores.argmax())])
+    prior_report = classification_report(
+        decision_labels, prior_predictions, output_dict=True, zero_division=0
+    )
+    metrics["decision_with_family_prior"] = {
+        "validation_accuracy": float(accuracy_score(decision_labels, prior_predictions)),
+        "macro_f1": float(prior_report["macro avg"]["f1-score"]),
+        "weighted_f1": float(prior_report["weighted avg"]["f1-score"]),
+        "prior_weight": 1.0,
+        "report": prior_report,
+    }
+
     bundle = {
-        "version": "jin-pdf-fusion-router-v2-cpu",
+        "version": "jin-pdf-fusion-router-v3-cpu",
         "text_n_features": 2**12,
         "visual_shape": [16, 16],
         "layout_cols": LAYOUT_COLS,
@@ -270,7 +313,9 @@ def train(rows, visuals, output: Path, metrics_path: Path):
         "layout_mean": layout_mean, "layout_std": layout_std,
         "models": models, "metrics": metrics,
         "decision_temperature": decision_temperature,
-        "notes": "CPU-only actual-PDF hybrid: calibrated family classifier + raw decision classifier; native text + first-page visual + PDF geometry; no filename/subject",
+        "family_decision_priors": family_decision_priors,
+        "decision_family_prior_weight": 1.0,
+        "notes": "CPU-only actual-PDF hybrid with learned P(decision|family) prior from training split; native text + first-page visual + PDF geometry; no filename/subject",
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
@@ -283,8 +328,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Train the JIN CPU-only real-PDF multimodal router.")
     parser.add_argument("--corpus-root", required=True, help="Directory with test/ and validation/ real PDFs")
     parser.add_argument("--metadata-dir", required=True, help="Directory containing dataset_manifest.csv and document_type_audit.csv")
-    parser.add_argument("--output", default="data/learning/jin-pdf-fusion-router-v2-cpu.joblib")
-    parser.add_argument("--metrics", default="data/learning/jin-pdf-fusion-router-v2-cpu-metrics.json")
+    parser.add_argument("--output", default="data/learning/jin-pdf-fusion-router-v3-cpu.joblib")
+    parser.add_argument("--metrics", default="data/learning/jin-pdf-fusion-router-v3-cpu-metrics.json")
     parser.add_argument("--profile-cache")
     parser.add_argument("--visual-cache")
     parser.add_argument("--workers", type=int, default=4)
