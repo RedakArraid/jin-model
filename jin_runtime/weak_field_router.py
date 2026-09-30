@@ -14,6 +14,7 @@ import pytesseract
 from PIL import Image
 from sklearn.feature_extraction.text import HashingVectorizer
 
+from jin_runtime.cell_intelligence import assign_span_to_cell, enrich_page_regions_with_cells
 from jin_runtime.geometry_fields import STREET_TYPES, extract_geometry_suggestions
 from jin_runtime.zone_intelligence import build_page_regions
 
@@ -574,6 +575,9 @@ class WeakFieldRouter:
             "anchored_fields": geometry_fields,
         }
         page_regions = build_page_regions(data, lines, zone_geometry)
+        page_regions = enrich_page_regions_with_cells(
+            data, lines, zone_geometry, page_regions
+        )
 
         address_zone_types = {"SUPPLIER", "SHIP_TO", "BILL_TO", "UNKNOWN"}
         constrained_spans = []
@@ -586,6 +590,8 @@ class WeakFieldRouter:
                 wanted_types = {"TOTALS"}
             elif label.startswith("ORDER_"):
                 wanted_types = {"ORDER_METADATA"}
+            elif label.startswith("LINE_ITEM_"):
+                wanted_types = {"LINE_ITEMS"}
 
             if wanted_types:
                 center_x = (span["bbox"][0] + span["bbox"][2]) / 2
@@ -643,6 +649,11 @@ class WeakFieldRouter:
                 )
             ]
 
+        spans = [
+            assign_span_to_cell(span, page_regions)
+            for span in spans
+        ]
+
         return {
             "model_version": self.bundle["version"],
             "weak_supervision": True,
@@ -654,5 +665,6 @@ class WeakFieldRouter:
             "model_address_candidates": model_addresses,
             "geometry_version": geometry.get("geometry_version"),
             "zone_intelligence_version": "spatial-zone-v1",
+            "cell_intelligence_version": "cell-subzone-v1",
             "page_regions": page_regions,
         }
