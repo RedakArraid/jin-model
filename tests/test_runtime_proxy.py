@@ -47,7 +47,7 @@ class RuntimeProxyTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["version"], "core-test")
-        self.assertEqual(body["runtime_layer"]["version"], "5.6.0-spatial-zone-intelligence")
+        self.assertEqual(body["runtime_layer"]["version"], "5.7.0-cell-subzone-intelligence")
         self.assertIn("statistical_learning", body["runtime_layer"])
 
     def test_extract_keeps_core_payload_and_adds_learning_metadata(self):
@@ -55,7 +55,7 @@ class RuntimeProxyTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["business_addresses"][0]["address"]["postal_code"], "37705")
-        self.assertEqual(body["runtime_layer_version"], "5.6.0-spatial-zone-intelligence")
+        self.assertEqual(body["runtime_layer_version"], "5.7.0-cell-subzone-intelligence")
         self.assertIn("statistical_memory", body["learning"])
 
 
