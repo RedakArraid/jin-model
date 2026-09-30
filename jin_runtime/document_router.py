@@ -72,16 +72,32 @@ class CorpusDocumentRouter:
 
         x = self._vec().transform([sample])
         out: dict[str, Any] = {"model_version": self.bundle.get("version")}
+        compact = self.bundle.get("format") == "dense-ovr-v1"
         for model_key, label_key in (
             ("family_model", "family"),
             ("decision_model", "decision"),
         ):
-            model = self.bundle.get(model_key)
-            if model is None:
-                continue
-            probs = model.predict_proba(x)[0]
+            if compact:
+                model = self.bundle.get(label_key)
+                if not isinstance(model, dict):
+                    continue
+                scores = np.asarray(
+                    x.dot(np.asarray(model["coef"], dtype=np.float32).T)
+                ).reshape(-1)
+                scores += np.asarray(model["intercept"], dtype=np.float32)
+                probs = expit(scores)
+                total = float(probs.sum())
+                if total > 0:
+                    probs = probs / total
+                classes = np.asarray(model["classes"], dtype=object)
+            else:
+                model = self.bundle.get(model_key)
+                if model is None:
+                    continue
+                probs = model.predict_proba(x)[0]
+                classes = model.classes_
             i = int(probs.argmax())
-            out[label_key] = str(model.classes_[i])
+            out[label_key] = str(classes[i])
             out[label_key + "_confidence"] = float(probs[i])
         return out if len(out) > 1 else None
 
