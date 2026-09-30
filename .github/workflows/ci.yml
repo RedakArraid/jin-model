@@ -20,4 +20,4 @@ jobs:
       - name: Run statistical learning tests
         run: python -m unittest discover -s tests -v
       - name: Validate shell scripts
-        run: sh -n prepare-model.sh scripts/materialize-lfs-corpus.sh
+        run: sh -n prepare-model.sh scripts/materialize-lfs-corpus.sh scripts/install-models.sh scripts/run-standalone.sh
