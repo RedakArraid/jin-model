@@ -1,8 +1,21 @@
-# JIN Model - Universal Document AI V5.6 Spatial Zone Intelligence
+# JIN Model - Universal Document AI V5.7 Cell & Sub-Zone Intelligence
 
 `RedakArraid/jin-model` contient la couche Docker/UI autour du moteur JIN empaqueté et une nouvelle couche d'apprentissage statistique versionnée.
 
 JIN commence maintenant à apprendre à partir des documents historiques corrigés au lieu d'évoluer uniquement par accumulation de règles.
+
+## V5.7 - Cell & Sub-Zone Intelligence
+
+V5.7 découpe les zones V5.6 en **colonnes, lignes et cellules sémantiques**. Les tableaux `LINE_ITEMS` exposent désormais `subzones[]`, `rows[]` et `cells[]`; les composants d'adresse, métadonnées commande et totaux reçoivent également un `cell_id`.
+
+Sur les 15 PDF uniques disponibles pour la régression :
+- **218/219 composants d'adresse (99,54 %)** sont rematchés à une cellule précise dans leur zone V5.6 ;
+- **13/14 PDF natifs** ont un tableau de lignes segmenté ;
+- 41 lignes de données et 309 cellules non-header ont été reconstruites.
+
+Ces chiffres mesurent la **couverture de localisation**, pas une accuracy spatiale vérité-terrain. V5.7 ajoute donc aussi un évaluateur IoU/contamination à utiliser dès que des boîtes humaines revues seront disponibles.
+
+Voir [V5.7 Cell & Sub-Zone Intelligence](docs/V5_7_CELL_SUBZONE_INTELLIGENCE.md).
 
 ## V5.6 - Spatial Zone Intelligence
 
@@ -152,7 +165,7 @@ python training/pdf/train_cpu_multimodal.py \
   --corpus-root /chemin/vers/corpus \
   --metadata-dir /chemin/vers/metadata \
   --output data/learning/jin-pdf-fusion-router-v3-cpu.joblib \
-  --metrics data/learning/jin-pdf-fusion-router-v2-cpu-metrics.json
+  --metrics data/learning/jin-pdf-fusion-router-v3-cpu-metrics.json
 ```
 
 Le dossier corpus doit contenir `test/` et `validation/`. Le script vérifie les labels par SHA-256 lorsque le manifeste le permet.
@@ -230,4 +243,4 @@ La CI compile aussi les sources Python et valide les scripts shell.
 
 ## Version
 
-`5.6.0-spatial-zone-intelligence`
+`5.7.0-cell-subzone-intelligence`
