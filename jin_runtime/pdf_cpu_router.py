@@ -9,6 +9,7 @@ import joblib
 import numpy as np
 from PIL import Image
 from scipy import sparse
+from scipy.special import expit
 from sklearn.feature_extraction.text import HashingVectorizer
 
 LAYOUT_COLS = [
@@ -112,6 +113,47 @@ def extract_pdf_features_bytes(data: bytes) -> tuple[str, np.ndarray, np.ndarray
         return _extract_from_document(document)
 
 
+def _compact_family_predict(bundle: dict[str, Any], matrix):
+    family = bundle["family"]
+    fold_probabilities = []
+    for fold in family["folds"]:
+        coefficients = np.asarray(fold["coef"], dtype=np.float32)
+        intercept = np.asarray(fold["intercept"], dtype=np.float32)
+        scores = np.asarray(matrix.dot(coefficients.T)).reshape(-1)
+        scores += intercept
+        a = np.asarray(fold["a"], dtype=np.float32)
+        b = np.asarray(fold["b"], dtype=np.float32)
+        probabilities = expit(-(a * scores + b))
+        total = float(probabilities.sum())
+        if total > 0:
+            probabilities = probabilities / total
+        else:
+            probabilities = np.full(
+                len(family["classes"]),
+                1.0 / max(len(family["classes"]), 1),
+                dtype=np.float32,
+            )
+        fold_probabilities.append(probabilities)
+    probabilities = np.mean(fold_probabilities, axis=0)
+    classes = np.asarray(family["classes"], dtype=object)
+    return classes, probabilities, str(classes[int(probabilities.argmax())])
+
+
+def _compact_decision_predict(bundle: dict[str, Any], matrix):
+    decision = bundle["decision"]
+    coefficients = np.asarray(decision["coef"], dtype=np.float32)
+    intercept = np.asarray(decision["intercept"], dtype=np.float32)
+    scores = np.asarray(matrix.dot(coefficients.T)).reshape(-1)
+    scores += intercept
+    probabilities = expit(scores)
+    total = float(probabilities.sum())
+    if total > 0:
+        probabilities = probabilities / total
+    classes = np.asarray(decision["classes"], dtype=object)
+    predicted = str(classes[int(scores.argmax())])
+    return classes, probabilities, predicted
+
+
 class CpuPdfRouter:
     def __init__(self, model_path: str | Path | None = None):
         self.model_path = Path(
@@ -187,9 +229,26 @@ class CpuPdfRouter:
             "layout_summary": layout_summary,
         }
         predicted_family: str | None = None
-        for target, model in self.bundle["models"].items():
-            raw_probabilities = model.predict_proba(matrix)[0]
-            predicted = str(model.predict(matrix)[0])
+        compact = self.bundle.get("format") == "compact-pdf-linear-v1"
+        targets = ("family", "decision") if compact else tuple(
+            self.bundle["models"].keys()
+        )
+        for target in targets:
+            if compact:
+                if target == "family":
+                    classes, raw_probabilities, predicted = (
+                        _compact_family_predict(self.bundle, matrix)
+                    )
+                else:
+                    classes, raw_probabilities, predicted = (
+                        _compact_decision_predict(self.bundle, matrix)
+                    )
+            else:
+                model = self.bundle["models"][target]
+                raw_probabilities = model.predict_proba(matrix)[0]
+                predicted = str(model.predict(matrix)[0])
+                classes = model.classes_
+
             probabilities = raw_probabilities
             temperature = 1.0
 
@@ -198,26 +257,42 @@ class CpuPdfRouter:
 
             if target == "decision":
                 family_priors = self.bundle.get("family_decision_priors") or {}
-                prior_weight = float(self.bundle.get("decision_family_prior_weight", 0.0) or 0.0)
+                prior_weight = float(
+                    self.bundle.get("decision_family_prior_weight", 0.0) or 0.0
+                )
                 prior = family_priors.get(predicted_family or "") or {}
                 if prior and prior_weight > 0:
                     prior_vector = np.array(
-                        [float(prior.get(str(label), 1.0 / len(model.classes_))) for label in model.classes_],
+                        [
+                            float(
+                                prior.get(
+                                    str(label),
+                                    1.0 / len(classes),
+                                )
+                            )
+                            for label in classes
+                        ],
                         dtype=float,
                     )
-                    log_scores = np.log(np.clip(raw_probabilities, 1e-12, 1.0))
-                    log_scores += prior_weight * np.log(np.clip(prior_vector, 1e-12, 1.0))
-                    predicted = str(model.classes_[int(log_scores.argmax())])
+                    log_scores = np.log(
+                        np.clip(raw_probabilities, 1e-12, 1.0)
+                    )
+                    log_scores += prior_weight * np.log(
+                        np.clip(prior_vector, 1e-12, 1.0)
+                    )
+                    predicted = str(classes[int(log_scores.argmax())])
                     logits = log_scores - log_scores.max()
                     probabilities = np.exp(logits)
                     probabilities /= probabilities.sum()
                     output["decision_family_prior_weight"] = prior_weight
                     output["decision_family_prior"] = {
                         str(label): float(prior_vector[index])
-                        for index, label in enumerate(model.classes_)
+                        for index, label in enumerate(classes)
                     }
 
-                temperature = float(self.bundle.get("decision_temperature", 1.0) or 1.0)
+                temperature = float(
+                    self.bundle.get("decision_temperature", 1.0) or 1.0
+                )
                 if temperature > 0 and temperature != 1.0:
                     clipped = np.clip(probabilities, 1e-12, 1.0)
                     logits = np.log(clipped) / temperature
@@ -225,9 +300,11 @@ class CpuPdfRouter:
                     probabilities = np.exp(logits)
                     probabilities /= probabilities.sum()
 
-            class_index = int(np.where(model.classes_ == predicted)[0][0])
+            class_index = int(np.where(classes == predicted)[0][0])
             output[target] = predicted
-            output[f"{target}_confidence"] = float(probabilities[class_index])
+            output[f"{target}_confidence"] = float(
+                probabilities[class_index]
+            )
             if target == "decision":
                 output["decision_confidence_temperature"] = temperature
         return output
