@@ -272,7 +272,7 @@ def _nearest_numeric_below_v3(rows, header_row, x, max_rows=3):
                 continue
             box = _union_bbox_v3(group)
             distance = abs((box[0] + box[2]) / 2 - x)
-            if distance < 80 and (best is None or distance < best[0]):
+            if distance < 110 and (best is None or distance < best[0]):
                 best = (distance, value, box, group[0])
     return best
 
@@ -326,7 +326,11 @@ def _anchored_fields_v3(rows):
                 headers.append(("order_number", tokens[index]))
             elif norm == "DATE":
                 headers.append(("order_date", tokens[index]))
-        if headers and has_order_context:
+        header_is_order_table = has_order_context or (
+            "DATE" in norms
+            and any(norm in {"DOCUMENT", "PIECE"} for norm in norms)
+        )
+        if headers and header_is_order_table:
             following = rows[row["index"] + 1 : row["index"] + 3]
             for key, header in headers:
                 target_x = _xcenter_v3(header)
@@ -375,7 +379,7 @@ def _anchored_fields_v3(rows):
                     total_candidates[key] = (score, candidate)
     for key, (_, candidate) in total_candidates.items():
         _, value, box, token = candidate
-        out[key] = _field(value, box, token, 0.995)
+        out.setdefault(key, _field(value, box, token, 0.995))
 
     return out
 
