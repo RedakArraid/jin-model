@@ -293,6 +293,12 @@ def _address_region(
         if anchor_matches
         else None
     )
+    anchor_y = (
+        sum(_center(match["bbox"])[1] for match in anchor_matches)
+        / len(anchor_matches)
+        if anchor_matches
+        else None
+    )
 
     matched_components = []
     for key in ADDRESS_COMPONENT_KEYS:
@@ -309,11 +315,16 @@ def _address_region(
                 value_score += abs(match["row"] - int(source_line)) * 30.0
             if anchor_x is not None:
                 value_score += abs(_center(match["bbox"])[0] - anchor_x)
+            if anchor_y is not None:
+                value_score += abs(_center(match["bbox"])[1] - anchor_y) * 1.5
             return value_score
 
         selected = min(matches, key=score)
         if source_line is not None and abs(selected["row"] - int(source_line)) > 6:
             continue
+        if source_line is None and anchor_y is not None:
+            if abs(_center(selected["bbox"])[1] - anchor_y) > 120:
+                continue
         matched_components.append({"component": key, **selected})
 
     if not matched_components:
