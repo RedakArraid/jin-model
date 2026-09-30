@@ -16,7 +16,12 @@ jobs:
       - name: Install runtime dependencies
         run: pip install -r runtime-requirements.txt
       - name: Compile Python sources
-        run: python -m compileall -q jin_runtime training
+        run: python -m compileall -q jin_runtime training scripts
+      - name: Validate model tooling
+        run: |
+          python scripts/install_models.py --help
+          python scripts/verify_models.py --help
+          python scripts/preflight.py --help
       - name: Run statistical learning tests
         run: python -m unittest discover -s tests -v
       - name: Validate shell scripts
