@@ -272,7 +272,7 @@ def _nearest_numeric_below_v3(rows, header_row, x, max_rows=3):
                 continue
             box = _union_bbox_v3(group)
             distance = abs((box[0] + box[2]) / 2 - x)
-            if distance < 80 and (best is None or distance < best[0]):
+            if distance < 110 and (best is None or distance < best[0]):
                 best = (distance, value, box, group[0])
     return best
 
@@ -326,7 +326,11 @@ def _anchored_fields_v3(rows):
                 headers.append(("order_number", tokens[index]))
             elif norm == "DATE":
                 headers.append(("order_date", tokens[index]))
-        if headers and has_order_context:
+        header_is_order_table = has_order_context or (
+            "DATE" in norms
+            and any(norm in {"DOCUMENT", "PIECE"} for norm in norms)
+        )
+        if headers and header_is_order_table:
             following = rows[row["index"] + 1 : row["index"] + 3]
             for key, header in headers:
                 target_x = _xcenter_v3(header)
@@ -365,8 +369,20 @@ def _anchored_fields_v3(rows):
                 mappings.append(("total_vat", (tokens[index]["bbox"][0] + tokens[index + 1]["bbox"][2]) / 2, 3))
             if norm == "MONTANT" and index + 1 < len(norms) and norms[index + 1] == "TTC":
                 mappings.append(("total_gross", (tokens[index]["bbox"][0] + tokens[index + 1]["bbox"][2]) / 2, 3))
-            if norm == "NET" and index + 2 < len(norms) and norms[index + 1] == "A" and norms[index + 2] == "PAYER":
-                mappings.append(("amount_due", (tokens[index]["bbox"][0] + tokens[index + 2]["bbox"][2]) / 2, 3))
+            if norm == "NET" and index + 1 < len(norms) and norms[index + 1] == "A":
+                has_payer = index + 2 < len(norms) and norms[index + 2] == "PAYER"
+                near_right_edge = (
+                    float(tokens[index].get("page_width") or 0) > 0
+                    and tokens[index]["bbox"][0]
+                    > float(tokens[index]["page_width"]) * 0.82
+                )
+                if has_payer or near_right_edge:
+                    end_token = tokens[index + 2] if has_payer else tokens[index + 1]
+                    mappings.append((
+                        "amount_due",
+                        (tokens[index]["bbox"][0] + end_token["bbox"][2]) / 2,
+                        3,
+                    ))
         for key, x, depth in mappings:
             candidate = _nearest_numeric_below_v3(rows, row, x, depth)
             if candidate:
@@ -375,7 +391,73 @@ def _anchored_fields_v3(rows):
                     total_candidates[key] = (score, candidate)
     for key, (_, candidate) in total_candidates.items():
         _, value, box, token = candidate
-        out[key] = _field(value, box, token, 0.995)
+        out.setdefault(key, _field(value, box, token, 0.995))
+
+    if "total_gross" not in out:
+        summary_rows = []
+        for row in rows:
+            groups = []
+            current = []
+            last_x = None
+            for token in row["tokens"]:
+                raw = token["text"].strip()
+                if re.fullmatch(r"[0-9][0-9\s\u00a0\u202f.,]*", raw):
+                    if current and last_x is not None and token["bbox"][0] - last_x > 10:
+                        groups.append(current)
+                        current = []
+                    current.append(token)
+                    last_x = token["bbox"][2]
+                elif current:
+                    groups.append(current)
+                    current = []
+                    last_x = None
+            if current:
+                groups.append(current)
+
+            amounts = []
+            for group in groups:
+                value = _numeric_value_v3(group)
+                if value and ("," in value or "." in value):
+                    amounts.append((group, value))
+            if len(amounts) >= 2:
+                summary_rows.append((row["cy"], amounts))
+
+        if summary_rows:
+            _, amounts = max(summary_rows, key=lambda item: item[0])
+            group, value = max(
+                amounts,
+                key=lambda item: item[0][-1]["bbox"][2],
+            )
+            box = _union_bbox_v3(group)
+            out["total_gross"] = _field(value, box, group[0], 0.97)
+
+    if "amount_due" not in out and "total_gross" in out:
+        for row in rows:
+            right_edge_net = []
+            for index, token in enumerate(row["tokens"]):
+                token_norm = _norm(token["text"])
+                next_norm = (
+                    _norm(row["tokens"][index + 1]["text"])
+                    if index + 1 < len(row["tokens"])
+                    else ""
+                )
+                page_width = float(token.get("page_width") or 0)
+                if (
+                    page_width > 0
+                    and token["bbox"][0] > page_width * 0.75
+                    and (token_norm == "NET" or token_norm.endswith("NET"))
+                    and next_norm == "A"
+                ):
+                    right_edge_net.append(token)
+            if right_edge_net:
+                amount = dict(out["total_gross"])
+                amount["confidence"] = min(
+                    float(amount.get("confidence") or 0.0),
+                    0.97,
+                )
+                amount["source"] = "geometry_summary_right_edge_fallback"
+                out["amount_due"] = amount
+                break
 
     return out
 

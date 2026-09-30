@@ -1,8 +1,18 @@
-# JIN Model - Universal Document AI V5.5.2 Template Generalization
+# JIN Model - Universal Document AI V5.6 Spatial Zone Intelligence
 
 `RedakArraid/jin-model` contient la couche Docker/UI autour du moteur JIN empaqueté et une nouvelle couche d'apprentissage statistique versionnée.
 
 JIN commence maintenant à apprendre à partir des documents historiques corrigés au lieu d'évoluer uniquement par accumulation de règles.
+
+## V5.6 - Spatial Zone Intelligence
+
+JIN segmente maintenant la page en **zones métier explicites** avant d'accepter les champs appris : fournisseur, livraison, facturation, métadonnées commande, tableau de lignes et totaux.
+
+Chaque zone expose séparément `structural_bbox`, `content_bbox`, `content_regions[]` et un `search_bbox` compact. Sur les 15 PDF uniques disponibles pour la régression spatiale, le ratio médian `search_bbox / contenu utile` passe d'environ **6,4x à 2,17x**, soit ~**66 % de surface parasite en moins**.
+
+Les spans statistiques `ADDRESS_*`, `ORDER_*` et `TOTAL_*` sont désormais rejetés lorsqu'ils tombent hors d'une zone compatible détectée.
+
+Voir [V5.6 Spatial Zone Intelligence](docs/V5_6_SPATIAL_ZONE_INTELLIGENCE.md).
 
 ## V5.5.2 - généralisation multi-gabarits
 
@@ -220,4 +230,4 @@ La CI compile aussi les sources Python et valide les scripts shell.
 
 ## Version
 
-`5.5.2-template-generalization`
+`5.6.0-spatial-zone-intelligence`

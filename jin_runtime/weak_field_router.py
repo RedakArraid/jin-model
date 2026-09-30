@@ -15,6 +15,7 @@ from PIL import Image
 from sklearn.feature_extraction.text import HashingVectorizer
 
 from jin_runtime.geometry_fields import STREET_TYPES, extract_geometry_suggestions
+from jin_runtime.zone_intelligence import build_page_regions
 
 
 def _norm(value: Any) -> str:
@@ -568,6 +569,56 @@ class WeakFieldRouter:
         geometry_addresses = geometry.get("address_candidates") or []
         geometry_fields = geometry.get("anchored_fields") or {}
 
+        zone_geometry = {
+            "address_candidates": geometry_addresses or model_addresses,
+            "anchored_fields": geometry_fields,
+        }
+        page_regions = build_page_regions(data, lines, zone_geometry)
+
+        address_zone_types = {"SUPPLIER", "SHIP_TO", "BILL_TO", "UNKNOWN"}
+        constrained_spans = []
+        for span in spans:
+            label = str(span.get("label") or "")
+            wanted_types = None
+            if label.startswith("ADDRESS_"):
+                wanted_types = address_zone_types
+            elif label.startswith("TOTAL_"):
+                wanted_types = {"TOTALS"}
+            elif label.startswith("ORDER_"):
+                wanted_types = {"ORDER_METADATA"}
+
+            if wanted_types:
+                center_x = (span["bbox"][0] + span["bbox"][2]) / 2
+                center_y = (span["bbox"][1] + span["bbox"][3]) / 2
+                candidates = [
+                    region
+                    for region in page_regions
+                    if region.get("zone_type") in wanted_types
+                    and region["search_bbox"][0] <= center_x <= region["search_bbox"][2]
+                    and region["search_bbox"][1] <= center_y <= region["search_bbox"][3]
+                ]
+                if candidates:
+                    region = min(
+                        candidates,
+                        key=lambda item: (
+                            item["search_bbox"][2] - item["search_bbox"][0]
+                        )
+                        * (
+                            item["search_bbox"][3] - item["search_bbox"][1]
+                        ),
+                    )
+                    span["zone_id"] = region["zone_id"]
+                    span["zone_type"] = region["zone_type"]
+                    constrained_spans.append(span)
+                elif not any(
+                    region.get("zone_type") in wanted_types
+                    for region in page_regions
+                ):
+                    constrained_spans.append(span)
+            else:
+                constrained_spans.append(span)
+        spans = constrained_spans
+
         if geometry_addresses:
             trusted_postals = {
                 str(item.get("components", {}).get("postal_code") or "")
@@ -602,4 +653,6 @@ class WeakFieldRouter:
             "address_candidates": geometry_addresses or model_addresses,
             "model_address_candidates": model_addresses,
             "geometry_version": geometry.get("geometry_version"),
+            "zone_intelligence_version": "spatial-zone-v1",
+            "page_regions": page_regions,
         }
