@@ -15,14 +15,15 @@ from jin_runtime.zone_intelligence import (
 )
 
 HEADER_ALIASES = {
-    "product_code": (("ARTICLE",), ("CODE", "ART"), ("CODE", "ARTICLE")),
+    "line_number": (("LIGNE",),),
+    "product_code": (("ARTICLE",), ("CODE",), ("CODE", "ART"), ("CODE", "ARTICLE")),
     "reference": (("REFERENCE",), ("REF",)),
-    "internal_reference": (("REFINTERNE",), ("REFERENCEINTERNE",), ("REF", "INTERNE")),
+    "internal_reference": (("ABSOLU",), ("REFINTERNE",), ("REFERENCEINTERNE",), ("REF", "INTERNE")),
     "description": (("DESIGNATION",), ("DESCRIPTION",), ("LIBELLE",)),
-    "quantity": (("QTE",), ("QUANTITE",), ("QTE", "CDEE")),
+    "quantity": (("QTE",), ("QUANTITE",), ("COMMANDE",), ("QTE", "CDEE")),
     "unit": (("U",), ("UNITE",), ("UOM",)),
-    "unit_price": (("PRIX", "NET"), ("PA", "HT"), ("PRIX", "UNITAIRE"), ("PU",), ("PX", "BASE")),
-    "line_total": (("MONTANT", "HT"), ("MNT", "NET"), ("TOTAL", "HT")),
+    "unit_price": (("PRIX", "NET"), ("PA", "HT"), ("PRIX", "UNITAIRE"), ("PX", "UNIT"), ("PX", "UNITAIRE"), ("PU",), ("PX", "BASE"), ("PRIX",)),
+    "line_total": (("MONTANT", "HT"), ("MNT", "NET"), ("TOTAL", "HT"), ("MONTANT",)),
     "delivery_delay": (("DELAI",),),
     "seller": (("VENDU", "PAR"),),
 }
@@ -85,31 +86,49 @@ def _sequence(tokens: list[dict[str, Any]], alias: tuple[str, ...]) -> tuple[int
     return None
 
 
+def _headers_in_row(row: dict[str, Any], zone: list[float]):
+    tokens = [token for token in row["tokens"] if _inside(token["bbox"], zone, 2)]
+    found = []
+    for cell_type, aliases in HEADER_ALIASES.items():
+        for alias in aliases:
+            match = _sequence(tokens, alias)
+            if not match:
+                continue
+            selected = tokens[match[0] : match[1]]
+            box = _union([token["bbox"] for token in selected])
+            found.append({
+                "cell_type": cell_type,
+                "bbox": box,
+                "x": _center(box)[0],
+                "text": " ".join(token["text"] for token in selected),
+            })
+            break
+    unique = {}
+    for item in found:
+        unique.setdefault(item["cell_type"], item)
+    return list(unique.values())
+
+
 def _header_candidates(rows: list[dict[str, Any]], zone: list[float]):
+    row_headers = [
+        (row, _headers_in_row(row, zone))
+        for row in rows
+    ]
     best = None
-    for row in rows:
-        tokens = [token for token in row["tokens"] if _inside(token["bbox"], zone, 2)]
-        found = []
-        for cell_type, aliases in HEADER_ALIASES.items():
-            for alias in aliases:
-                match = _sequence(tokens, alias)
-                if not match:
-                    continue
-                selected = tokens[match[0] : match[1]]
-                box = _union([token["bbox"] for token in selected])
-                found.append({
-                    "cell_type": cell_type,
-                    "bbox": box,
-                    "x": _center(box)[0],
-                    "text": " ".join(token["text"] for token in selected),
-                })
-                break
-        unique = {}
-        for item in found:
-            unique.setdefault(item["cell_type"], item)
-        found = list(unique.values())
-        if len(found) >= 2 and (best is None or len(found) > best[0]):
-            best = len(found), row, found
+    for index, (row, found) in enumerate(row_headers):
+        windows = [(row, found)]
+        if index + 1 < len(row_headers):
+            next_row, next_found = row_headers[index + 1]
+            if next_row["center_y"] - row["center_y"] <= 24:
+                merged = {}
+                for item in found + next_found:
+                    merged.setdefault(item["cell_type"], item)
+                windows.append((next_row, list(merged.values())))
+        for header_row, candidates in windows:
+            if len(candidates) >= 2 and (
+                best is None or len(candidates) > best[0]
+            ):
+                best = len(candidates), header_row, candidates
     return best
 
 
