@@ -1,0 +1,80 @@
+{
+  "version": "5.7.0-cell-subzone-intelligence",
+  "sandbox_regression": {
+    "unique_pdfs": 15,
+    "native_text_pdfs": 14,
+    "address_zones": 39,
+    "address_component_cells": {
+      "matched": 218,
+      "expected": 219,
+      "coverage": 0.9954337899543378,
+      "per_component": {
+        "house_number": {
+          "matched": 37,
+          "expected": 37
+        },
+        "street_type": {
+          "matched": 38,
+          "expected": 38
+        },
+        "street_name": {
+          "matched": 38,
+          "expected": 38
+        },
+        "postal_code": {
+          "matched": 39,
+          "expected": 39
+        },
+        "city": {
+          "matched": 38,
+          "expected": 39
+        },
+        "industrial_zone": {
+          "matched": 14,
+          "expected": 14
+        },
+        "cs": {
+          "matched": 11,
+          "expected": 11
+        },
+        "building": {
+          "matched": 3,
+          "expected": 3
+        }
+      }
+    },
+    "line_item_tables": {
+      "detected_native_pdfs": 13,
+      "native_pdfs": 14,
+      "data_rows": 41,
+      "data_cells": 309,
+      "median_semantic_columns": 7,
+      "column_boundary_sources": {
+        "HEADER_ALIGNMENT": 72,
+        "VECTOR_GRID": 5,
+        "VECTOR_HEADER_CELL": 12
+      }
+    }
+  },
+  "runtime": {
+    "line_item_subzones": [
+      "COLUMN",
+      "ROW",
+      "CELL"
+    ],
+    "span_policy": "When a compatible cell exists, learned LINE_ITEM_*, ADDRESS_*, ORDER_* and TOTAL_* spans receive cell_id/cell_type and remain zone-constrained.",
+    "review_required": true
+  },
+  "metrics": {
+    "added": [
+      "box_iou",
+      "box_coverage",
+      "contamination_ratio",
+      "recall@IoU0.50",
+      "recall@IoU0.75",
+      "recall@IoU0.90"
+    ],
+    "ground_truth_available": false,
+    "qualification": "Current coverage measures rematching of V5.5.2 structured values inside V5.6 regions, not human-reviewed spatial accuracy. IoU metrics become authoritative only with reviewed cell/zone annotations."
+  }
+}
