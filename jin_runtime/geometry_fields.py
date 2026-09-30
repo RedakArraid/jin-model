@@ -433,13 +433,22 @@ def _anchored_fields_v3(rows):
 
     if "amount_due" not in out and "total_gross" in out:
         for row in rows:
-            right_edge_net = [
-                token
-                for token in row["tokens"]
-                if _norm(token["text"]) == "NET"
-                and float(token.get("page_width") or 0) > 0
-                and token["bbox"][0] > float(token["page_width"]) * 0.82
-            ]
+            right_edge_net = []
+            for index, token in enumerate(row["tokens"]):
+                token_norm = _norm(token["text"])
+                next_norm = (
+                    _norm(row["tokens"][index + 1]["text"])
+                    if index + 1 < len(row["tokens"])
+                    else ""
+                )
+                page_width = float(token.get("page_width") or 0)
+                if (
+                    page_width > 0
+                    and token["bbox"][0] > page_width * 0.75
+                    and (token_norm == "NET" or token_norm.endswith("NET"))
+                    and next_norm == "A"
+                ):
+                    right_edge_net.append(token)
             if right_edge_net:
                 amount = dict(out["total_gross"])
                 amount["confidence"] = min(
