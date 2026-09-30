@@ -4,9 +4,11 @@ from pathlib import Path
 from typing import Any
 try:
     import joblib
+    import numpy as np
+    from scipy.special import expit
     from sklearn.feature_extraction.text import HashingVectorizer
 except Exception:
-    joblib = HashingVectorizer = None
+    joblib = np = expit = HashingVectorizer = None
 
 
 class CorpusDocumentRouter:
