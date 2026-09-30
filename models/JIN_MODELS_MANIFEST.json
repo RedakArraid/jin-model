@@ -1,0 +1,33 @@
+{
+  "generated_at": "2026-09-30",
+  "target_dir": "data/learning",
+  "models": [
+    {
+      "file": "corpus_text_router.joblib",
+      "status": "ready",
+      "version": "jin-corpus-text-router-v1",
+      "bytes": 151953,
+      "sha256": "7b995970f7af83852c62598c48ee275a2a0e7b5f2d4615be54c2c147e001dc3c"
+    },
+    {
+      "file": "jin-pdf-fusion-router-v3-cpu.joblib",
+      "status": "ready",
+      "version": "jin-pdf-fusion-router-v3-cpu",
+      "bytes": 1734027,
+      "sha256": "6ecee7438887929c41339e4c3ff7b7620ed17a16267ba60aabc8311f2e590c32"
+    },
+    {
+      "file": "jin-field-weak-router-v2-cpu.joblib",
+      "status": "ready",
+      "version": "jin-field-weak-router-v2-cpu",
+      "bytes": 8674640,
+      "sha256": "1eae5cfe609c286d777a7ccc83dbaf233a917a989cf1408b681abaeedf467517"
+    },
+    {
+      "file": "address_models.joblib",
+      "status": "optional_missing_training_input",
+      "required_input": "feedback/learning_feedback.jsonl",
+      "train_command": "python training/train_statistical.py --feedback feedback/learning_feedback.jsonl --model-dir data/learning"
+    }
+  ]
+}
