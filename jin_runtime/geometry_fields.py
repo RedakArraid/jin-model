@@ -393,6 +393,25 @@ def _anchored_fields_v3(rows):
         _, value, box, token = candidate
         out.setdefault(key, _field(value, box, token, 0.995))
 
+    if "amount_due" not in out and "total_gross" in out:
+        for row in rows:
+            right_edge_net = [
+                token
+                for token in row["tokens"]
+                if _norm(token["text"]) == "NET"
+                and float(token.get("page_width") or 0) > 0
+                and token["bbox"][0] > float(token["page_width"]) * 0.82
+            ]
+            if right_edge_net:
+                amount = dict(out["total_gross"])
+                amount["confidence"] = min(
+                    float(amount.get("confidence") or 0.0),
+                    0.97,
+                )
+                amount["source"] = "geometry_summary_right_edge_fallback"
+                out["amount_due"] = amount
+                break
+
     if "total_gross" not in out:
         summary_rows = []
         for row in rows:
