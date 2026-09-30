@@ -2,6 +2,40 @@
 
 `RedakArraid/jin-model` contient la couche Docker/UI autour du moteur JIN empaqueté et une nouvelle couche d'apprentissage statistique versionnée.
 
+## Démarrage immédiat
+
+Le dépôt supporte maintenant un mode **standalone CPU** qui n'a pas besoin du package `uda` pour utiliser les routeurs document/PDF/champs/zones/cellules.
+
+1. Place `JIN_MODELS_AVAILABLE.zip` à la racine du dépôt.
+2. Installe et vérifie les modèles :
+
+```bash
+./scripts/install-models.sh JIN_MODELS_AVAILABLE.zip
+```
+
+Sous PowerShell :
+
+```powershell
+.\\scripts\\install-models.ps1 .\\JIN_MODELS_AVAILABLE.zip
+```
+
+3. Lance :
+
+```bash
+docker compose -f docker-compose.standalone.yml up --build
+```
+
+4. Teste :
+
+```bash
+curl http://localhost:8000/health
+curl -F "file=@commande.pdf" http://localhost:8000/analyze
+```
+
+Pour le mode complet `/extract`, prépare d'abord le moteur cœur avec `./prepare-model.sh <jin-core-engine.zip>`, puis utilise `docker compose up --build`.
+
+Guide complet : [Runtime Setup](docs/RUNTIME_SETUP.md).
+
 JIN commence maintenant à apprendre à partir des documents historiques corrigés au lieu d'évoluer uniquement par accumulation de règles.
 
 ## V5.7 - Cell & Sub-Zone Intelligence
