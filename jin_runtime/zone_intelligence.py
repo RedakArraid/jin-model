@@ -29,6 +29,8 @@ LINE_ITEM_WORDS = {
     "REF",
     "DESCRIPTION",
     "DESIGNATION",
+    "LIBELLE",
+    "COMMANDE",
     "QUANTITE",
     "QTE",
     "UNITE",
