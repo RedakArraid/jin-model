@@ -369,8 +369,20 @@ def _anchored_fields_v3(rows):
                 mappings.append(("total_vat", (tokens[index]["bbox"][0] + tokens[index + 1]["bbox"][2]) / 2, 3))
             if norm == "MONTANT" and index + 1 < len(norms) and norms[index + 1] == "TTC":
                 mappings.append(("total_gross", (tokens[index]["bbox"][0] + tokens[index + 1]["bbox"][2]) / 2, 3))
-            if norm == "NET" and index + 2 < len(norms) and norms[index + 1] == "A" and norms[index + 2] == "PAYER":
-                mappings.append(("amount_due", (tokens[index]["bbox"][0] + tokens[index + 2]["bbox"][2]) / 2, 3))
+            if norm == "NET" and index + 1 < len(norms) and norms[index + 1] == "A":
+                has_payer = index + 2 < len(norms) and norms[index + 2] == "PAYER"
+                near_right_edge = (
+                    float(tokens[index].get("page_width") or 0) > 0
+                    and tokens[index]["bbox"][0]
+                    > float(tokens[index]["page_width"]) * 0.82
+                )
+                if has_payer or near_right_edge:
+                    end_token = tokens[index + 2] if has_payer else tokens[index + 1]
+                    mappings.append((
+                        "amount_due",
+                        (tokens[index]["bbox"][0] + end_token["bbox"][2]) / 2,
+                        3,
+                    ))
         for key, x, depth in mappings:
             candidate = _nearest_numeric_below_v3(rows, row, x, depth)
             if candidate:
