@@ -1,0 +1,40 @@
+services:
+  jin:
+    build:
+      context: .
+      dockerfile: Dockerfile.standalone
+    container_name: jin-model-standalone
+    restart: unless-stopped
+    environment:
+      JIN_FEEDBACK_PATH: /app/feedback/learning_feedback.jsonl
+      JIN_LEARNING_MODEL_DIR: /app/data/learning
+      JIN_CORPUS_ROUTER_MODEL: /app/data/learning/corpus_text_router.joblib
+      JIN_PDF_ROUTER_MODEL: /app/data/learning/jin-pdf-fusion-router-v3-cpu.joblib
+      JIN_FIELD_ROUTER_MODEL: /app/data/learning/jin-field-weak-router-v2-cpu.joblib
+      JIN_FIELD_ROUTER_THRESHOLD: "0.80"
+      JIN_OCR_LANGS: fra+eng+deu
+      JIN_ROLE_OVERRIDE_THRESHOLD: "0.93"
+      JIN_COMPONENT_FILL_THRESHOLD: "0.88"
+      JIN_ALLOW_ROLE_OVERRIDE: "1"
+      JIN_FILL_MISSING_COMPONENTS: "1"
+    volumes:
+      - ./data:/app/data
+      - ./feedback:/app/feedback
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+networks:
+  default:
+    name: jin-model-standalone-network
