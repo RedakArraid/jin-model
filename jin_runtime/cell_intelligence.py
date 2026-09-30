@@ -221,9 +221,9 @@ def _line_item_cells(page: fitz.Page, rows, region):
     row_records = []
     row_number = 0
     for row in rows:
-        if row["index"] <= header_row["index"] or row["cy"] < zone[1] - 2:
+        if row["index"] <= header_row["index"] or row["center_y"] < zone[1] - 2:
             continue
-        if row["cy"] > zone[3] + 2:
+        if row["center_y"] > zone[3] + 2:
             break
         tokens = [token for token in row["tokens"] if _inside(token["bbox"], zone, 2)]
         if not tokens:
