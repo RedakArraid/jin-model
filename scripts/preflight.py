@@ -8,8 +8,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from verify_models import main as verify_models_main
-
 
 def check_tesseract() -> tuple[bool, str]:
     binary = shutil.which("tesseract")
