@@ -1,1 +1,1 @@
-__version__ = "5.7.0-cell-subzone-intelligence"\n
+__version__ = "5.7.0-cell-subzone-intelligence"
