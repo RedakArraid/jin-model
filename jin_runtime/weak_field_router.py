@@ -13,6 +13,7 @@ import numpy as np
 import pytesseract
 from PIL import Image
 from sklearn.feature_extraction.text import HashingVectorizer
+from scipy.special import expit
 
 from jin_runtime.cell_intelligence import assign_span_to_cell, enrich_page_regions_with_cells
 from jin_runtime.geometry_fields import STREET_TYPES, extract_geometry_suggestions
@@ -177,6 +178,42 @@ def _normalized_bbox(box: list[float], width: float, height: float) -> list[int]
     ]
 
 
+class _CompactSparseLinearModel:
+    def __init__(self, bundle: dict[str, Any]) -> None:
+        self.classes_ = np.asarray(bundle["classes"], dtype=object)
+        self.intercept_ = np.asarray(bundle["intercept"], dtype=np.float32)
+        self.weights = bundle["weights"]
+
+    def decision_function(self, matrix):
+        scores = np.tile(self.intercept_, (matrix.shape[0], 1)).astype(
+            np.float32
+        )
+        for class_index, weights in enumerate(self.weights):
+            indices = np.asarray(weights["indices"], dtype=np.int32)
+            values = np.asarray(weights["values"], dtype=np.float32)
+            scores[:, class_index] += np.asarray(
+                matrix[:, indices].dot(values)
+            ).reshape(-1)
+        return scores
+
+    def predict(self, matrix):
+        scores = self.decision_function(matrix)
+        return self.classes_[scores.argmax(axis=1)]
+
+    def predict_proba(self, matrix):
+        scores = self.decision_function(matrix)
+        probabilities = expit(scores)
+        totals = probabilities.sum(axis=1, keepdims=True)
+        return np.divide(
+            probabilities,
+            totals,
+            out=np.full_like(
+                probabilities, 1.0 / max(len(self.classes_), 1)
+            ),
+            where=totals != 0,
+        )
+
+
 class WeakFieldRouter:
     """Weak-supervised first-page field suggester.
 
@@ -204,6 +241,7 @@ class WeakFieldRouter:
         self.ocr_languages = os.getenv("JIN_OCR_LANGS", "fra+eng+deu")
         self.bundle: dict[str, Any] = {}
         self.vectorizer: HashingVectorizer | None = None
+        self.model: Any | None = None
         self.reload()
 
     @property
@@ -213,11 +251,19 @@ class WeakFieldRouter:
     def reload(self) -> None:
         self.bundle = {}
         self.vectorizer = None
+        self.model = None
         if not self.model_path.exists():
             return
         try:
             bundle = joblib.load(self.model_path)
             self.bundle = bundle
+            self.model = (
+                _CompactSparseLinearModel(bundle)
+                if bundle.get("format") == "sparse-linear-v1"
+                else bundle.get("model")
+            )
+            if self.model is None:
+                raise ValueError("weak field model missing predictor")
             self.vectorizer = HashingVectorizer(
                 analyzer="char_wb",
                 ngram_range=(2, 5),
@@ -465,8 +511,8 @@ class WeakFieldRouter:
             matrix = self.vectorizer.transform(
                 [_context(tokens, index) for index in range(len(tokens))]
             )
-            predictions = self.bundle["model"].predict(matrix)
-            probabilities = self.bundle["model"].predict_proba(matrix)
+            predictions = self.model.predict(matrix)
+            probabilities = self.model.predict_proba(matrix)
             max_probability = probabilities.max(axis=1)
 
             raw_spans: list[dict[str, Any]] = []
