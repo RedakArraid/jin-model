@@ -381,6 +381,44 @@ def _anchored_fields_v3(rows):
         _, value, box, token = candidate
         out.setdefault(key, _field(value, box, token, 0.995))
 
+    if "total_gross" not in out:
+        summary_rows = []
+        for row in rows:
+            groups = []
+            current = []
+            last_x = None
+            for token in row["tokens"]:
+                raw = token["text"].strip()
+                if re.fullmatch(r"[0-9][0-9\s\u00a0\u202f.,]*", raw):
+                    if current and last_x is not None and token["bbox"][0] - last_x > 10:
+                        groups.append(current)
+                        current = []
+                    current.append(token)
+                    last_x = token["bbox"][2]
+                elif current:
+                    groups.append(current)
+                    current = []
+                    last_x = None
+            if current:
+                groups.append(current)
+
+            amounts = []
+            for group in groups:
+                value = _numeric_value_v3(group)
+                if value and ("," in value or "." in value):
+                    amounts.append((group, value))
+            if len(amounts) >= 2:
+                summary_rows.append((row["cy"], amounts))
+
+        if summary_rows:
+            _, amounts = max(summary_rows, key=lambda item: item[0])
+            group, value = max(
+                amounts,
+                key=lambda item: item[0][-1]["bbox"][2],
+            )
+            box = _union_bbox_v3(group)
+            out["total_gross"] = _field(value, box, group[0], 0.97)
+
     return out
 
 
