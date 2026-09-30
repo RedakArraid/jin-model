@@ -239,6 +239,8 @@ class WeakFieldRouter:
             "weak_supervision": True,
             "requires_review": True,
             "confidence_threshold": self.confidence_threshold,
+            "zone_intelligence_version": "spatial-zone-v1",
+            "cell_intelligence_version": "cell-subzone-v1",
             "validation_token_accuracy_against_weak_labels": metrics.get(
                 "validation_token_accuracy"
             ),
