@@ -20,6 +20,7 @@ test('UI shows only the selected normalized delivery address', () => {
       role: 'ship_to',
       role_label: 'Adresse de livraison',
       party_name: 'Z.A. HENRI SPRIET',
+      customer_agency_code: 'MON01',
       formatted_lines: [
         'Z.A. HENRI SPRIET',
         '1 RUE PHILIPPE LEBON',
@@ -42,6 +43,7 @@ test('UI shows only the selected normalized delivery address', () => {
     '1 RUE PHILIPPE LEBON', '14120 MONDEVILLE', 'FRANCE',
   ]);
   assert.equal(addresses[0].selected, true);
+  assert.equal(addresses[0].customer_agency_code, 'MON01');
   assert.doesNotMatch(JSON.stringify(addresses), /stock|capital|piecesXpress/i);
 });
 

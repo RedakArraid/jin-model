@@ -14,6 +14,7 @@ class CleanOutputTests(unittest.TestCase):
                                "evidence": {"page": 1, "bbox": [1, 2, 3, 4],
                                             "source_text": "Commande CF0012"}},
                     "customer_reference": {"value": "CLIENT-7"},
+                    "customer_agency_code": {"value": "LY07", "final_confidence": .99},
                 },
                 "buyer": {"name": "CLIENT", "contact": {"email": "buyer@example.test"}},
                 "supplier": {"name": "SUPPLIER"},
@@ -34,6 +35,7 @@ class CleanOutputTests(unittest.TestCase):
         self.assertEqual(out["document"]["filename"], "commande.pdf")
         self.assertEqual(out["order"]["customer_order_number"]["value"], "CF0012")
         self.assertEqual(out["order"]["customer_reference"]["value"], "CLIENT-7")
+        self.assertEqual(out["order"]["customer_agency_code"]["value"], "LY07")
         self.assertEqual(out["order"]["line_items"][0]["references"]["material_number"], "0007")
         self.assertEqual(out["order"]["line_items"][0]["quantity"], 0)
         self.assertEqual(out["order"]["line_items"][0]["pricing"]["net_unit_price"], 0)
@@ -82,6 +84,8 @@ class CleanOutputTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["schema_version"]["const"],
                          "jin-clean-extraction-v1")
         self.assertFalse(schema["additionalProperties"])
+        self.assertIn("customer_agency_code", schema["properties"]["order"]["properties"])
+        self.assertIn("customer_agency_code", schema["$defs"]["address"]["properties"])
 
 
 if __name__ == "__main__":

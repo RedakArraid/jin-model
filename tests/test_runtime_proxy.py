@@ -47,7 +47,7 @@ class RuntimeProxyTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["version"], "core-test")
-        self.assertEqual(body["runtime_layer"]["version"], "5.9.0-audit-hardening")
+        self.assertEqual(body["runtime_layer"]["version"], "5.9.1-customer-agency-code")
         self.assertIn("statistical_learning", body["runtime_layer"])
         self.assertIn("local_ban_reference", body["runtime_layer"])
 
@@ -56,7 +56,7 @@ class RuntimeProxyTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["business_addresses"][0]["address"]["postal_code"], "37705")
-        self.assertEqual(body["runtime_layer_version"], "5.9.0-audit-hardening")
+        self.assertEqual(body["runtime_layer_version"], "5.9.1-customer-agency-code")
         self.assertIn("statistical_memory", body["learning"])
         self.assertIn("normalized_output", body)
 

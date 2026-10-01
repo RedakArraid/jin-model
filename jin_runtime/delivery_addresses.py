@@ -270,6 +270,10 @@ def _clean_delivery_party(value: Any) -> str | None:
 def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
     """Build a clean postal label without destroying extracted source values."""
     address = _address(block)
+    agency_field = block.get("customer_agency_code")
+    agency_code = _text(
+        agency_field.get("value") if isinstance(agency_field, dict) else agency_field
+    )
     verification = block.get("ban_verification") or block.get("address_verification") or {}
     verified = verification.get("status") in {"EXACT_MATCH", "CANONICAL_MATCH"}
     matched = verification.get("matched_components") if verified else {}
@@ -342,6 +346,22 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
         "country_code": country_code,
     }
     components = {key: value for key, value in components.items() if value not in (None, "", False)}
+    excluded_components: list[dict[str, str]] = []
+    if agency_code:
+        removed = False
+        for key in (
+            "department", "building", "residence", "industrial_zone", "business_park",
+            "lieu_dit", "address_complement", "postal_routing_code",
+        ):
+            if components.get(key) and _norm(components[key]) == _norm(agency_code):
+                components.pop(key, None)
+                removed = True
+        if removed:
+            excluded_components.append({
+                "type": "customer_agency_code",
+                "value": agency_code,
+                "reason": "non_postal_business_identifier",
+            })
     if components.get("industrial_zone") and components.get("street"):
         combined_site = str(components["industrial_zone"])
         combined_match = re.match(
@@ -461,6 +481,7 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
         "source_formatted": source_formatted,
         "reference_status": verification.get("status"),
         "warnings": warnings,
+        "excluded_components": excluded_components,
     }
 
 

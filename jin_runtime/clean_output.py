@@ -93,6 +93,7 @@ def _address_components(source: dict[str, Any]) -> dict[str, Any]:
 def _party(source: dict[str, Any]) -> dict[str, Any]:
     return _compact({
         "id": source.get("id"), "code": source.get("code"),
+        "customer_agency_code": source.get("customer_agency_code"),
         "name": source.get("name"), "legal_name": source.get("legal_name"),
         "department": source.get("department"), "contact": _contact(source),
         "address": _address_components(source),
@@ -113,6 +114,7 @@ def _business_address(source: dict[str, Any]) -> dict[str, Any]:
         "id": clean_id, "role": role,
         "role_label": source.get("role_label"), "party_name": source.get("party_name"),
         "party_code": source.get("party_code"), "department": source.get("department"),
+        "customer_agency_code": source.get("customer_agency_code"),
         "contact": {
             "name": source.get("contact_name"), "email": source.get("contact_email"),
             "phone": source.get("contact_phone"),
@@ -126,6 +128,7 @@ def _business_address(source: dict[str, Any]) -> dict[str, Any]:
             "status": clean_address.get("status"),
             "reference_status": clean_address.get("reference_status"),
             "warnings": clean_address.get("warnings"),
+            "excluded_components": clean_address.get("excluded_components"),
         },
         "role_confidence": source.get("role_confidence"),
         "address_confidence": source.get("address_confidence"),
@@ -201,6 +204,9 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
         "project_number": _field(header.get("project_number")),
         "requested_delivery_date": _field(header.get("expected_delivery_date")
                                             or header.get("required_date")),
+        "customer_agency_code": _field(
+            header.get("customer_agency_code") or po.get("customer_agency_code")
+        ),
     }
     clean = {
         "schema_version": "jin-clean-extraction-v1",

@@ -350,6 +350,13 @@ sélectionné avec `formatted_lines`, `formatted`, `components`, `normalization`
 du libellé postal. Plusieurs candidats `ship_to` ne sont jamais départagés
 silencieusement : la décision passe en revue avec `DELIVERY_ADDRESS_AMBIGUOUS`.
 
+Les codes d'agence, de site ou de succursale du client sont exposés séparément
+dans `order.customer_agency_code` et, lorsqu'ils sont liés à la livraison, dans
+`order.delivery_address.customer_agency_code`. Un code non explicitement
+libellé n'est promu que s'il est corroboré dans l'en-tête et le bloc de
+livraison ; il est alors exclu du libellé postal propre mais conservé dans la
+preuve source.
+
 Benchmark local reproductible, depuis un environnement ayant les dépendances
 du moteur et du runtime ainsi que Tesseract :
 
@@ -368,4 +375,4 @@ Les fichiers de résultats et les valeurs client attendues restent dans
 
 ## Version
 
-`5.9.0-audit-hardening`
+`5.9.1-customer-agency-code`

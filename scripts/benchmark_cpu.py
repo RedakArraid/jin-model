@@ -128,13 +128,17 @@ def create_local_extractor(models_dir: Path | None = None):
     from uda.engine import UniversalDocumentAI
     from jin_runtime import __version__
     from jin_runtime.ban_reference import LocalBanReference
+    from jin_runtime.customer_agency_codes import enrich_customer_agency_codes
     from jin_runtime.delivery_addresses import enrich_delivery_addresses
     from jin_runtime.document_router import CorpusDocumentRouter
     from jin_runtime.extraction_gate import apply_extraction_gate
+    from jin_runtime.generic_document_fields import enrich_generic_document_fields
+    from jin_runtime.grouped_order_fields import enrich_grouped_order_fields
     from jin_runtime.learning import StatisticalAddressLearner
     from jin_runtime.offline import configure_core_offline
     from jin_runtime.output_quality import audit_and_repair_output
     from jin_runtime.pdf_cpu_router import CpuPdfRouter
+    from jin_runtime.weak_field_reconciliation import reconcile_weak_fields
     from jin_runtime.weak_field_router import WeakFieldRouter
 
     models_dir = (models_dir or root / "data" / "learning").resolve()
@@ -171,9 +175,14 @@ def create_local_extractor(models_dir: Path | None = None):
                 payload.setdefault("runtime_warnings", []).append(
                     {"component": name, "detail": "MODEL_NOT_LOADED"}
                 )
+        payload = reconcile_weak_fields(payload)
         payload = audit_and_repair_output(payload, repair=True)
         payload = ban_reference.enrich(payload)
-        return apply_extraction_gate(enrich_delivery_addresses(payload))
+        payload = enrich_customer_agency_codes(payload)
+        payload = enrich_delivery_addresses(payload)
+        payload = enrich_generic_document_fields(payload)
+        payload = enrich_grouped_order_fields(payload)
+        return apply_extraction_gate(payload)
 
     metadata = {
         "core_version": engine.version, "runtime_version": __version__,
@@ -190,7 +199,9 @@ def create_local_extractor(models_dir: Path | None = None):
             "runtime/" + name: sha256_file(root / "jin_runtime" / name)
             for name in ("extraction_gate.py", "order_numbers.py", "output_quality.py",
                          "weak_field_router.py", "geometry_fields.py", "ban_reference.py",
-                         "clean_output.py", "delivery_addresses.py")
+                         "clean_output.py", "delivery_addresses.py",
+                         "customer_agency_codes.py", "weak_field_reconciliation.py",
+                         "generic_document_fields.py", "grouped_order_fields.py")
         },
     }
     return extract, metadata

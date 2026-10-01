@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.9.1-customer-agency-code
+
+- Added the source-backed `customer_agency_code` field to the verbose and clean JSON outputs.
+- Recognize explicitly labelled agency/site/branch codes across customers without a customer-specific dictionary.
+- Corroborate unlabelled short codes between the order header and the delivery block before promoting them.
+- Keep agency codes available as business metadata while excluding them from the clean postal label.
+- Display the separated customer agency code in the UI summary and delivery-address card.
+
 ## 5.9.0-audit-hardening
 
 - Audited a third reproducible, SHA-256-deduplicated random batch of 50 production PDFs.

@@ -116,6 +116,7 @@ class Contact(BaseModel):
 class Party(BaseModel):
     id: str | None = None
     code: str | None = None
+    customer_agency_code: str | None = None
     sap_id: str | None = None
     name: str | None = None
     legal_name: str | None = None
@@ -142,6 +143,7 @@ class BusinessAddress(BaseModel):
     role_label: str
     party_name: str | None = None
     party_code: str | None = None
+    customer_agency_code: str | None = None
     department: str | None = None
     contact_name: str | None = None
     contact_email: str | None = None
@@ -379,6 +381,7 @@ class PurchaseOrderHeader(BaseModel):
     description: ExtractedField = Field(default_factory=ExtractedField)
     subject: ExtractedField = Field(default_factory=ExtractedField)
     customer_reference: ExtractedField = Field(default_factory=ExtractedField)
+    customer_agency_code: ExtractedField = Field(default_factory=ExtractedField)
     vendor_reference: ExtractedField = Field(default_factory=ExtractedField)
     contract_number: ExtractedField = Field(default_factory=ExtractedField)
     framework_contract_number: ExtractedField = Field(default_factory=ExtractedField)
