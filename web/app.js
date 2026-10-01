@@ -53,6 +53,75 @@ const unitPriceLabel = (line, currency) => {
   return basis != null && basis > 0 && basis !== 1 ? `${amount} / ${fmt(basis)} ${line.uom || 'unités'}` : amount;
 };
 
+function uiDeliveryAddresses(result) {
+  const normalize = value => String(value || '').normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9]+/gi, ' ').trim().toUpperCase();
+  const withoutDuplicateRecipient = (values, partyName) => {
+    const lines = [];
+    for (const value of values || []) {
+      const text = String(value || '').trim();
+      if (!text || lines.some(existing => normalize(existing) === normalize(text))) continue;
+      lines.push(text);
+    }
+    if (lines.length && partyName && normalize(lines[0]) === normalize(partyName)) lines.shift();
+    return lines;
+  };
+  const normalized = result?.normalized_output?.order?.delivery_address;
+  if (normalized) {
+    const partyName = normalized.party_name || normalized.components?.recipient || '';
+    const rawLines = normalized.formatted_lines?.length
+      ? normalized.formatted_lines
+      : normalized.formatted ? [normalized.formatted] : [];
+    const lines = withoutDuplicateRecipient(rawLines, partyName);
+    if (lines.length) return [{
+      role: normalized.role || 'ship_to',
+      role_label: normalized.role_label || 'Adresse de livraison sélectionnée',
+      party_name: partyName,
+      lines,
+      role_confidence: normalized.role_confidence,
+      address_confidence: normalized.address_confidence,
+      clean_status: normalized.normalization?.status,
+      verification: normalized.verification || {},
+      evidence: normalized.evidence || {},
+      selected: true,
+    }];
+  }
+
+  const be = result?.business_extractions || {};
+  const order = be.purchase_order || {};
+  const addresses = be.business_addresses?.length
+    ? be.business_addresses : (order.business_addresses || []);
+  return addresses.flatMap(address => {
+    const role = String(address.role || '').toLowerCase();
+    const warnings = address.warnings || [];
+    if (!['ship_to', 'deliver_to', 'consignee'].includes(role)
+        || /superseded/i.test(String(address.role_label || ''))
+        || warnings.some(warning => /superseded/i.test(String(warning)))) return [];
+    const clean = address.clean_address || {};
+    const rawLines = clean.lines?.length
+      ? clean.lines
+      : address.formatted_address_clean ? [address.formatted_address_clean] : [];
+    const partyName = address.party_name || clean.components?.recipient || '';
+    const lines = withoutDuplicateRecipient(rawLines, partyName);
+    if (!lines.length) return [];
+    return [{
+      role,
+      role_label: address.role_label || 'Adresse de livraison',
+      party_name: partyName,
+      lines,
+      contact_name: address.contact_name,
+      contact_email: address.contact_email,
+      contact_phone: address.contact_phone,
+      role_confidence: address.role_confidence,
+      address_confidence: address.address_confidence,
+      clean_status: clean.status,
+      verification: address.ban_verification || address.address_verification || {},
+      evidence: address.evidence || {},
+      selected: false,
+    }];
+  });
+}
+
 // ── Health ─────────────────────────────────────────────────────────────────
 async function health() {
   const el = document.getElementById('health');
@@ -397,6 +466,10 @@ function collectBoxes(r) {
   // Adresses
   const addresses = be.business_addresses?.length ? be.business_addresses : (b.business_addresses || []);
   for (const a of addresses) {
+    const role = String(a.role || '').toLowerCase();
+    if (!['ship_to', 'deliver_to', 'consignee'].includes(role)
+        || /superseded/i.test(String(a.role_label || ''))
+        || (a.warnings || []).some(warning => /superseded/i.test(String(warning)))) continue;
     if (a.evidence?.bbox) add(a.evidence.bbox, a.evidence.page, a.role_label || a.role || 'Adresse', 'address');
   }
 
@@ -587,38 +660,18 @@ function render(r) {
   toggleSection('secSummary', summaryEl.children.length > 0);
 
   // ── Adresses ──
-  const addrs = be.business_addresses || b.business_addresses || [];
+  const addrs = uiDeliveryAddresses(r);
   const ac = document.getElementById('addresses');
   ac.innerHTML = '';
   for (const a of addrs) {
     const d = document.createElement('div'); d.className = 'card';
-    const addr = a.address || {};
-    let addrText;
-    if (a.clean_address?.lines?.length) {
-      addrText = a.clean_address.lines.join('\n');
-    } else if (a.formatted_address_clean) {
-      addrText = a.formatted_address_clean;
-    } else if (a.formatted_address) {
-      addrText = a.formatted_address;
-    } else if (addr.line1 || addr.postal_code || addr.city) {
-      const norm = s => (s || '').trim().toUpperCase();
-      const cityNorm = norm(addr.city);
-      const line2 = norm(addr.line2) === cityNorm ? null : addr.line2;
-      addrText = [
-        addr.line1 || [addr.house_number, addr.house_number_suffix, addr.street_type, addr.street_name || addr.street].filter(Boolean).join(' '),
-        line2,
-        [addr.postal_code, addr.city].filter(Boolean).join(' '),
-        addr.country,
-      ].filter(Boolean).join('\n');
-    } else {
-      addrText = a.formatted_address || '—';
-    }
+    const addrText = a.lines.join('\n');
     d.innerHTML = '<div class="role"></div><div class="name"></div><div class="addr"></div><div class="contact"></div><div class="muted"></div>';
     d.querySelector('.role').textContent = a.role_label || a.role || 'adresse';
     d.querySelector('.name').textContent = a.party_name || '';
     d.querySelector('.addr').textContent = addrText;
     d.querySelector('.contact').textContent = [a.contact_name, a.contact_email, a.contact_phone].filter(Boolean).join(' · ');
-    const verification = a.ban_verification || a.address_verification || {};
+    const verification = a.verification || {};
     const referenceLabels = {
       EXACT_MATCH: 'BAN : adresse exacte',
       CANONICAL_MATCH: 'BAN : adresse reconnue (écriture normalisée)',
@@ -632,7 +685,8 @@ function render(r) {
     const details = [
       a.role_confidence != null ? `Rôle ${fmt(a.role_confidence)}` : null,
       a.address_confidence != null ? `Adresse ${fmt(a.address_confidence)}` : null,
-      a.clean_address?.status === 'VERIFIED_CANONICAL' ? 'Libellé livraison normalisé' : null,
+      a.selected ? 'Adresse sélectionnée' : null,
+      a.clean_status === 'VERIFIED_CANONICAL' ? 'Libellé livraison normalisé' : null,
       referenceLabels[verification.status],
     ].filter(Boolean);
     d.querySelector('.muted').textContent = details.join(' · ');

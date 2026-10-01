@@ -130,6 +130,19 @@ test('addresses nested inside the purchase order are included once', () => {
   assert.equal(collectBoxes(payload)[1].filter(box => box.type === 'address').length, 1);
 });
 
+test('address overlays exclude buyer and superseded internal candidates', () => {
+  const payload = orderPayload(595, 841, [100, 200, 150, 220]);
+  payload.business_extractions.purchase_order.business_addresses = [
+    { role: 'buyer', evidence: { page: 1, bbox: [10, 250, 200, 280] } },
+    { role: 'unknown', role_label: 'Superseded delivery candidate',
+      evidence: { page: 1, bbox: [20, 290, 220, 320] } },
+    { role: 'ship_to', evidence: { page: 1, bbox: [40, 330, 240, 380] } },
+  ];
+  const boxes = collectBoxes(payload)[1].filter(box => box.type === 'address');
+  assert.equal(boxes.length, 1);
+  assert.deepEqual(plain(boxes[0].bbox), [40 / 595 * 1000, 330 / 841 * 1000, 240 / 595 * 1000, 380 / 841 * 1000]);
+});
+
 test('generic blocks use their own declared page dimensions', () => {
   const payload = { pages: [{ page: 1, width: 600, height: 800 }], blocks: [
     { type: 'paragraph', source: { page: 1, bbox: [60, 80, 120, 160] } },
