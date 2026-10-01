@@ -1,0 +1,9 @@
+.git/
+.claude/
+ARCHIVES*/
+data/
+feedback/
+corpus/
+*.zip
+**/__pycache__/
+**/.pytest_cache/

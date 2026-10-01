@@ -1,5 +1,16 @@
 # Changelog
 
+## 5.9.0-audit-hardening
+
+- Audited a third reproducible, SHA-256-deduplicated random batch of 50 production PDFs.
+- Preserved complete compound customer references under explicit `Référence Commande` columns.
+- Restored street numbers followed by commas and multi-number forms such as `3 et 5`.
+- Prevented BP/CS/TSA routing numbers from being interpreted as postal codes.
+- Preserved source street types when BAN canonical data disagrees with the printed document.
+- Retained Techniparc and parenthesized delivery-site complements while removing delivery instructions.
+- Cleaned merged `Contact Code` column headers and the recurrent `D4OZENAY` apostrophe glyph error.
+- Added a conservative non-order route for acknowledgement reminders and rejected `commande à distance` as an order number.
+
 ## 5.5.2-template-generalization
 
 - Generalized visual-line extraction across WENDEL, SISCA, GARANKA, ISERBA/GAZ SERVICE RAPIDE and SFCP offer layouts.

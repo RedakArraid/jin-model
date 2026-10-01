@@ -6,8 +6,10 @@ services:
     container_name: jin-model-api
     restart: unless-stopped
     environment:
+      JIN_OFFLINE: "1"
       JIN_FEEDBACK_PATH: /app/training/feedback/learning_feedback.jsonl
       JIN_LEARNING_MODEL_DIR: /app/data/learning
+      JIN_BAN_INDEX_DIR: /app/data/reference/ban
       JIN_CORPUS_ROUTER_MODEL: /app/data/learning/corpus_text_router.joblib
       JIN_PDF_ROUTER_MODEL: /app/data/learning/jin-pdf-fusion-router-v3-cpu.joblib
       JIN_FIELD_ROUTER_MODEL: /app/data/learning/jin-field-weak-router-v2-cpu.joblib
@@ -22,6 +24,8 @@ services:
       - ./feedback:/app/training/feedback
     expose:
       - "8000"
+    networks:
+      - inference
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 10s
@@ -37,11 +41,16 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80"
+    networks:
+      - default
+      - inference
     volumes:
       - ./web:/usr/share/nginx/html:ro
       - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
 
 networks:
+  inference:
+    internal: true
   default:
     name: jin-model-network

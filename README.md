@@ -275,6 +275,97 @@ La CI compile aussi les sources Python et valide les scripts shell.
 
 `model/`, `data/`, `feedback/`, `artifacts/` et les ZIP locaux sont ignorés par Git. Les PDF clients doivent être stockés via Git LFS et soumis à la gouvernance de données applicable.
 
+## Extraction locale CPU et contrôle qualité
+
+Le Compose complet active `JIN_OFFLINE=1` : backend local, pas de géocodage
+Internet, pas de moteur Azure ni de modèle distant. L'API rejoint uniquement
+le réseau Docker interne `inference`; l'interface reste sur
+http://localhost:8080. La construction initiale de l'image et l'installation
+des dépendances nécessitent encore Internet.
+
+Les correctifs du moteur empaqueté sont versionnés dans `core_overrides/`.
+Ils sont appliqués par `prepare-model.sh` et au build Docker, même si `model/`
+reste ignoré par Git. Ces correctifs sont validés avec le cœur local 5.1.0 ;
+une autre version d'archive doit repasser les tests avant utilisation.
+Ils couvrent notamment les libellés d'adresse sur
+plusieurs lignes, les contacts liés à leur rôle, le routage commande/devis/CGV,
+les tableaux multipages et les PDF hybrides texte + en-têtes raster.
+
+`/extract` expose `extraction_decision` après tous les enrichissements :
+
+- `REVIEW_REQUIRED` : champs manquants, conflits ou contrôles non satisfaits,
+  avec des codes et chemins explicites ;
+- `CHECKS_PASSED` : contrôles automatiques satisfaits, **pas une garantie
+  d'exactitude ni une autorisation d'intégration automatique**.
+
+Les rôles livraison/facturation sont requis pour passer ces contrôles ; leur
+absence peut être légitime dans la source mais nécessite alors une revue.
+Le numéro de commande client reste dans `purchase_order.number`, distinct de
+`customer_reference` (référence client), `quote_number` (devis) et des codes
+produit. `order_number_check` conserve sa preuve page/coordonnées/texte,
+signale les preuves manquantes, les dates suspectes et les candidats
+contradictoires, sans modifier le numéro ni supprimer ses zéros initiaux.
+Les adresses ne sont pas déclarées réelles/vérifiées sans référentiel local
+approprié. Les corrections financières ne remplacent jamais les chiffres
+imprimés. Aucun apprentissage n'est fait sur les prédictions non revues.
+
+### Référentiel d'adresses local
+
+La BAN peut être indexée localement sans conserver les CSV décompressés :
+
+```powershell
+python scripts/build_ban_index.py --all --output data/reference/ban
+```
+
+L'index est reprenable, construit une empreinte exacte des adresses et un
+dictionnaire départemental des voies/communes. Une correspondance exacte peut
+valider l'existence d'une adresse française ; une voie proche reste une simple
+suggestion avec revue obligatoire. Le référentiel ne change jamais le rôle
+`ship_to`, `bill_to`, `buyer` ou `supplier`. Source : Base Adresse Nationale,
+Licence Ouverte 2.0. Une absence BAN n'est jamais présentée comme preuve que
+l'adresse est fausse (cas possibles : CEDEX, BP, donnée récente ou incomplète).
+La BAN publiant des fichiers quotidiens, relancer la commande avec `--force`
+reconstruit les départements à partir de la version courante.
+
+### JSON métier propre
+
+La réponse complète contient désormais `normalized_output` avec un contrat
+stable `jin-clean-extraction-v1` : document, commande, parties, adresses,
+lignes, frais, totaux, qualité et preuves. Les détails OCR restent dans la
+réponse historique pour le diagnostic. Pour recevoir uniquement le contrat :
+
+```bash
+curl -F "file=@commande.pdf" "http://localhost:8080/api/extract?view=clean"
+```
+
+Le schéma JSON formel du contrat est disponible sur
+`http://localhost:8080/api/schemas/jin-clean-extraction-v1` et dans
+`jin_runtime/schemas/jin-clean-extraction-v1.schema.json`.
+
+Le bouton de téléchargement de l'interface exporte cette vue propre.
+
+Pour la livraison, `order.delivery_address` fournit directement le bloc
+sélectionné avec `formatted_lines`, `formatted`, `components`, `normalization`,
+`verification` et la valeur source. Le contact et la société restent séparés
+du libellé postal. Plusieurs candidats `ship_to` ne sont jamais départagés
+silencieusement : la décision passe en revue avec `DELIVERY_ADDRESS_AMBIGUOUS`.
+
+Benchmark local reproductible, depuis un environnement ayant les dépendances
+du moteur et du runtime ainsi que Tesseract :
+
+```powershell
+python scripts/benchmark_cpu.py ARCHIVES_CDES_ESKER_PDF_002001-005000 --limit 20 --seed 42 --output data/evaluation/cpu-sample.json
+```
+
+Le script déduplique par SHA-256, interdit le réseau dans le processus et ne
+modifie pas les PDF. `--file-list liste.json` rejoue une sélection précise ;
+`--expected attendus.json` compare uniquement des valeurs relues explicitement
+fournies (numéro, type, nombre de lignes, total HT, composants par rôle et
+contacts). Les rapports mesurent couverture, alertes et temps CPU ; ils ne
+prétendent pas mesurer une précision terrain sans annotations indépendantes.
+Les fichiers de résultats et les valeurs client attendues restent dans
+`data/evaluation/`, ignoré par Git.
+
 ## Version
 
-`5.7.0-cell-subzone-intelligence`
+`5.9.0-audit-hardening`

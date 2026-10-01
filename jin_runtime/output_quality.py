@@ -89,15 +89,15 @@ def build_formatted_address(block: dict[str, Any]) -> str:
     a = _address_dict(block)
     parts: list[str] = []
 
-    for key in ("building", "residence", "entry", "floor", "unit"):
+    for key in ("building", "residence", "entry", "entrance", "floor", "unit"):
         _append_unique(parts, a.get(key))
 
     _append_unique(parts, _street_line(a))
 
-    for key in ("industrial_zone", "activity_park", "place_name", "complement", "address_complement"):
+    for key in ("industrial_zone", "activity_park", "business_park", "place_name", "lieu_dit", "complement", "address_complement"):
         _append_unique(parts, a.get(key))
 
-    _append_unique(parts, _value(a, "postal_box", "bp"), "BP")
+    _append_unique(parts, _value(a, "postal_box", "po_box", "bp"), "BP")
     _append_unique(parts, a.get("tsa"), "TSA")
     _append_unique(parts, a.get("cs"), "CS")
     _append_unique(parts, a.get("postal_routing_code"))
@@ -155,20 +155,32 @@ def _money(value: Any) -> float | None:
 
 
 def _find_purchase_order(result: dict[str, Any]) -> dict[str, Any]:
+    # A PurchaseOrderResult contains a `purchase_order` HEADER next to its
+    # lines/totals. Do not descend into that header and silently skip all audits.
+    def body(value):
+        if not isinstance(value, dict):
+            return {}
+        if any(key in value for key in ("lines", "totals", "validation", "supplier", "buyer")):
+            return value
+        nested = value.get("purchase_order")
+        return body(nested) if isinstance(nested, dict) else value
+
     business = result.get("business_extractions")
     if isinstance(business, dict):
         for key in ("purchase_order", "purchase_order_with_terms"):
             value = business.get(key)
             if isinstance(value, dict):
-                return value.get("purchase_order") if isinstance(value.get("purchase_order"), dict) else value
+                return body(value)
         for value in business.values():
             if isinstance(value, dict):
                 po = value.get("purchase_order")
                 if isinstance(po, dict):
-                    return po
+                    return body(value)
                 if any(k in value for k in ("lines", "totals", "order_number", "purchase_order_number")):
                     return value
-    return result.get("purchase_order") if isinstance(result.get("purchase_order"), dict) else {}
+    if "lines" in result or "totals" in result:
+        return result
+    return body(result.get("purchase_order"))
 
 
 def _issue(issues: list[dict[str, Any]], code: str, severity: str, path: str, message: str, **details: Any) -> None:
@@ -200,7 +212,11 @@ def _audit_address(block: dict[str, Any], path: str, issues: list[dict[str, Any]
         )
 
     canonical = build_formatted_address(block)
-    if repair and canonical and (duplicate_city or not formatted):
+    updated_components = any(
+        source == "statistical_history"
+        for source in (block.get("component_source") or {}).values()
+    )
+    if repair and canonical and (duplicate_city or not formatted or updated_components and formatted != canonical):
         if formatted and formatted != canonical:
             block.setdefault("formatted_address_original", formatted)
         block["formatted_address"] = canonical
@@ -268,11 +284,20 @@ def _audit_lines(po: dict[str, Any], issues: list[dict[str, Any]]) -> None:
         qty = _money(line.get("quantity"))
         unit_price = _money(line.get("unit_price"))
         total = _money(line.get("line_total") if "line_total" in line else line.get("amount"))
-        if qty is not None and unit_price is not None and total is not None and not any(
-            k in line for k in ("discount", "discount_amount", "discount_rate")
-        ):
-            expected = qty * unit_price
-            tolerance = max(0.03, abs(total) * 0.01)
+        # Net prices already include discounts; gross prices require an explicit
+        # adjustment. A field present with null/zero is not a discount.
+        net_price = _money(line.get("net_unit_price"))
+        price_basis = _money(line.get("price_unit")) or 1.0
+        has_adjustment = any(
+            _money(line.get(k)) not in (None, 0)
+            for k in ("discount", "discount_amount", "discount_rate", "discount_percent", "surcharge_amount", "surcharge_percent")
+        )
+        price = net_price if net_price is not None else unit_price
+        if qty is not None and price is not None and total is not None and price_basis > 0 and (net_price is not None or not has_adjustment):
+            expected = qty * price / price_basis
+            # A printed price rounded to cents can explain half a cent per
+            # unit; a percentage of the total would hide material errors.
+            tolerance = max(0.03, abs(qty / price_basis) * 0.005 + 0.005)
             if abs(expected - total) > tolerance:
                 _issue(
                     issues,
@@ -291,12 +316,15 @@ def _audit_totals(po: dict[str, Any], issues: list[dict[str, Any]]) -> None:
     totals = po.get("totals") if isinstance(po.get("totals"), dict) else {}
     if not totals:
         return
-    net = _money(_value(totals, "total_before_tax", "total_net", "net", "subtotal"))
-    vat = _money(_value(totals, "total_vat", "vat", "total_tax"))
-    gross = _money(_value(totals, "amount_due", "grand_total", "total_gross", "gross"))
+    def first_money(*keys: str) -> float | None:
+        return next((value for key in keys if (value := _money(totals.get(key))) is not None), None)
+
+    net = first_money("total_before_tax", "total_net", "net", "subtotal")
+    vat = first_money("total_vat", "vat", "total_tax")
+    gross = first_money("amount_due", "grand_total", "total_gross", "gross")
     if net is not None and vat is not None and gross is not None:
         expected = net + vat
-        tolerance = max(0.05, abs(gross) * 0.005)
+        tolerance = 0.05
         if abs(expected - gross) > tolerance:
             _issue(
                 issues,

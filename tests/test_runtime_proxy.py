@@ -47,16 +47,31 @@ class RuntimeProxyTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["version"], "core-test")
-        self.assertEqual(body["runtime_layer"]["version"], "5.7.0-cell-subzone-intelligence")
+        self.assertEqual(body["runtime_layer"]["version"], "5.9.0-audit-hardening")
         self.assertIn("statistical_learning", body["runtime_layer"])
+        self.assertIn("local_ban_reference", body["runtime_layer"])
 
     def test_extract_keeps_core_payload_and_adds_learning_metadata(self):
         response = self.client.post("/extract", content=b"dummy")
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["business_addresses"][0]["address"]["postal_code"], "37705")
-        self.assertEqual(body["runtime_layer_version"], "5.7.0-cell-subzone-intelligence")
+        self.assertEqual(body["runtime_layer_version"], "5.9.0-audit-hardening")
         self.assertIn("statistical_memory", body["learning"])
+        self.assertIn("normalized_output", body)
+
+    def test_clean_view_returns_only_versioned_contract(self):
+        response = self.client.post("/extract?view=clean", content=b"dummy")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["schema_version"], "jin-clean-extraction-v1")
+        self.assertNotIn("raw_text", body)
+        self.assertNotIn("weak_field_suggestions", body)
+
+    def test_clean_contract_schema_is_published(self):
+        response = self.client.get("/schemas/jin-clean-extraction-v1")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["$id"], "/schemas/jin-clean-extraction-v1")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,138 @@
+{
+  "version": "jin-field-weak-router-v2-cpu",
+  "weak_supervision": true,
+  "train": {
+    "docs": 1572,
+    "native_docs": 1468,
+    "labeled_docs": 1468,
+    "label_counts": {
+      "ADDRESS_HOUSE_NUMBER": 3212,
+      "ADDRESS_STREET_TYPE": 4790,
+      "ADDRESS_STREET_NAME": 12207,
+      "ADDRESS_POSTAL_CODE": 4048,
+      "ADDRESS_CITY": 5150,
+      "O": 27555,
+      "ADDRESS_CS": 1584,
+      "ADDRESS_CEDEX": 2134,
+      "ORDER_DATE": 162,
+      "ORDER_NUMBER": 98,
+      "TOTAL_VAT": 391,
+      "ADDRESS_BP": 306,
+      "ADDRESS_HOUSE_NUMBER_SUFFIX": 45,
+      "TOTAL_NET": 35,
+      "ADDRESS_TSA": 18
+    }
+  },
+  "validation": {
+    "docs": 396,
+    "native_docs": 372,
+    "labeled_docs": 372,
+    "label_counts": {
+      "ADDRESS_HOUSE_NUMBER": 836,
+      "ADDRESS_STREET_TYPE": 1233,
+      "ADDRESS_STREET_NAME": 3186,
+      "ADDRESS_POSTAL_CODE": 1051,
+      "ADDRESS_CITY": 1310,
+      "O": 7029,
+      "ADDRESS_CEDEX": 521,
+      "ADDRESS_CS": 400,
+      "ADDRESS_BP": 74,
+      "TOTAL_VAT": 110,
+      "ORDER_DATE": 32,
+      "ORDER_NUMBER": 31,
+      "ADDRESS_HOUSE_NUMBER_SUFFIX": 10,
+      "ADDRESS_TSA": 2,
+      "TOTAL_NET": 2
+    }
+  },
+  "validation_token_accuracy": 0.9897011436153409,
+  "validation_macro_f1_all": 0.9782303796902433,
+  "field_metrics": {
+    "ADDRESS_BP": {
+      "precision": 0.961038961038961,
+      "recall": 1.0,
+      "f1-score": 0.9801324503311258,
+      "support": 74.0
+    },
+    "ADDRESS_CEDEX": {
+      "precision": 0.9886148007590133,
+      "recall": 1.0,
+      "f1-score": 0.9942748091603053,
+      "support": 521.0
+    },
+    "ADDRESS_CITY": {
+      "precision": 0.9822804314329738,
+      "recall": 0.9732824427480916,
+      "f1-score": 0.977760736196319,
+      "support": 1310.0
+    },
+    "ADDRESS_CS": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 400.0
+    },
+    "ADDRESS_HOUSE_NUMBER": {
+      "precision": 0.9940476190476191,
+      "recall": 0.9988038277511961,
+      "f1-score": 0.9964200477326969,
+      "support": 836.0
+    },
+    "ADDRESS_HOUSE_NUMBER_SUFFIX": {
+      "precision": 1.0,
+      "recall": 0.9,
+      "f1-score": 0.9473684210526315,
+      "support": 10.0
+    },
+    "ADDRESS_POSTAL_CODE": {
+      "precision": 0.9765478424015009,
+      "recall": 0.9904852521408183,
+      "f1-score": 0.9834671705243269,
+      "support": 1051.0
+    },
+    "ADDRESS_STREET_NAME": {
+      "precision": 0.9897324206596142,
+      "recall": 0.9984306340238543,
+      "f1-score": 0.9940625,
+      "support": 3186.0
+    },
+    "ADDRESS_STREET_TYPE": {
+      "precision": 0.9887550200803212,
+      "recall": 0.9983779399837794,
+      "f1-score": 0.993543179983858,
+      "support": 1233.0
+    },
+    "ADDRESS_TSA": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 2.0
+    },
+    "ORDER_DATE": {
+      "precision": 0.8421052631578947,
+      "recall": 1.0,
+      "f1-score": 0.9142857142857143,
+      "support": 32.0
+    },
+    "ORDER_NUMBER": {
+      "precision": 0.9666666666666667,
+      "recall": 0.9354838709677419,
+      "f1-score": 0.9508196721311475,
+      "support": 31.0
+    },
+    "TOTAL_NET": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 2.0
+    },
+    "TOTAL_VAT": {
+      "precision": 0.9230769230769231,
+      "recall": 0.9818181818181818,
+      "f1-score": 0.9515418502202643,
+      "support": 110.0
+    }
+  },
+  "elapsed_seconds": 25.879016399383545,
+  "qualification": "Agreement against deterministic weak labels only; not ground-truth field accuracy."
+}

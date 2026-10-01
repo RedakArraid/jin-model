@@ -8,3 +8,7 @@ artifacts/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Local evaluation corpus and editor-specific permissions.
+ARCHIVES_CDES_ESKER_PDF_*/
+.claude/

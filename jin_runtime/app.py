@@ -13,7 +13,18 @@ from jin_runtime.output_quality import audit_and_repair_output
 from jin_runtime.document_router import CorpusDocumentRouter
 from jin_runtime.pdf_cpu_router import CpuPdfRouter
 from jin_runtime.weak_field_router import WeakFieldRouter
-from uda.api import app as core_app
+from jin_runtime.extraction_gate import apply_extraction_gate
+from jin_runtime.offline import configure_core_offline, offline_enabled
+from jin_runtime.clean_output import build_clean_output, clean_output_schema
+from jin_runtime.ban_reference import LocalBanReference
+from jin_runtime.delivery_addresses import enrich_delivery_addresses
+from jin_runtime.weak_field_reconciliation import reconcile_weak_fields
+from jin_runtime.generic_document_fields import enrich_generic_document_fields
+from jin_runtime.grouped_order_fields import enrich_grouped_order_fields
+from uda import api as core_api
+
+core_app = core_api.app
+configure_core_offline(getattr(core_api, "engine", None))
 
 app = FastAPI(
     title="JIN Model Runtime",
@@ -24,6 +35,7 @@ learner = StatisticalAddressLearner()
 document_router = CorpusDocumentRouter()
 pdf_router = CpuPdfRouter()
 field_router = WeakFieldRouter()
+ban_reference = LocalBanReference()
 
 
 def _forward_headers(request: Request) -> dict[str, str]:
@@ -64,6 +76,11 @@ def learning_status() -> dict[str, Any]:
     return learner.status()
 
 
+@app.get("/schemas/jin-clean-extraction-v1")
+def get_clean_output_schema() -> dict[str, Any]:
+    return clean_output_schema()
+
+
 @app.post("/learning/document-route")
 def document_route(payload: dict[str, Any]) -> dict[str, Any]:
     prediction = document_router.predict(
@@ -75,22 +92,22 @@ def document_route(payload: dict[str, Any]) -> dict[str, Any]:
     return {"prediction": prediction, "router": document_router.status()}
 
 
-async def _uploaded_pdf_bytes(request: Request) -> bytes | None:
+async def _uploaded_pdf(request: Request) -> tuple[bytes | None, str | None]:
     if "multipart/form-data" not in request.headers.get("content-type", ""):
-        return None
+        return None, None
     try:
         form = await request.form()
         uploaded = form.get("file")
         if uploaded is None or not hasattr(uploaded, "read"):
-            return None
+            return None, None
         data = await uploaded.read()
         try:
             await uploaded.seek(0)
         except Exception:
             pass
-        return data if data.startswith(b"%PDF-") else None
+        return (data, str(getattr(uploaded, "filename", "") or "")) if data.startswith(b"%PDF-") else (None, None)
     except Exception:
-        return None
+        return None, None
 
 
 @app.post("/learning/pdf-route")
@@ -152,10 +169,12 @@ async def health(request: Request) -> Response:
     if isinstance(payload, dict):
         payload["runtime_layer"] = {
             "version": __version__,
+            "offline": offline_enabled(),
             "statistical_learning": learner.status(compact=True),
             "corpus_document_router": document_router.status(),
             "cpu_pdf_router": pdf_router.status(),
             "weak_field_router": field_router.status(),
+            "local_ban_reference": ban_reference.status(),
         }
     return JSONResponse(status_code=response.status_code, content=payload)
 
@@ -170,24 +189,37 @@ async def extract(request: Request) -> Response:
     except json.JSONDecodeError:
         return _response_from_core(response)
     if isinstance(payload, dict):
-        payload = audit_and_repair_output(payload, repair=True)
         payload = learner.enrich(payload)
         route = document_router.predict_payload(payload)
         if route:
             payload["document_statistical_router"] = route
-        pdf_data = await _uploaded_pdf_bytes(request)
+        pdf_data, source_filename = await _uploaded_pdf(request)
         if pdf_data:
             if pdf_router.loaded:
                 try:
                     payload["document_pdf_router"] = pdf_router.predict_bytes(pdf_data)
-                except (ValueError, RuntimeError):
-                    pass
+                except (ValueError, RuntimeError) as exc:
+                    payload.setdefault("runtime_warnings", []).append({"component": "pdf_router", "detail": str(exc)})
+            else:
+                payload.setdefault("runtime_warnings", []).append({"component": "pdf_router", "detail": "MODEL_NOT_LOADED"})
             if field_router.loaded:
                 try:
                     payload["weak_field_suggestions"] = field_router.predict_bytes(pdf_data)
-                except (ValueError, RuntimeError):
-                    pass
+                except (ValueError, RuntimeError) as exc:
+                    payload.setdefault("runtime_warnings", []).append({"component": "field_router", "detail": str(exc)})
+            else:
+                payload.setdefault("runtime_warnings", []).append({"component": "field_router", "detail": "MODEL_NOT_LOADED"})
+        payload = reconcile_weak_fields(payload)
+        payload = audit_and_repair_output(payload, repair=True)
+        payload = ban_reference.enrich(payload)
+        payload = enrich_delivery_addresses(payload)
+        payload = enrich_generic_document_fields(payload)
+        payload = enrich_grouped_order_fields(payload)
+        payload = apply_extraction_gate(payload)
         payload.setdefault("runtime_layer_version", __version__)
+        payload["normalized_output"] = build_clean_output(payload, source_filename=source_filename)
+        if request.query_params.get("view") == "clean":
+            return JSONResponse(status_code=response.status_code, content=payload["normalized_output"])
     return JSONResponse(status_code=response.status_code, content=payload)
 
 

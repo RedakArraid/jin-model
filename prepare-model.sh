@@ -21,6 +21,9 @@ if [ -z "$UDA_DIR" ]; then
 fi
 ENGINE_ROOT=$(dirname "$UDA_DIR")
 cp -a "$ENGINE_ROOT"/. model/
+if [ -d core_overrides ]; then
+  cp -a core_overrides/. model/
+fi
 rm -rf .model-tmp
 
 if [ ! -f model/requirements.txt ] || [ ! -d model/uda ]; then

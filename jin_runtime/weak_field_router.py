@@ -18,6 +18,7 @@ from scipy.special import expit
 from jin_runtime.cell_intelligence import assign_span_to_cell, enrich_page_regions_with_cells
 from jin_runtime.geometry_fields import STREET_TYPES, extract_geometry_suggestions
 from jin_runtime.zone_intelligence import build_page_regions
+from po_ocr.layout_guides import extract_vector_layout, split_items_by_compartments
 
 
 def _norm(value: Any) -> str:
@@ -40,6 +41,27 @@ def _shape(text: str) -> str:
     return "".join(out)[:16]
 
 
+def _native_words_are_rotated(words: list[tuple[Any, ...]]) -> bool:
+    """Detect pages whose native word boxes are overwhelmingly vertical.
+
+    Some PDFs store every glyph at 90 degrees while the page rotation makes the
+    rendered document readable. PyMuPDF then returns unusable vertical native
+    lines even though OCR of the rendered page is correctly oriented. Requiring
+    both a sizeable sample and a very large majority keeps ordinary side labels
+    and narrow tokens on otherwise horizontal pages on the native-text path.
+    """
+    eligible = []
+    for raw in words:
+        if len(raw) < 5 or len(str(raw[4]).strip()) < 3:
+            continue
+        width = max(0.0, float(raw[2]) - float(raw[0]))
+        height = max(0.0, float(raw[3]) - float(raw[1]))
+        if width <= 0.0 or height <= 0.0:
+            continue
+        eligible.append(height > width * 1.4)
+    return len(eligible) >= 20 and sum(eligible) / len(eligible) >= 0.80
+
+
 def _extract_first_page_lines(
     data: bytes,
     ocr_languages: str,
@@ -52,8 +74,11 @@ def _extract_first_page_lines(
             raise ValueError("PDF has no pages")
         page = document[0]
         rect = page.rect
+        vector_lines, vector_rectangles = extract_vector_layout(page)
         groups: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
         native = page.get_text("words", sort=True)
+        if _native_words_are_rotated(native):
+            native = []
         source = "native_pdf_text"
 
         if native:
@@ -127,7 +152,8 @@ def _extract_first_page_lines(
         ),
     ):
         tokens.sort(key=lambda token: token["bbox"][0])
-        lines.append(tokens)
+        split = split_items_by_compartments(tokens, vector_lines, vector_rectangles)
+        lines.extend(group["items"] for group in split if group["items"])
     return lines, source
 
 
@@ -215,7 +241,7 @@ class _CompactSparseLinearModel:
 
 
 class WeakFieldRouter:
-    """Weak-supervised first-page field suggester.
+    """Weak-supervised, page-local field suggester for complete PDFs.
 
     It never replaces core JIN fields. All output is explicitly review-required.
     Native PDF words are preferred; Tesseract is a CPU fallback for image-only PDFs.
@@ -494,6 +520,124 @@ class WeakFieldRouter:
         return addresses
 
     def predict_bytes(self, data: bytes) -> dict[str, Any]:
+        """Inspect every page, keeping provenance and contradictory candidates.
+
+        The existing geometry and cell pipeline operates on a single PDF page.
+        Isolating each page preserves its vector layout and prevents address or
+        column evidence from one page being matched to another page. IDs and
+        page numbers are restored before the page results are combined.
+        """
+        if not self.loaded or self.vectorizer is None:
+            raise RuntimeError(
+                f"Weak field router model not loaded: {self.model_path}"
+            )
+        if not data.startswith(b"%PDF-"):
+            raise ValueError("Input is not a PDF binary")
+
+        page_results = []
+        with fitz.open(stream=data, filetype="pdf") as document:
+            if not len(document):
+                raise ValueError("PDF has no pages")
+            for page_index in range(len(document)):
+                if len(document) == 1:
+                    page_data = data
+                else:
+                    with fitz.open() as single_page:
+                        single_page.insert_pdf(
+                            document, from_page=page_index, to_page=page_index
+                        )
+                        page_data = single_page.tobytes()
+                result = self._predict_first_page_bytes(page_data)
+                self._restore_page_provenance(result, page_index + 1)
+                page_results.append(result)
+
+        combined = dict(page_results[0])
+        for key in (
+            "spans", "address_candidates", "model_address_candidates", "page_regions"
+        ):
+            combined[key] = [item for page in page_results for item in page[key]]
+
+        field_candidates: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for page in page_results:
+            for name, candidate in page["anchored_fields"].items():
+                field_candidates[name].append(candidate)
+
+        combined["anchored_fields"] = {}
+        combined["anchored_field_candidates"] = dict(field_candidates)
+        combined["field_conflicts"] = []
+        for name, candidates in field_candidates.items():
+            # Do not promote one of two contradictory page values by position
+            # or a heuristic confidence score. Keep both for review instead.
+            values = {
+                " ".join(str(candidate.get("value", "")).split()).casefold()
+                for candidate in candidates
+            }
+            if len(values) == 1:
+                combined["anchored_fields"][name] = candidates[0]
+            else:
+                combined["field_conflicts"].append(
+                    {"field": name, "candidates": candidates, "requires_review": True}
+                )
+
+        sources = {page["text_source"] for page in page_results}
+        combined["text_source"] = next(iter(sources)) if len(sources) == 1 else "mixed"
+        combined["pages_processed"] = len(page_results)
+        combined["page_text_sources"] = [
+            {"page": index, "text_source": page["text_source"]}
+            for index, page in enumerate(page_results, 1)
+        ]
+        combined["recognized_pages"] = [
+            {
+                "page": index,
+                "text_source": page["text_source"],
+                "text": page.get("recognized_text") or "",
+            }
+            for index, page in enumerate(page_results, 1)
+        ]
+        combined.pop("recognized_text", None)
+        return combined
+
+    @staticmethod
+    def _restore_page_provenance(result: dict[str, Any], page_number: int) -> None:
+        """Remap structural IDs only; document text and boxes stay untouched."""
+        id_keys = {"zone_id", "cell_id", "row_id", "subzone_id"}
+
+        def remap_id(value: Any) -> Any:
+            if isinstance(value, str) and value.startswith("p1_"):
+                return f"p{page_number}_{value[3:]}"
+            return value
+
+        def visit(value: Any) -> None:
+            if isinstance(value, dict):
+                for key, child in list(value.items()):
+                    if key == "page":
+                        value[key] = page_number
+                    elif key in id_keys:
+                        value[key] = remap_id(child)
+                    elif key == "cells" and isinstance(child, list):
+                        # Row records refer to cells by ID; regions own cells
+                        # as dictionaries. Both must keep the same references.
+                        value[key] = [remap_id(item) for item in child]
+                        visit(value[key])
+                    else:
+                        visit(child)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child)
+
+        visit(result)
+        records = list(result["anchored_fields"].values())
+        for key in ("spans", "address_candidates", "model_address_candidates"):
+            records.extend(result[key])
+        for region in result["page_regions"]:
+            records.append(region)
+            for key in ("cells", "rows", "subzones"):
+                records.extend(region.get(key) or [])
+        for record in records:
+            record["page"] = page_number
+            record["requires_review"] = True
+
+    def _predict_first_page_bytes(self, data: bytes) -> dict[str, Any]:
         if not self.loaded or self.vectorizer is None:
             raise RuntimeError(
                 f"Weak field router model not loaded: {self.model_path}"
@@ -560,7 +704,7 @@ class WeakFieldRouter:
                 item
                 for item in raw_spans
                 if item["label"] == "ADDRESS_POSTAL_CODE"
-                and re.fullmatch(r"\\d{5}", item["value"].strip())
+                and re.fullmatch(r"\d{5}", item["value"].strip())
                 and 1000 <= int(item["value"].strip()) <= 98999
             ]
 
@@ -572,7 +716,7 @@ class WeakFieldRouter:
                 elif label == "ADDRESS_POSTAL_CODE":
                     raw_postal = item["value"].strip()
                     keep = bool(
-                        re.fullmatch(r"\\d{5}", raw_postal)
+                        re.fullmatch(r"\d{5}", raw_postal)
                         and 1000 <= int(raw_postal) <= 98999
                     )
                 elif label in {
@@ -707,6 +851,11 @@ class WeakFieldRouter:
             "weak_supervision": True,
             "requires_review": True,
             "text_source": text_source,
+            "recognized_text": "\n".join(
+                " ".join(token["text"] for token in line)
+                for line in lines
+                if line
+            ),
             "spans": spans,
             "anchored_fields": geometry_fields,
             "address_candidates": geometry_addresses or model_addresses,

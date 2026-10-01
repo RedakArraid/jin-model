@@ -1,0 +1,27 @@
+{
+  "name": "PDF.js",
+  "version": "3.11.174",
+  "upstream_release": "https://github.com/mozilla/pdf.js/releases/tag/v3.11.174",
+  "license": "Apache-2.0",
+  "purpose": "Locally served copies of the application's previously CDN-loaded PDF.js assets. No runtime CDN access is required.",
+  "files": [
+    {
+      "path": "pdf.min.js",
+      "source": "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js",
+      "bytes": 320004,
+      "sha256": "5b5799e6f8c680663207ac5b42ee14eed2a406fa7af48f50c154f0c0b1566946"
+    },
+    {
+      "path": "pdf.worker.min.js",
+      "source": "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js",
+      "bytes": 1087212,
+      "sha256": "feabdf309770ed24bba31a5467836cdc8cf639c705af27d52b585b041bb8527b"
+    },
+    {
+      "path": "LICENSE",
+      "source": "https://raw.githubusercontent.com/mozilla/pdf.js/v3.11.174/LICENSE",
+      "bytes": 10174,
+      "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+    }
+  ]
+}

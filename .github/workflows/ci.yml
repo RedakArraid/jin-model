@@ -16,13 +16,16 @@ jobs:
       - name: Install runtime dependencies
         run: pip install -r runtime-requirements.txt
       - name: Compile Python sources
-        run: python -m compileall -q jin_runtime training scripts
+        run: python -m compileall -q jin_runtime training scripts core_overrides
       - name: Validate model tooling
         run: |
           python scripts/install_models.py --help
           python scripts/verify_models.py --help
           python scripts/preflight.py --help
+          python scripts/build_ban_index.py --help
       - name: Run statistical learning tests
         run: python -m unittest discover -s tests -v
+      - name: Test local viewer coordinates and price precision
+        run: node --test tests/test_web_bbox.js tests/test_web_prices.js
       - name: Validate shell scripts
         run: sh -n prepare-model.sh scripts/materialize-lfs-corpus.sh scripts/install-models.sh scripts/run-standalone.sh

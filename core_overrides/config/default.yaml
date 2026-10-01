@@ -1,0 +1,907 @@
+engine:
+  name: universal_document_ai_rl
+  version: 5.1.0
+  default_backend: local
+  keep_raw_text: true
+  keep_page_words: true
+  keep_ocr_diagnostics: true
+  keep_image_quality_metrics: true
+  fail_on_unsupported_file: true
+  deterministic: true
+  random_seed: 7
+input:
+  accepted_extensions:
+  - pdf
+  - png
+  - jpg
+  - jpeg
+  - tif
+  - tiff
+  - bmp
+  - webp
+  max_file_size_mb: 100
+  max_pages: 250
+  reject_empty_files: true
+  reject_zero_dimension_images: true
+pdf:
+  native_text_min_words: 12
+  native_text_min_chars: 40
+  native_text_min_coverage: 0.0005
+  native_text_min_confidence: 0.85
+  prefer_native_text: true
+  mixed_mode: true
+  render_dpi: 300
+  retry_render_dpi: 400
+  high_quality_render_dpi: 450
+  max_render_pixels: 30000000
+  password: null
+preprocessing:
+  enabled: true
+  auto_rotate: true
+  orientation_detection: true
+  orientation_min_confidence: 5.0
+  deskew: true
+  max_skew_angle: 15.0
+  min_skew_angle: 0.15
+  dewarp: false
+  perspective_correction: false
+  crop_border: false
+  border_px: 0
+  auto_crop_whitespace: true
+  whitespace_threshold: 248
+  whitespace_crop_padding_px: 18
+  min_crop_content_ratio: 0.15
+  upscale_small_images: true
+  min_width_px: 1400
+  min_height_px: 900
+  upscale_factor: 2.0
+  max_upscale_factor: 3.5
+  max_side_px: 5000
+  resize_interpolation: cubic
+  grayscale: true
+  invert_if_dark_background: true
+  dark_background_mean_threshold: 100
+  contrast_stretch: true
+  contrast_low_percentile: 1.0
+  contrast_high_percentile: 99.0
+  auto_gamma: true
+  gamma_target_mean: 190
+  gamma_min: 0.65
+  gamma_max: 1.55
+  background_normalization: false
+  background_blur_kernel: 51
+  clahe: true
+  clahe_clip_limit: 2.0
+  clahe_tile_grid_size: 8
+  denoise: true
+  denoise_method: nlmeans
+  denoise_strength: 10
+  nlmeans_template_window: 7
+  nlmeans_search_window: 21
+  bilateral_filter: false
+  bilateral_diameter: 7
+  bilateral_sigma_color: 45
+  bilateral_sigma_space: 45
+  median_blur: false
+  median_blur_ksize: 3
+  sharpen: true
+  sharpen_method: unsharp
+  unsharp_sigma: 1.0
+  unsharp_amount: 1.5
+  unsharp_threshold: 0
+  morphology_open: false
+  morphology_open_kernel: 2
+  morphology_open_iterations: 1
+  morphology_close: false
+  morphology_close_kernel: 2
+  morphology_close_iterations: 1
+  threshold_mode: none
+  adaptive_thresholding: false
+  adaptive_method: gaussian
+  adaptive_block_size: 31
+  adaptive_c: 15
+  binarization: false
+  otsu_blur_ksize: 0
+  remove_horizontal_lines: false
+  remove_vertical_lines: false
+  line_kernel_scale: 40
+  line_inpaint_radius: 2
+ocr:
+  engine: tesseract
+  languages:
+  - fra
+  - eng
+  - deu
+  - spa
+  - ita
+  fallback_languages:
+  - eng
+  language_order_matters: false
+  auto_language_selection: false
+  auto_language_preview_psm: 11
+  auto_language_candidates:
+  - eng
+  - fra
+  - deu
+  - spa
+  - ita
+  auto_language_min_words: 8
+  psm: 6
+  oem: 3
+  preserve_interword_spaces: true
+  user_defined_dpi: 300
+  tessedit_do_invert: true
+  load_system_dawg: true
+  load_freq_dawg: true
+  char_whitelist: null
+  char_blacklist: null
+  timeout_seconds: 120
+  single_pass_timeout_seconds: 35
+  page_time_budget_seconds: 90
+  min_word_confidence: 20
+  drop_negative_confidence: true
+  min_token_length: 1
+  max_token_length: 120
+  filter_garbage_tokens: true
+  max_non_alnum_ratio: 0.85
+  text_confidence_threshold: 0.5
+  field_confidence_threshold: 0.8
+  auto_accept_threshold: 0.97
+  manual_review_threshold: 0.8
+  ensemble_enabled: true
+  ensemble_trigger_confidence: 0.9
+  ensemble_trigger_min_words: 25
+  ensemble_trigger_min_quality: 0.72
+  psm_candidates:
+  - 3
+  - 4
+  - 6
+  - 11
+  - 12
+  max_ensemble_passes: 5
+  ensemble_merge_words: true
+  ensemble_consensus_bonus: 0.08
+  ensemble_disagreement_penalty: 0.05
+  multiscale_enabled: true
+  multiscale_trigger_quality: 0.66
+  scale_candidates:
+  - 1.0
+  - 1.35
+  - 1.7
+  max_multiscale_passes: 3
+  quality_weight_confidence: 0.42
+  quality_weight_coverage: 0.2
+  quality_weight_alnum: 0.12
+  quality_weight_line_structure: 0.1
+  quality_weight_numeric: 0.06
+  quality_weight_consensus: 0.1
+  quality_word_cap: 120
+  quality_min_unique_token_ratio: 0.2
+layout:
+  vector_compartmentalization: true
+  vector_min_horizontal_length: 24.0
+  vector_min_vertical_length: 18.0
+  vector_min_rectangle_width: 24.0
+  vector_min_rectangle_height: 12.0
+  visual_row_gap_threshold: 48.0
+  vat_identifier_extraction: true
+  line_y_tolerance_factor: 0.65
+  adaptive_line_y_tolerance: true
+  line_y_tolerance_min: 0.45
+  line_y_tolerance_max: 0.95
+  min_table_header_matches: 3
+  table_row_gap_factor: 2.5
+  table_min_rows: 2
+  table_min_columns: 2
+  table_min_cell_confidence: 0.4
+  table_header_similarity_threshold: 0.68
+  column_cluster_tolerance_factor: 0.7
+  merge_wrapped_rows: true
+  wrapped_row_max_gap_factor: 1.5
+  detect_tables: true
+  detect_key_value_pairs: true
+  key_value_max_horizontal_gap_factor: 9.0
+  key_value_max_vertical_gap_factor: 1.3
+  key_value_neighbor_window: 3
+  detect_checkboxes: true
+  detect_stamps: true
+  detect_signatures: true
+  detect_barcodes: true
+  detect_qr_codes: true
+  preserve_unknown_tables: true
+  preserve_unknown_key_values: true
+  spatial_header_recovery: true
+  spatial_party_segmentation: true
+  multiline_item_segmentation: true
+  multiline_anchor_max_x_ratio: 0.24
+  infer_line_amount_from_quantity_price: true
+  spatial_totals_recovery: true
+  document_language_hints: true
+  aggregate_native_line_tables_across_pages: true
+  packed_native_table_parser: true
+  packed_native_table_min_items: 2
+  packed_native_table_require_amount_column: true
+  continuation_marker_filter: true
+  continuation_marker_patterns:
+  - ^suite\s+page\s+\d+$
+  - ^page\s+\d+\s*(?:/\s*\d+)?$
+  - ^continued(?:\s+on)?\s+page\s+\d+$
+  header_multiblock_order_number: true
+  header_order_number_left_region_max_x_ratio: 0.48
+  header_order_number_max_row_gap_ratio: 0.055
+  header_order_number_max_tokens: 8
+  page_header_repetition_detection: true
+  party_zone_segmentation_v2: true
+  buyer_corporate_zone_max_y_ratio: 0.16
+  supplier_zone_min_x_ratio: 0.48
+  supplier_zone_max_y_ratio: 0.34
+  prefer_native_amount_over_computed: true
+  native_line_deduplication: true
+  parse_line_level_charges: true
+  preserve_charge_parent_link: true
+  native_decimal_max_scale: 6
+  labeled_address_table_priority: true
+  commercial_metadata_table_priority: true
+  environmental_fee_markers:
+  - DEEE
+  - WEEE
+  - ECO-PARTICIPATION
+  - ECO PARTICIPATION
+  geometry_table_recovery: true
+  geometry_table_header_min_terms: 4
+  geometry_table_header_terms:
+  - reference
+  - article
+  - designation
+  - description
+  - quantite
+  - qte
+  - pu
+  - prix
+  - montant
+  geometry_table_max_header_y_ratio: 0.68
+  geometry_table_stop_terms:
+  - total ht
+  - total net
+  - total ttc
+  - conditions generales
+  - signature
+  geometry_table_numeric_anchor_tolerance_ratio: 0.075
+  geometry_table_description_continuation_gap_ratio: 0.022
+  geometry_table_min_material_digits: 5
+  geometry_table_max_material_chars: 30
+  geometry_table_min_row_confidence: 0.88
+  geometry_table_prefer_printed_amount: true
+  geometry_table_validate_quantity_price: true
+  geometry_table_amount_tolerance_abs: 0.04
+  geometry_table_amount_tolerance_rel: 0.006
+  geometry_table_fee_parent_strategy: previous_product
+  geometry_table_secondary_reference_headers:
+  - adressage
+  - code client
+  - reference client
+  - ref client
+  - supplier reference
+  inline_transaction_header_recovery: true
+  inline_order_labels:
+  - commande
+  - commande fournisseur
+  - bon de commande
+  - cde
+  - purchase order
+  inline_order_number_max_chars: 48
+  inline_order_number_min_digits: 3
+  inline_order_number_allow_spaces: true
+  inline_order_number_normalize_digit_groups: true
+  inline_order_number_keep_alpha_groups: true
+  inline_order_date_context_tokens:
+  - au
+  - du
+  - le
+  - date
+  - date commande
+  inline_order_site_suffix_separators:
+  - /
+  - '-'
+  inline_order_site_suffix_max_chars: 30
+  paired_label_zone_recovery: true
+  paired_label_max_vertical_gap_ratio: 0.11
+  paired_label_column_split_ratio: 0.5
+  ship_to_labels:
+  - adresse de livraison
+  - lieu de livraison
+  - livraison
+  - ship to
+  - delivery address
+  attention_labels:
+  - a l'attention de
+  - à l'attention de
+  - attention
+  - attn
+  supplier_labels:
+  - fournisseur
+  - adresse fournisseur
+  - vendor
+  - supplier
+  buyer_labels:
+  - acheteur
+  - donneur d'ordre
+  - ordering party
+  - buyer
+  infer_buyer_from_ship_to_root: true
+  infer_buyer_from_ship_to_min_name_chars: 5
+  summary_type_guards: true
+  monetary_total_labels:
+  - total ht
+  - total h.t
+  - total net ht
+  - total ttc
+  - net a payer
+  - net à payer
+  - montant ht
+  non_monetary_summary_labels:
+  - total poids
+  - poids total
+  - total volume
+  - volume total
+  - total conditionnement
+  - conditionnement
+  shipping_amount_labels:
+  - frais de port
+  - port ht
+  - transport
+  - shipping
+  - freight
+  suspicious_total_ratio_cap: 20.0
+  reset_unlabeled_grand_totals: true
+  reset_unlabeled_shipping_totals: true
+  preserve_non_monetary_summaries_as_notes: true
+  strict_po_number_resolution: true
+  learned_shape_min_family_confidence: 0.95
+  learned_shape_penalty_min_family_confidence: 0.98
+  learned_shape_match_bonus: 0.85
+  learned_shape_mismatch_penalty: 0.10
+  strict_label_row_y_factor: 0.5
+  strict_label_value_max_gap_ratio: 0.075
+  strict_label_value_x_tolerance_ratio: 0.12
+  strict_po_number_reject_phone_punctuation: true
+  strict_po_number_reject_supplier_code_labels: true
+  strict_po_number_reject_tax_ids: true
+  strict_po_number_explicit_label_bonus: 2.5
+  strict_po_trusted_existing_min_confidence: 0.965
+  strict_po_trusted_existing_methods:
+  - native_table_anchor
+  - multiblock_order_number
+  - explicit_order_label
+  - explicit_n_de_commande
+  - inline_transaction_header
+  - spatial_order_number
+  strict_po_reject_client_account_labels: true
+  strict_po_preserve_multitoken_prefixes: true
+  native_party_block_recovery: true
+  native_party_block_min_lines: 3
+  native_party_require_address_or_contact: true
+  native_party_priority_over_heuristic: true
+  column_labeled_party_recovery: true
+  column_party_max_vertical_span_ratio: 0.18
+  column_party_address_label_priority: true
+  infer_buyer_from_corporate_email_domain: true
+  email_domain_inference_excluded_domains:
+  - gmail.com
+  - outlook.com
+  - hotmail.com
+  - yahoo.com
+  - orange.fr
+  - wanadoo.fr
+  amount_only_geometry_recovery: true
+  amount_only_derive_unit_price: false
+  amount_only_min_material_chars: 5
+  amount_only_attach_continuation_rows: true
+  amount_only_quote_markers:
+  - offre
+  - devis
+  - quote
+  strict_total_label_recovery: true
+  strict_total_search_next_rows: 2
+  strict_total_prefer_rightmost_value: true
+  strict_total_prefer_reconciled_existing: true
+  strict_total_require_decimal_token: true
+  strict_total_max_abs_value: 1000000000.0
+  strict_total_max_reconciliation_ratio: 2.0
+  native_table_require_quantity_when_quantity_header_present: true
+  native_explicit_table_priority_bonus: 0.18
+  native_table_support_qte_cdee: true
+  native_table_support_prix_net: true
+  native_table_support_montant_ht: true
+  native_table_preserve_pack_quantity: true
+  native_table_preserve_quote_reference: true
+  native_table_require_printed_amount_consistency: true
+  native_table_printed_amount_abs_tolerance: 0.03
+  native_table_printed_amount_rel_tolerance: 0.005
+  po_number_tail_cleanup: true
+  po_number_tail_party_quality_threshold: 0.68
+  reject_legal_footer_lines: true
+  legal_footer_line_terms: [siren, siret, rcs, iban, bic, capital de, capital social, n° intracom, tva intracom, ape, naf]
+  legal_footer_min_term_hits: 1
+  native_summary_table_totals: true
+  strict_text_totals_v48: true
+  explicit_role_zone_recovery_v48: true
+  role_zone_max_height_ratio: 0.24
+  role_zone_stop_terms: [article, designation, reference - designation, mode livraison, condition paiement, total ht, suivant offre, date de livraison]
+  ordered_by_block_recovery_v48: true
+  party_anchor_address_recovery_v48: true
+  party_address_sanitization_v48: true
+  role_resolution_v48: true
+  party_name_repair_threshold: 0.35
+  party_name_promotion_threshold: 0.62
+
+addresses:
+  enabled: true
+  expose_business_addresses: true
+  normalize_components: true
+  detect_shared_physical_addresses: true
+  preserve_multiple_roles_per_address: true
+  min_address_confidence: 0.6
+  role_priority:
+  - buyer
+  - supplier
+  - ship_to
+  - bill_to
+  - sold_to
+  - deliver_to
+  - invoice_to
+  - payer
+  - end_customer
+  - consignee
+  - ship_from
+  include_evidence: true
+  include_contact_context: true
+  include_role_confidence: true
+  include_address_confidence: true
+  review_ambiguous_roles: true
+  ambiguous_role_margin: 0.08
+  infer_country_from_postal_pattern: true
+  component_level_confidence: true
+  require_structural_validation: true
+  typed_components:
+    - building
+    - building_number
+    - residence
+    - entrance
+    - floor
+    - unit
+    - house_number
+    - house_number_suffix
+    - street_type
+    - street_name
+    - lieu_dit
+    - industrial_zone
+    - business_park
+    - address_complement
+    - po_box
+    - tsa
+    - cs
+    - postal_routing_code
+    - postal_code
+    - city
+    - cedex
+    - cedex_number
+    - district
+    - insee_code
+    - state
+    - region
+    - country
+    - country_code
+  verification:
+    enabled: true
+    provider: IGN_GEOPLATEFORME_BAN
+    endpoint: https://data.geopf.fr/geocodage/search
+    timeout_seconds: 1.5
+    min_score_verified: 0.70
+    fail_open: true
+semantic_extraction:
+  enabled: true
+  fuzzy_label_matching: true
+  fuzzy_label_threshold: 0.72
+  exact_label_bonus: 0.12
+  substring_label_bonus: 0.06
+  spatial_neighbor_bonus: 0.08
+  value_type_bonus: 0.1
+  value_type_penalty: 0.14
+  use_cross_line_anchors: true
+  cross_line_window: 2
+  max_value_chars: 500
+  keep_unmapped_fields: true
+  keep_unmapped_min_confidence: 0.35
+  infer_field_types: true
+  infer_dates: true
+  infer_amounts: true
+  infer_quantities: true
+  infer_emails: true
+  infer_phones: true
+  infer_urls: true
+  infer_ids: true
+normalization:
+  decimal_separators:
+  - ','
+  - .
+  thousand_separators:
+  - ' '
+  - .
+  - ','
+  - ''''
+  default_currency: EUR
+  default_country: FR
+  default_date_order: DMY
+  date_orders:
+  - DMY
+  - YMD
+  - MDY
+  normalize_units: true
+  normalize_currency: true
+  normalize_dates: true
+  normalize_whitespace: true
+  strip_zero_width_chars: true
+  unicode_normalization: NFKC
+  uppercase_currency_codes: true
+  preserve_raw_values: true
+validation:
+  enabled: true
+  amount_absolute_tolerance: 0.03
+  amount_relative_tolerance: 0.005
+  quantity_price_check: true
+  line_sum_check: true
+  tax_check: true
+  grand_total_check: true
+  grand_total_require_components: true
+  date_consistency_check: true
+  currency_consistency_check: true
+  line_number_sequence_check: true
+  negative_quantity_warning: true
+  negative_price_warning: true
+  duplicate_line_warning: true
+  duplicate_key_fields:
+  - buyer.name
+  - purchase_order.number
+  - purchase_order.revision
+  critical_failure_on_missing_po_number: true
+  critical_failure_on_no_lines: false
+  additional_charge_arithmetic_check: true
+  include_additional_charges_in_line_sum: true
+  printed_total_reconciliation_check: true
+  printed_total_min_confidence: 0.8
+  semantic_type_guard_check: true
+  suspicious_monetary_ratio_check: true
+  suspicious_monetary_ratio_max: 20.0
+  require_number_when_order_label_present: true
+  require_date_when_date_label_present: false
+  line_parser_hypothesis_check: true
+  line_parser_min_arithmetic_ratio: 0.85
+  line_parser_min_structural_score: 0.55
+  po_number_type_guard_check: true
+  critical_failure_on_invalid_po_number: true
+  po_number_contact_collision_check: true
+  critical_failure_on_po_contact_collision: true
+  party_role_semantic_check: true
+  conditional_role_semantic_check: true
+  explicit_role_name_min_semantic_quality: 0.45
+  legal_footer_line_item_check: true
+  party_name_min_semantic_quality: 0.45
+  critical_party_roles:
+  - buyer
+  - supplier
+  line_field_completeness_check: true
+  line_required_field_min_ratio: 0.8
+  printed_total_presence_check: true
+confidence:
+  weights:
+    source: 0.22
+    semantic: 0.23
+    validation: 0.27
+    completeness: 0.13
+    consistency: 0.1
+    consensus: 0.05
+  validation_pass_score: 1.0
+  validation_warning_score: 0.72
+  validation_fail_score: 0.25
+  missing_critical_penalty: 0.18
+  low_ocr_quality_penalty: 0.1
+  contradictory_evidence_penalty: 0.08
+  critical_fields:
+    purchase_order.number: 0.98
+    purchase_order.order_date: 0.95
+    line.quantity: 0.98
+    line.unit_price: 0.99
+    line.line_total: 0.99
+    totals.grand_total: 0.995
+  review_if_missing:
+  - purchase_order.number
+  - lines
+  manual_review_threshold: 0.82
+  review_on_financial_mismatch: true
+  financial_mismatch_confidence_cap: 0.74
+  semantic_type_conflict_penalty: 0.12
+  suspicious_total_penalty: 0.14
+  line_parser_disagreement_penalty: 0.07
+  reward_arithmetic_consensus: 0.06
+  reward_geometry_consensus: 0.04
+  review_on_semantic_type_conflict: true
+  review_on_suspicious_totals: true
+  suspicious_total_confidence_cap: 0.7
+  review_on_semantic_hard_guard: true
+  semantic_hard_guard_confidence_cap: 0.68
+  critical_party_roles:
+  - buyer
+  - supplier
+  invalid_po_number_penalty: 0.25
+  invalid_party_role_penalty: 0.12
+  missing_explicit_table_field_penalty: 0.16
+azure_document_intelligence:
+  enabled: false
+  endpoint_env: AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT
+  key_env: AZURE_DOCUMENT_INTELLIGENCE_KEY
+  model_id: prebuilt-layout
+  api_version: null
+  features:
+  - keyValuePairs
+  fallback_to_local: true
+  timeout_seconds: 120
+universal:
+  version: 5.1.0
+  accepted_extensions:
+  - pdf
+  - png
+  - jpg
+  - jpeg
+  - tif
+  - tiff
+  - bmp
+  - webp
+  - docx
+  - xlsx
+  - xlsm
+  - pptx
+  - csv
+  - tsv
+  - txt
+  - md
+  - log
+  - ini
+  - cfg
+  - conf
+  - yaml
+  - yml
+  - json
+  - xml
+  - html
+  - htm
+  - eml
+  - doc
+  - xls
+  - ppt
+  - odt
+  - ods
+  - odp
+  - rtf
+  max_file_size_mb: 200
+  max_cells_per_sheet: 100000
+  max_text_chars: 500000
+  max_tables: 200
+  max_rows_per_table: 5000
+  manual_review_threshold: 0.82
+  ensemble_enabled: true
+  ensemble_trigger_confidence: 0.9
+  ensemble_trigger_min_words: 25
+  psm_candidates:
+  - 3
+  - 4
+  - 6
+  - 11
+  - 12
+  schema_match_threshold: 0.72
+  preserve_raw_text: true
+  preserve_tables: true
+  preserve_blocks: true
+  preserve_structured_data: true
+  preserve_unknown_fields: true
+  compute_content_fingerprint: true
+  detect_duplicate_documents: false
+  page_level_classification: true
+  composite_document_detection: true
+  transactional_page_priority: true
+  isolate_business_pages: true
+  legal_terms_entity_filter: true
+  review_on_missing_business_extraction: true
+  business_completeness_review_threshold: 0.5
+  page_classification_min_confidence: 0.45
+  infer_transaction_continuation_pages: true
+  continuation_min_line_headers: 4
+  continuation_promoted_confidence: 0.84
+  continuation_max_page_gap: 1
+  transaction_header_grammar_enabled: true
+  geometry_table_recovery_enabled: true
+  parser_hypothesis_competition: true
+  parser_hypothesis_min_margin: 0.04
+  parser_hypothesis_arithmetic_weight: 0.34
+  parser_hypothesis_completeness_weight: 0.24
+  parser_hypothesis_structure_weight: 0.22
+  parser_hypothesis_source_weight: 0.12
+  parser_hypothesis_noise_penalty_weight: 0.08
+semantic_model:
+  enabled: false
+  provider: openai_compatible
+  endpoint: null
+  model: null
+  api_key_env: SEMANTIC_MODEL_API_KEY
+  temperature: 0.0
+  top_p: 0.1
+  timeout_seconds: 120
+  max_retries: 2
+  retry_backoff_seconds: 1.5
+  max_text_chars: 80000
+  max_tables: 20
+  max_rows_per_table: 100
+  json_response_format: true
+  strict_json_schema: true
+  vision_enabled: true
+  max_vision_pages: 6
+  vision_max_side_px: 2200
+  vision_jpeg_quality: 90
+  send_page_coordinates: true
+  require_evidence: true
+  reject_unsupported_claims: true
+reinforcement_policy:
+  enabled: true
+  path: training/artifacts/ocr_policy.json
+  top_k: 2
+  min_state_confidence: 0.45
+  state_override_enabled: false
+  state_override_min_confidence:
+    clean: 0.85
+    lowres: 0.6
+    rotated: 0.78
+    blurred: 0.45
+    low_contrast: 0.65
+    noisy: 0.72
+    jpeg: 0.85
+  evaluate_multiple_actions_on_low_quality: true
+  multi_action_trigger_quality: 0.7
+  max_actions_to_evaluate: 3
+  q_value_temperature: 0.2
+  fallback_to_ensemble: true
+  fallback_action: balanced
+  exploration_enabled: false
+  exploration_epsilon: 0.03
+  hard_example_threshold: 0.55
+  log_decisions: true
+performance:
+  max_workers: 2
+  parallel_pages: false
+  parallel_ocr_candidates: false
+  cache_enabled: false
+  cache_dir: .cache/uda
+  cache_preprocessed_pages: false
+  cache_ocr_results: false
+  memory_limit_mb: 2048
+  max_seconds_per_page: 100
+  fast_path_min_native_confidence: 0.95
+security:
+  allow_external_links: false
+  allow_macros: false
+  allow_embedded_executables: false
+  max_decompression_ratio: 100
+  sanitize_filenames: true
+rl_training:
+  algorithm: epsilon_greedy
+  epochs: 3
+  seed: 7
+  action_subset:
+  - auto_raw
+  - sparse_raw
+  - threshold
+  - binarized
+  - balanced
+  - auto_layout
+  - sparse
+  - low_contrast
+  - noisy
+  - blurred
+  - lowres
+  - rotated
+  epsilon_start: 0.35
+  epsilon_end: 0.05
+  epsilon_decay: 0.82
+  alpha_start: 0.35
+  alpha_end: 0.08
+  alpha_decay: 0.9
+  ucb_c: 1.35
+  softmax_temperature: 0.2
+  reward_min: 0.0
+  reward_max: 1.0
+  hard_example_threshold: 0.55
+  hard_example_replays: 2
+  hard_example_max_per_epoch: 20
+  force_each_action_once: true
+  checkpoint_every_episodes: 50
+  save_episode_log: true
+  early_stop_patience: 3
+  early_stop_min_delta: 0.005
+multimodal:
+  enabled: false
+  mode: auto
+  trigger_below_confidence: 0.9
+  trigger_on_human_review: true
+  trigger_on_images: true
+  trigger_schema_missing_fraction: 0.2
+  trigger_on_complex_tables: true
+  trigger_table_count: 4
+  trigger_on_sparse_structure: true
+  trigger_min_key_values: 2
+  manual_review_threshold: 0.78
+  vision_enabled: true
+  max_vision_pages: 8
+  vision_render_dpi: 190
+  vision_max_side_px: 2400
+  vision_jpeg_quality: 92
+  vision_detail: high
+  vision_render_office: true
+  libreoffice_binary: libreoffice
+  office_render_timeout_seconds: 75
+  max_text_chars: 100000
+  max_blocks: 1600
+  max_key_values: 1600
+  max_tables: 30
+  max_rows_per_table: 150
+  max_output_tokens: 12000
+  require_evidence: true
+  unsupported_confidence_cap: 0.45
+  default_unstructured_confidence: 0.55
+  keep_raw_response: false
+fusion:
+  native_weight: 0.72
+  vlm_weight: 0.28
+  consensus_bonus: 0.08
+  max_confidence_boost: 0.08
+  vlm_only_confidence_cap: 0.94
+  unsupported_vlm_confidence_cap: 0.45
+  text_similarity_threshold: 0.94
+  numeric_absolute_tolerance: 0.02
+  numeric_relative_tolerance: 0.002
+  conflict_resolution_margin: 0.15
+  conflict_confidence_penalty: 0.12
+  critical_conflict_penalty: 0.18
+  review_on_any_conflict: false
+  critical_fields:
+  - purchase_order.number
+  - purchase_order.order_date
+  - totals.grand_total
+  - totals.total_net
+  - totals.total_tax
+  critical_field_patterns:
+  - ^lines\\[[0-9]+\\]\\.(quantity|unit_price|line_total)$
+  - (^|\\.)iban$
+  - (^|\\.)tax_number$
+feedback:
+  enabled: true
+  store_path: training/feedback/human_feedback.jsonl
+  learned_aliases_path: training/feedback/learned_aliases.json
+  learn_aliases: true
+  corrected_field_weight: 1.0
+  accepted_field_weight: 0.65
+  rejected_field_weight: 0.85
+  empty_feedback_reward: 0.5
+  online_policy_update: false
+  online_policy_learning_rate: 0.08
+  policy_path: training/artifacts/ocr_policy.json
+  min_feedback_reward_for_auto_accept: 0.95
+  export_include_predictions: true
+  export_include_metadata: true
+
+learned_models:
+  enabled: true
+  family_top_k: 3
+  semantic_confidence_weight: 0.06
+  overall_confidence_weight: 0.03
+  confidence_boost_min_family_confidence: 0.90
+  ood_review_threshold: 0.72
+  ood_confidence_penalty: 0.08

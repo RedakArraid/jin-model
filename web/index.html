@@ -3,67 +3,128 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>JIN Model - Document AI</title>
+  <title>JIN Model – Document AI</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div>
-      <div class="eyebrow">UNIVERSAL DOCUMENT AI V4.8</div>
-      <h1>JIN Model</h1>
-      <p>Test d'extraction de commandes, PDF, scans et documents métiers.</p>
-    </div>
-    <div id="health" class="health pending">API...</div>
-  </header>
-  <main class="layout">
-    <section class="panel upload-panel">
-      <h2>1. Charger un document</h2>
-      <label id="dropzone" class="dropzone">
-        <input id="fileInput" type="file" />
-        <span class="drop-title">Déposer un fichier ici</span>
-        <span class="drop-subtitle">PDF, image, DOCX, XLSX, PPTX, CSV, JSON...</span>
+
+<header class="topbar">
+  <div>
+    <div class="eyebrow">UNIVERSAL DOCUMENT AI V5.1</div>
+    <h1>JIN Model</h1>
+  </div>
+  <div id="health" class="health pending">API…</div>
+</header>
+
+<div class="workspace">
+
+  <div class="tabbar">
+    <div class="tabs" id="tabs"></div>
+    <label class="btn-add" title="Ajouter des fichiers">
+      <input id="fileInput" type="file" multiple
+        accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif,.bmp,.webp,.docx,.xlsx,.pptx,.csv,.json" />
+      + Ajouter
+    </label>
+  </div>
+
+  <div class="main-area" id="mainArea">
+
+    <div class="empty-ws" id="emptyWs">
+      <label class="dropzone-big">
+        <input id="fileInputMain" type="file" multiple
+          accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif,.bmp,.webp,.docx,.xlsx,.pptx,.csv,.json" />
+        <div class="dz-icon">⬆</div>
+        <div class="dz-title">Déposer vos fichiers ici</div>
+        <div class="dz-sub">PDF, image, DOCX, XLSX, PPTX — plusieurs fichiers acceptés</div>
       </label>
-      <div id="fileMeta" class="file-meta muted">Aucun fichier sélectionné</div>
-      <details>
-        <summary>Options avancées</summary>
-        <div class="form-grid">
-          <label>Type document forcé
-            <input id="documentType" type="text" placeholder="purchase_order" />
-          </label>
-          <label>Schéma JSON personnalisé
-            <textarea id="schemaJson" rows="6" placeholder='{"customer_reference":{"type":"string","aliases":["Référence client"]}}'></textarea>
-          </label>
-        </div>
-      </details>
-      <button id="extractBtn" class="primary" disabled>Analyser le document</button>
-      <div id="progress" class="progress hidden"><div></div></div>
-      <div id="error" class="error hidden"></div>
-    </section>
-    <section class="panel results-panel">
-      <div class="results-header">
-        <h2>2. Résultats</h2>
-        <button id="downloadBtn" class="secondary" disabled>Télécharger JSON</button>
+    </div>
+
+    <div class="viewer-pane hidden" id="viewerPane">
+      <div id="fileViewer" class="file-viewer"></div>
+      <div class="bbox-legend hidden" id="bboxLegend">
+        <span class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>Champs</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#22c55e"></span>Lignes</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>Adresses</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#a855f7"></span>Totaux</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#64748b"></span>Suggestions</span>
       </div>
-      <div id="emptyState" class="empty-state">Charge un fichier pour commencer.</div>
+    </div>
+
+    <div class="results-pane hidden" id="resultsPane">
+      <div class="results-toolbar">
+        <span id="resultsFileName" class="results-filename"></span>
+        <button id="downloadBtn" class="btn-secondary" disabled>↓ JSON</button>
+      </div>
+
+      <div id="stateProcessing" class="state-box hidden">
+        <div class="progress"><div></div></div>
+        <p>Analyse en cours…</p>
+      </div>
+      <div id="stateError" class="state-box state-error hidden"></div>
+      <div id="statePending" class="state-box hidden"><p>En attente de traitement</p></div>
+      <div id="stateEmpty" class="state-box"><p>Sélectionne un fichier traité pour voir les résultats.</p></div>
+
       <div id="results" class="hidden">
         <div id="metrics" class="metric-grid"></div>
-        <h3>Commande / document</h3>
-        <div id="summary" class="kv-grid"></div>
-        <h3>Adresses et rôles métier</h3>
-        <div id="addresses" class="cards"></div>
-        <h3>Lignes produit</h3>
-        <div class="table-wrap"><table id="linesTable"><thead><tr><th>#</th><th>Référence</th><th>Description</th><th>Qté</th><th>Unité</th><th>PU</th><th>Montant</th><th>Confiance</th></tr></thead><tbody></tbody></table></div>
-        <h3>Charges / éco-participations</h3>
-        <div class="table-wrap"><table id="chargesTable"><thead><tr><th>Type</th><th>Description</th><th>Réf.</th><th>Qté</th><th>PU</th><th>Montant</th></tr></thead><tbody></tbody></table></div>
-        <h3>Totaux</h3>
-        <div id="totals" class="kv-grid"></div>
-        <details open>
+
+        <div class="result-section" id="secSummary">
+          <h3>Commande</h3>
+          <div id="summary" class="kv-grid"></div>
+        </div>
+
+        <div class="result-section" id="secAddresses">
+          <h3>Adresses &amp; rôles</h3>
+          <div id="addresses" class="cards"></div>
+        </div>
+
+        <div class="result-section" id="secLines">
+          <h3>Lignes produit</h3>
+          <div class="table-wrap">
+            <table id="linesTable">
+              <thead><tr>
+                <th>#</th><th>Référence</th><th>Description</th>
+                <th>Qté</th><th>U</th><th>PU</th><th>Montant</th><th>Conf.</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="result-section" id="secCharges">
+          <h3>Charges additionnelles</h3>
+          <div class="table-wrap">
+            <table id="chargesTable">
+              <thead><tr>
+                <th>Type</th><th>Description</th><th>Réf.</th><th>Qté</th><th>PU</th><th>Montant</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="result-section" id="secTotals">
+          <h3>Totaux</h3>
+          <div id="totals" class="kv-grid"></div>
+        </div>
+
+        <div class="result-section" id="secCommercial">
+          <h3>Conditions commerciales</h3>
+          <div id="commercial" class="kv-grid"></div>
+        </div>
+
+        <details class="json-details">
           <summary>JSON complet</summary>
           <pre id="jsonView"></pre>
         </details>
       </div>
-    </section>
-  </main>
-  <script src="app.js"></script>
+    </div>
+
+  </div>
+</div>
+
+<div class="drag-overlay hidden" id="dragOverlay">Déposer ici</div>
+
+<script src="vendor/pdfjs-3.11.174/pdf.min.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

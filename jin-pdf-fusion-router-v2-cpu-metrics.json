@@ -1,0 +1,336 @@
+{
+  "metrics": {
+    "family": {
+      "accuracy": 0.9974747474747475,
+      "macro_f1": 0.9930426716141002,
+      "weighted_f1": 0.9975637637975301,
+      "train_docs": 1572,
+      "validation_docs": 396,
+      "train_seconds": 18.631932258605957,
+      "report": {
+        "A": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 19.0
+        },
+        "Autre": {
+          "precision": 1.0,
+          "recall": 0.96,
+          "f1-score": 0.9795918367346939,
+          "support": 25.0
+        },
+        "BonCommande": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 9.0
+        },
+        "CA": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 84.0
+        },
+        "CDEFRS": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 22.0
+        },
+        "CDFA": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 35.0
+        },
+        "CF": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 29.0
+        },
+        "CM": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 68.0
+        },
+        "COMMANDE": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 25.0
+        },
+        "Commande": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 12.0
+        },
+        "Confirmation": {
+          "precision": 0.8333333333333334,
+          "recall": 1.0,
+          "f1-score": 0.9090909090909091,
+          "support": 5.0
+        },
+        "F503": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 6.0
+        },
+        "FELM": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 13.0
+        },
+        "IR": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 4.0
+        },
+        "PSP": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 27.0
+        },
+        "PurchaseOrder": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 13.0
+        },
+        "accuracy": 0.9974747474747475,
+        "macro avg": {
+          "precision": 0.9895833333333334,
+          "recall": 0.9975,
+          "f1-score": 0.9930426716141002,
+          "support": 396.0
+        },
+        "weighted avg": {
+          "precision": 0.997895622895623,
+          "recall": 0.9974747474747475,
+          "f1-score": 0.9975637637975301,
+          "support": 396.0
+        }
+      },
+      "log_loss": 0.08651274073244991,
+      "confidence_temperature": 1.0
+    },
+    "decision": {
+      "accuracy": 0.9343434343434344,
+      "macro_f1": 0.8811527250728702,
+      "weighted_f1": 0.9349730362764515,
+      "train_docs": 1572,
+      "validation_docs": 396,
+      "train_seconds": 0.6978271007537842,
+      "report": {
+        "keep": {
+          "precision": 0.9652996845425867,
+          "recall": 0.9532710280373832,
+          "f1-score": 0.9592476489028213,
+          "support": 321.0
+        },
+        "remove": {
+          "precision": 0.8181818181818182,
+          "recall": 0.9,
+          "f1-score": 0.8571428571428571,
+          "support": 10.0
+        },
+        "review": {
+          "precision": 0.8088235294117647,
+          "recall": 0.8461538461538461,
+          "f1-score": 0.8270676691729323,
+          "support": 65.0
+        },
+        "accuracy": 0.9343434343434344,
+        "macro avg": {
+          "precision": 0.8641016773787232,
+          "recall": 0.8998082913970764,
+          "f1-score": 0.8811527250728702,
+          "support": 396.0
+        },
+        "weighted avg": {
+          "precision": 0.9359003695246294,
+          "recall": 0.9343434343434344,
+          "f1-score": 0.9349730362764515,
+          "support": 396.0
+        }
+      },
+      "log_loss": 0.24010405986072217,
+      "confidence_temperature": 7.0
+    }
+  },
+  "errors": {
+    "family": [
+      {
+        "file": "0789_20260722_101049_19184917.PDF",
+        "truth": "Autre",
+        "prediction": "Confirmation",
+        "confidence": 0.4686250267357092
+      }
+    ],
+    "decision": [
+      {
+        "file": "0414_20260828_091501_psp879944_0fn04rr5198.pdf",
+        "truth": "review",
+        "prediction": "keep",
+        "confidence": 0.9348278904580953
+      },
+      {
+        "file": "0132_20260916_150650_psp132656_174xe161298.pdf",
+        "truth": "review",
+        "prediction": "keep",
+        "confidence": 0.9628216485947639
+      },
+      {
+        "file": "0349_20260901_165536_CDEA 147696 V2.pdf",
+        "truth": "keep",
+        "prediction": "review",
+        "confidence": 0.9628216485947639
+      },
+      {
+        "file": "0864_20260715_170719_CDEA-146965ELM LEBLANC.PDF",
+        "truth": "keep",
+        "prediction": "review",
+        "confidence": 0.9628216485947639
+      },
+      {
+        "file": "1109_20260626_140622_psp371845_01c9z87508.pdf",
+        "truth": "review",
+        "prediction": "keep",
+        "confidence": 0.9628216485947639
+      },
+      {
+        "file": "1700_20260515_153128_CM-00399019_2026-05-15 153051.pdf",
+        "truth": "review",
+        "prediction": "keep",
+        "confidence": 0.9628216485947639
+      },
+      {
+        "file": "0285_20260907_115236_CM-00411896_2026-09-07 114315.pdf",
+        "truth": "review",
+        "prediction": "keep",
+        "confidence": 0.9338562137927826
+      },
+      {
+        "file": "0325_20260902_173309_CDEA-147752ELM LEBLANC.PDF",
+        "truth": "keep",
+        "prediction": "review",
+        "confidence": 0.9628216485947639
+      },
+      {
+        "file": "1478_20260601_145646_CM-00400687_2026-06-01 145540.pdf",
+        "truth": "keep",
+        "prediction": "review",
+        "confidence": 0.9433027653411938
+      },
+      {
+        "file": "1933_20260428_163127_CM-00397107_2026-04-28 163030.pdf",
+        "truth": "keep",
+        "prediction": "review",
+        "confidence": 0.5407023144518459
+      },
+      {
+        "file": "1542_20260527_162658_CM-00400293_2026-05-27 162543.pdf",
+        "truth": "review",
+        "prediction": "keep",
+        "confidence": 0.9628216485947639
+      },
+      {
+        "file": "0377_20260831_151345_psp621586_0ooc5xx7546.pdf",
+        "truth": "keep",
+        "prediction": "review",
+        "confidence": 0.9628216485947639
+      },
+      {
+        "file": "1922_20260429_121257_CM-00397201_2026-04-29 12-10-04.pdf",
+        "truth": "review",
+        "prediction": "keep",
+        "confidence": 0.9628216485947639
+      },
+      {
+        "file": "0859_20260716_120353_CDEA 146965 V2.pdf",
+        "truth": "keep",
+        "prediction": "review",
+        "confidence": 0.9628216485947639
+      },
+      {
+        "file": "1047_20260701_145353_psp394195_08ilpj68456.pdf",
+        "truth": "review",
+        "prediction": "keep",
+        "confidence": 0.6591100294580559
+      },
+      {
+        "file": "1399_20260605_090852_CM-00397551_2026-05-04 093013.pdf",
+        "truth": "keep",
+        "prediction": "review",
+        "confidence": 0.9628216485947639
+      },
+      {
+        "file": "0867_20260715_152315_CM-00397993_2026-05-06 114333.pdf",
+        "truth": "keep",
+        "prediction": "review",
+        "confidence": 0.8524107929383791
+      },
+      {
+        "file": "1570_20260527_081911_CM-00400149_2026-05-27 081820.pdf",
+        "truth": "keep",
+        "prediction": "review",
+        "confidence": 0.49478189861323524
+      },
+      {
+        "file": "1985_20260427_083336_CF_0905542.pdf",
+        "truth": "keep",
+        "prediction": "remove",
+        "confidence": 0.4947270430479146
+      },
+      {
+        "file": "0689_20260730_084147_20260730083918770.pdf",
+        "truth": "remove",
+        "prediction": "keep",
+        "confidence": 0.947946800198322
+      },
+      {
+        "file": "0494_20260819_115424_CDFAAJCJA5.pdf",
+        "truth": "keep",
+        "prediction": "remove",
+        "confidence": 0.4947270430479146
+      },
+      {
+        "file": "1989_20260424_101126_CM-00392775_2026-03-27 120025.pdf",
+        "truth": "review",
+        "prediction": "keep",
+        "confidence": 0.9628216485947639
+      },
+      {
+        "file": "0755_20260724_100107_P03COP01_26072408590.pdf",
+        "truth": "keep",
+        "prediction": "review",
+        "confidence": 0.4947270430479146
+      },
+      {
+        "file": "1828_20260506_114515_CM-00397993_2026-05-06 114333.pdf",
+        "truth": "keep",
+        "prediction": "review",
+        "confidence": 0.8524107929383791
+      },
+      {
+        "file": "1991_20260423_164518_CM-00396515_2026-04-23 164401.pdf",
+        "truth": "review",
+        "prediction": "keep",
+        "confidence": 0.9331047992915534
+      },
+      {
+        "file": "0484_20260820_100928_CDEA-147517ELM LEBLANC.PDF",
+        "truth": "keep",
+        "prediction": "review",
+        "confidence": 0.9628216485947639
+      }
+    ]
+  }
+}

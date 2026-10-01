@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "/schemas/jin-clean-extraction-v1",
+  "title": "JIN clean extraction v1",
+  "description": "Stable consumer view of a JIN document extraction. Empty optional values are omitted.",
+  "type": "object",
+  "required": ["schema_version", "generator", "document", "quality"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "jin-clean-extraction-v1"},
+    "generator": {
+      "type": "object",
+      "required": ["runtime"],
+      "properties": {
+        "runtime": {"type": "string"},
+        "core": {"type": ["string", "number"]}
+      },
+      "additionalProperties": false
+    },
+    "document": {
+      "type": "object",
+      "properties": {
+        "filename": {"type": "string"},
+        "sha256": {"type": "string"},
+        "mime_type": {"type": "string"},
+        "type": {"type": "string"},
+        "format": {"type": "string"},
+        "page_count": {"type": "integer", "minimum": 0},
+        "languages": {},
+        "processing_seconds": {"type": "number", "minimum": 0},
+        "order_structure": {"enum": ["single", "grouped"]},
+        "grouped_order_count": {"type": "integer", "minimum": 2},
+        "references": {
+          "type": "object",
+          "properties": {
+            "customer_order_number": {"$ref": "#/$defs/extracted_field"},
+            "request_for_quotation_number": {"$ref": "#/$defs/extracted_field"},
+            "referenced_order_number": {"$ref": "#/$defs/extracted_field"},
+            "customer_order_numbers": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/extracted_field"}
+            }
+          },
+          "additionalProperties": false
+        },
+        "tax_identifiers": {
+          "type": "array",
+          "items": {"type": "object"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "order": {
+      "type": "object",
+      "properties": {
+        "customer_order_number": {"$ref": "#/$defs/extracted_field"},
+        "customer_order_numbers": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/extracted_field"}
+        },
+        "groups": {"type": "array", "items": {"type": "object"}},
+        "order_date": {"$ref": "#/$defs/extracted_field"},
+        "currency": {"$ref": "#/$defs/extracted_field"},
+        "customer_reference": {"$ref": "#/$defs/extracted_field"},
+        "supplier_reference": {"$ref": "#/$defs/extracted_field"},
+        "quote_number": {"$ref": "#/$defs/extracted_field"},
+        "contract_number": {"$ref": "#/$defs/extracted_field"},
+        "project_number": {"$ref": "#/$defs/extracted_field"},
+        "requested_delivery_date": {"$ref": "#/$defs/extracted_field"},
+        "parties": {"type": "object", "additionalProperties": {"type": "object"}},
+        "addresses": {"type": "array", "items": {"$ref": "#/$defs/address"}},
+        "delivery_address": {"$ref": "#/$defs/address"},
+        "delivery_address_selection": {"type": "object"},
+        "line_items": {"type": "array", "items": {"$ref": "#/$defs/line_item"}},
+        "additional_charges": {"type": "array", "items": {"type": "object"}},
+        "totals": {"type": "object"},
+        "commercial_terms": {},
+        "logistics": {},
+        "tax_identifiers": {"type": "array", "items": {"type": "object"}}
+      },
+      "additionalProperties": false
+    },
+    "quality": {
+      "type": "object",
+      "properties": {
+        "decision": {"enum": ["CHECKS_PASSED", "REVIEW_REQUIRED"]},
+        "requires_review": {"type": "boolean"},
+        "review_reasons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["code", "path"],
+            "properties": {"code": {"type": "string"}, "path": {"type": "string"}},
+            "additionalProperties": true
+          }
+        },
+        "business_validation": {"type": "object"},
+        "output_audit": {"type": "object"},
+        "order_number": {"type": "object"},
+        "qualification": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "reference_data": {"type": "object"}
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "page": {"type": "integer", "minimum": 1},
+        "bbox": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}},
+        "source_text": {"type": "string"},
+        "method": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "extracted_field": {
+      "type": "object",
+      "required": ["value"],
+      "properties": {
+        "value": {},
+        "site": {"type": "string"},
+        "raw_value": {},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "status": {"type": "string"},
+        "warnings": {"type": "array"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      },
+      "additionalProperties": false
+    },
+    "address": {
+      "type": "object",
+      "required": ["role"],
+      "properties": {
+        "id": {"type": "string"},
+        "role": {"type": "string"},
+        "role_label": {"type": "string"},
+        "party_name": {"type": "string"},
+        "party_code": {"type": "string"},
+        "department": {"type": "string"},
+        "contact": {"type": "object"},
+        "formatted": {"type": "string"},
+        "formatted_lines": {"type": "array", "items": {"type": "string"}},
+        "source_formatted": {"type": "string"},
+        "components": {"type": "object"},
+        "normalization": {"type": "object"},
+        "role_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "address_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "verification": {"type": "object"},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "warnings": {"type": "array"}
+      },
+      "additionalProperties": false
+    },
+    "line_item": {
+      "type": "object",
+      "properties": {
+        "line_number": {},
+        "references": {"type": "object"},
+        "description": {"type": "string"},
+        "quantity": {"type": "number"},
+        "unit": {"type": "string"},
+        "pricing": {"type": "object"},
+        "amounts": {"type": "object"},
+        "delivery": {"type": "object"},
+        "status": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "warnings": {"type": "array"},
+        "evidence": {"type": "object"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

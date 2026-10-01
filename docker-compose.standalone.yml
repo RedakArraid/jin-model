@@ -6,8 +6,10 @@ services:
     container_name: jin-model-standalone
     restart: unless-stopped
     environment:
+      JIN_OFFLINE: "1"
       JIN_FEEDBACK_PATH: /app/feedback/learning_feedback.jsonl
       JIN_LEARNING_MODEL_DIR: /app/data/learning
+      JIN_BAN_INDEX_DIR: /app/data/reference/ban
       JIN_CORPUS_ROUTER_MODEL: /app/data/learning/corpus_text_router.joblib
       JIN_PDF_ROUTER_MODEL: /app/data/learning/jin-pdf-fusion-router-v3-cpu.joblib
       JIN_FIELD_ROUTER_MODEL: /app/data/learning/jin-field-weak-router-v2-cpu.joblib
@@ -21,7 +23,7 @@ services:
       - ./data:/app/data
       - ./feedback:/app/feedback
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     healthcheck:
       test:
         [

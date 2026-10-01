@@ -1,0 +1,17 @@
+{
+  "version": "jin-pdf-fusion-router-v3-cpu",
+  "artifact_sha256": "6ecee7438887929c41339e4c3ff7b7620ed17a16267ba60aabc8311f2e590c32",
+  "artifact_bytes": 1734027,
+  "validation": {
+    "documents": 396,
+    "family_accuracy": 0.9974747474747475,
+    "decision_raw_accuracy": 0.9343434343434344,
+    "decision_with_family_prior_accuracy": 0.9419191919191919,
+    "decision_with_family_prior_macro_f1": 0.8976
+  },
+  "prior": {
+    "weight": 1.0,
+    "source": "train split only",
+    "smoothing": "Laplace +1"
+  }
+}
