@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -61,7 +62,18 @@ class LearningTests(unittest.TestCase):
             for idx, (text, role, number, postal, city) in enumerate(examples):
                 events.append(
                     {
+                        "schema_version": 1,
+                        "annotation_id": f"annotation-doc-{idx}",
                         "document_id": f"doc-{idx}",
+                        "document_sha256": hashlib.sha256(
+                            f"doc-{idx}".encode()
+                        ).hexdigest(),
+                        "validation": {
+                            "status": "human_validated",
+                            "reviewed_by": "quality-owner",
+                            "reviewed_at": "2026-10-02T08:00:00Z",
+                            "source": "unit-test",
+                        },
                         "extraction": {"business_addresses": [{"formatted_address": text, "role": "unknown", "role_confidence": 0.2}]},
                         "corrections": {
                             "business_addresses": [

@@ -184,7 +184,14 @@ JIN_PDF_ROUTER_MODEL=/app/data/learning/jin-pdf-fusion-router-v3-cpu.joblib
 JIN_FIELD_ROUTER_MODEL=/app/data/learning/jin-field-weak-router-v2-cpu.joblib
 JIN_OCR_LANGS=fra+eng+deu
 JIN_FIELD_ROUTER_THRESHOLD=0.80
+JIN_FEEDBACK_TOKEN=<random-secret-outside-git>
+JIN_FEEDBACK_RETRAIN_ON_WRITE=0
 ```
+
+Without `JIN_FEEDBACK_TOKEN`, `POST /feedback` is intentionally disabled. The
+endpoint accepts only the audited v1 contract documented in
+[`FEEDBACK_CONTRACT_V1.md`](FEEDBACK_CONTRACT_V1.md). Keep retraining outside
+the HTTP request and run the statistical training command through Docker.
 
 ## 8. What is optional
 

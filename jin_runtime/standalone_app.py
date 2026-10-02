@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from jin_runtime import __version__
 from jin_runtime.document_router import CorpusDocumentRouter
 from jin_runtime.learning import StatisticalAddressLearner
+from jin_runtime.feedback_auth import (
+    feedback_ingestion_enabled,
+    feedback_retrain_on_write,
+)
+from jin_runtime.feedback_http import feedback_response
 from jin_runtime.pdf_cpu_router import CpuPdfRouter
 from jin_runtime.weak_field_router import WeakFieldRouter
 
@@ -50,7 +55,14 @@ def health() -> dict[str, Any]:
 
 @app.get("/learning/status")
 def learning_status() -> dict[str, Any]:
-    return learner.status()
+    status = learner.status()
+    status["feedback_ingestion"] = {
+        "enabled": feedback_ingestion_enabled(),
+        "requires_bearer_token": True,
+        "requires_human_validation": True,
+        "retrain_on_write": feedback_retrain_on_write(),
+    }
+    return status
 
 
 @app.post("/learning/document-route")
@@ -137,12 +149,5 @@ async def analyze(file: UploadFile = File(...)) -> Response:
 
 
 @app.post("/feedback")
-def record_feedback(payload: dict[str, Any]) -> Response:
-    try:
-        status = learner.record_feedback(payload, retrain=True)
-    except (TypeError, ValueError) as exc:
-        return JSONResponse(
-            status_code=422,
-            content={"accepted": False, "detail": str(exc)},
-        )
-    return JSONResponse(content={"accepted": True, "learning": status})
+def record_feedback(request: Request, payload: dict[str, Any]) -> Response:
+    return feedback_response(request, payload, learner)

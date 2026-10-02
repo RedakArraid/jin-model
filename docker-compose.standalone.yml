@@ -8,6 +8,8 @@ services:
     environment:
       JIN_OFFLINE: "1"
       JIN_FEEDBACK_PATH: /app/feedback/learning_feedback.jsonl
+      JIN_FEEDBACK_TOKEN: ${JIN_FEEDBACK_TOKEN:-}
+      JIN_FEEDBACK_RETRAIN_ON_WRITE: "0"
       JIN_LEARNING_MODEL_DIR: /app/data/learning
       JIN_BAN_INDEX_DIR: /app/data/reference/ban
       JIN_CORPUS_ROUTER_MODEL: /app/data/learning/corpus_text_router.joblib

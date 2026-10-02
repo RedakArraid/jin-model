@@ -129,7 +129,9 @@ La mémoire statistique apprend :
 - les rôles d'adresse (`ship_to`, `bill_to`, `supplier`, `buyer`, etc.) ;
 - les composants structurés d'une adresse : bâtiment, numéro, suffixe, type/nom de voie, zones, BP/TSA/CS, code postal, ville, CEDEX, INSEE, région, pays, etc.
 
-Les corrections sont envoyées à `POST /feedback`, persistées localement puis réutilisées sur les extractions suivantes.
+Seules les corrections explicitement validées par un humain sont envoyées à
+`POST /feedback`. Elles sont persistées localement puis intégrées par un
+entraînement en lot avant d'être réutilisées sur les extractions suivantes.
 
 La couche reste prudente : elle complète d'abord les champs manquants, ne remplace un rôle que si le signal existant est faible et ne positionne jamais `is_verified_real_address=true`. La validation d'existence reste du ressort de la BAN/Géoplateforme ou d'un référentiel officiel approuvé.
 
@@ -187,8 +189,17 @@ Le ZIP moteur doit contenir `requirements.txt` et le package `uda/`. `prepare-mo
 curl http://localhost:8080/api/health
 curl -F "file=@commande.pdf" http://localhost:8080/api/extract
 curl http://localhost:8080/api/learning/status
-curl -X POST http://localhost:8080/api/feedback -H "Content-Type: application/json" -d @my-corrected-extraction.json
+curl -X POST http://localhost:8080/api/feedback \
+  -H "Authorization: Bearer ${JIN_FEEDBACK_TOKEN}" \
+  -H "Content-Type: application/json" \
+  --data-binary @feedback-v1.json
 ```
+
+`POST /feedback` est désactivé tant que `JIN_FEEDBACK_TOKEN` n'est pas
+configuré. Il accepte uniquement le
+[contrat de feedback humain v1](docs/FEEDBACK_CONTRACT_V1.md). Le
+réentraînement est exécuté en batch dans Docker par défaut, afin que l'ingestion
+reste rapide lorsque l'historique grandit.
 
 ## Entraînement CPU sur les vrais PDF
 
