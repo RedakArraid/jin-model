@@ -25,6 +25,10 @@ Sous PowerShell :
 docker compose -f docker-compose.standalone.yml up --build
 ```
 
+Les Compose utilisent `runc` par défaut afin de rester indépendants d'un
+runtime global Docker Desktop incompatible. Surcharge possible avec
+`CONTAINER_RUNTIME`.
+
 4. Teste :
 
 ```bash

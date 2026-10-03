@@ -1,5 +1,6 @@
 services:
   jin:
+    runtime: "${CONTAINER_RUNTIME:-runc}"
     build:
       context: .
       dockerfile: Dockerfile.standalone

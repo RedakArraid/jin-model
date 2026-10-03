@@ -1,5 +1,6 @@
 services:
   api:
+    runtime: "${CONTAINER_RUNTIME:-runc}"
     build:
       context: .
       dockerfile: Dockerfile
@@ -37,6 +38,7 @@ services:
 
   web:
     image: nginx:1.27-alpine
+    runtime: "${CONTAINER_RUNTIME:-runc}"
     container_name: jin-model-web
     restart: unless-stopped
     depends_on:
