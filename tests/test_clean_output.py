@@ -58,6 +58,37 @@ class CleanOutputTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in addresses], ["same:buyer", "same:bill_to"])
         self.assertEqual(len({item["id"] for item in addresses}), 2)
 
+    def test_metadata_only_fields_are_omitted_and_do_not_mask_fallbacks(self):
+        metadata_only = {
+            "ocr_confidence": 0.0,
+            "semantic_confidence": 0.0,
+            "validation_confidence": 1.0,
+            "final_confidence": 0.0,
+            "validation_status": "NOT_CHECKED",
+        }
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "business_extractions": {"purchase_order": {
+                "purchase_order": {
+                    "number": metadata_only,
+                    "order_number": {"value": "PO-FALLBACK"},
+                    "customer_reference": metadata_only,
+                    "expected_delivery_date": metadata_only,
+                    "required_date": {"value": "2026-10-08"},
+                    "customer_agency_code": metadata_only,
+                },
+                "customer_agency_code": {"value": "AG02"},
+                "lines": [],
+            }},
+        }
+
+        order = build_clean_output(payload)["order"]
+
+        self.assertEqual(order["customer_order_number"]["value"], "PO-FALLBACK")
+        self.assertNotIn("customer_reference", order)
+        self.assertEqual(order["requested_delivery_date"]["value"], "2026-10-08")
+        self.assertEqual(order["customer_agency_code"]["value"], "AG02")
+
     def test_clean_delivery_label_is_used_without_losing_source_value(self):
         payload = {
             "document": {"primary_document_type": "purchase_order"},

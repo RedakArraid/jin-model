@@ -45,11 +45,20 @@ def _compact(value: Any) -> Any:
 
 
 def _value(field: Any) -> Any:
-    return field.get("value") if isinstance(field, dict) and "value" in field else field
+    return field.get("value") if isinstance(field, dict) else field
 
 
 def _first(*values: Any) -> Any:
     return next((value for value in values if value is not None), None)
+
+
+def _first_field(*fields: Any) -> Any:
+    """Select the first field carrying a business value, not metadata alone."""
+
+    return next(
+        (field for field in fields if _value(field) not in (None, "")),
+        None,
+    )
 
 
 def _evidence(field: Any) -> dict[str, Any]:
@@ -194,7 +203,9 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
     delivery_addresses = [item for item in addresses if item.get("role") == "ship_to"]
     primary_delivery = delivery_addresses[0] if len(delivery_addresses) == 1 else None
     order_fields = {
-        "customer_order_number": _field(header.get("number") or header.get("order_number")),
+        "customer_order_number": _field(
+            _first_field(header.get("number"), header.get("order_number"))
+        ),
         "order_date": _field(header.get("order_date")),
         "currency": _field(header.get("currency")),
         "customer_reference": _field(header.get("customer_reference")),
@@ -202,10 +213,17 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
         "quote_number": _field(header.get("quote_number")),
         "contract_number": _field(header.get("contract_number")),
         "project_number": _field(header.get("project_number")),
-        "requested_delivery_date": _field(header.get("expected_delivery_date")
-                                            or header.get("required_date")),
+        "requested_delivery_date": _field(
+            _first_field(
+                header.get("expected_delivery_date"),
+                header.get("required_date"),
+            )
+        ),
         "customer_agency_code": _field(
-            header.get("customer_agency_code") or po.get("customer_agency_code")
+            _first_field(
+                header.get("customer_agency_code"),
+                po.get("customer_agency_code"),
+            )
         ),
     }
     clean = {
