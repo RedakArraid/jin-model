@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.9.2-segmented-order-number
+
+- Preserve complete segmented customer order numbers such as `02 - 9260205710` instead of retaining only the long numeric segment.
+- Reconstruct a scan-dropped hyphen only when the C.C.L. document family and both aligned numeric segments are corroborated.
+- Keep the raw OCR value and extraction method in evidence whenever a separator is reconstructed.
+- Add regression guards so unrelated unseparated numeric groups are never reformatted as segmented order numbers.
+
 ## 5.9.1-customer-agency-code
 
 - Added the source-backed `customer_agency_code` field to the verbose and clean JSON outputs.

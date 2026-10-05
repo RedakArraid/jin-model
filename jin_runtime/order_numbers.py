@@ -32,6 +32,17 @@ def _source_contains(value: str, text: Any) -> bool:
     return False
 
 
+def _source_contains_reconstructed_separator(value: str, text: Any) -> bool:
+    """Trace a canonical segmented ID when scan OCR omitted only its separator."""
+    if not isinstance(text, str):
+        return False
+    canonical = normalize_identifier(value)
+    source = normalize_identifier(text)
+    if not re.fullmatch(r"\d{2}-\d{10}", canonical):
+        return False
+    return canonical.replace("-", "") == re.sub(r"\s+", "", source)
+
+
 def _location_valid(evidence: dict[str, Any]) -> bool:
     page, bbox = evidence.get("page"), evidence.get("bbox")
     return (
@@ -123,7 +134,16 @@ def check_order_number(po: dict[str, Any], suggestions: dict[str, Any]) -> dict[
     else:
         if len(identifier) > 128 or re.fullmatch(r"(?:\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}[-/]\d{2}[-/]\d{2})", identifier):
             issues.append("ORDER_NUMBER_FORMAT_SUSPICIOUS")
-        if not (_location_valid(evidence) and _source_contains(identifier, evidence.get("source_text"))):
+        evidence_method = str(evidence.get("extraction_method") or "")
+        source_supported = _source_contains(identifier, evidence.get("source_text"))
+        if (
+            not source_supported
+            and evidence_method == "explicit_segmented_order_number_reconstructed_separator"
+        ):
+            source_supported = _source_contains_reconstructed_separator(
+                identifier, evidence.get("source_text")
+            )
+        if not (_location_valid(evidence) and source_supported):
             issues.append("ORDER_NUMBER_EVIDENCE_MISSING")
         original = header.get("number_original")
         original_value = original.get("value") if isinstance(original, dict) else original

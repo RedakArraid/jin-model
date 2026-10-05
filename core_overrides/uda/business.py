@@ -2272,6 +2272,84 @@ def _enhance_strict_order_number_v47(po, pages, config: dict):
             score -= float(config.get("layout",{}).get("learned_shape_mismatch_penalty",0.10))
         candidates.append((float(score), val, row, method, words or getattr(row,"words",[])))
 
+    # Preserve segmented identifiers printed after an explicit number marker,
+    # for example ``N° 02 - 9260205710``.  The short left segment is part of
+    # the customer's identifier (often an agency/series), not disposable noise.
+    #
+    # Some scanned C.C.L. forms consistently lose the thin printed hyphen while
+    # OCR still reads both aligned numeric segments as ``N° 04 9260202817``.
+    # Reconstruct that separator only when the issuer/layout is corroborated;
+    # other unseparated numeric groups remain untouched.
+    page_folded=_fold(pg.text)
+    has_order_title=bool(re.search(
+        r"\b(?:bon\s+de\s+commande(?:\s+d[' ]?achat)?|purchase\s+order)\b",
+        page_folded,
+    ))
+    is_ccl_order=bool(
+        has_order_title
+        and (
+            re.search(r"(?:^|\W)c\s*[.]?\s*c\s*[.]?\s*l(?:\W|$)",page_folded)
+            or "ccl.fr" in page_folded
+            or "comptoir commercial du languedoc" in page_folded
+        )
+    )
+    reconstructed_segmented_sources={}
+    for row in rows:
+        if _row_center_safe(row) > pg.height*0.25:
+            break
+        ordered=sorted(row.words,key=lambda word:word.bbox[0])
+        compact_tokens=[re.sub(r"[^a-z0-9]","",_fold(word.text)) for word in ordered]
+        marker_positions=[
+            pos for pos,token in enumerate(compact_tokens)
+            if token in {"n","no","numero"}
+        ]
+        for marker in marker_positions:
+            tail=ordered[marker+1:marker+6]
+            if len(tail)<2:
+                continue
+            prefix_pos=None
+            for pos,word in enumerate(tail[:2]):
+                if re.fullmatch(r"\d{1,4}",word.text.strip(" .:#()[]")):
+                    prefix_pos=pos
+                    break
+            if prefix_pos is None:
+                continue
+            prefix=tail[prefix_pos].text.strip(" .:#()[]")
+            core_pos=None
+            core=None
+            for pos in range(prefix_pos+1,min(len(tail),prefix_pos+4)):
+                token=tail[pos].text.strip(" .:#()[]")
+                if re.fullmatch(r"\d{6,14}",token):
+                    core_pos=pos; core=token
+                    break
+                if re.search(r"[A-Za-z]",token):
+                    break
+            if core_pos is None:
+                continue
+            between=tail[prefix_pos+1:core_pos]
+            printed_separator=any(
+                re.fullmatch(r"[-\u2010-\u2015]+",word.text.strip())
+                for word in between
+            )
+            reconstructed=bool(
+                not printed_separator
+                and is_ccl_order
+                and re.fullmatch(r"\d{2}",prefix)
+                and re.fullmatch(r"\d{10}",core)
+            )
+            if not (printed_separator and has_order_title) and not reconstructed:
+                continue
+            selected=tail[prefix_pos:core_pos+1]
+            value=f"{prefix} - {core}"
+            method=(
+                "explicit_segmented_order_number_reconstructed_separator"
+                if reconstructed else "explicit_segmented_order_number"
+            )
+            add(value,11.2 if printed_separator else 11.0,row,method,selected)
+            if reconstructed:
+                reconstructed_segmented_sources[value]=" ".join(word.text for word in selected)
+            break
+
     # Some procurement portals repeat their identifier in a dense flattened
     # heading such as ``BON DE COMMANDE REXEL - CDE n° 026432682``.  The nearby
     # supplier address can otherwise manufacture a plausible alphanumeric ID.
@@ -2670,6 +2748,14 @@ def _enhance_strict_order_number_v47(po, pages, config: dict):
         if method == "compact_order_header_verified_ocr":
             conf=min(conf, max(0.0, float(compact_check.get("confidence", 0.0))))
         po.purchase_order.number=_make_spatial_field(val,pg.page,_bbox_union(words) if words else getattr(row,"bbox",None),confidence=conf,method=method)
+        if method == "explicit_segmented_order_number_reconstructed_separator":
+            source_text=reconstructed_segmented_sources.get(val)
+            if source_text:
+                po.purchase_order.number.raw_value=source_text
+                po.purchase_order.number.evidence.source_text=source_text
+            po.purchase_order.number.warnings.append(
+                "Separator reconstructed from corroborated C.C.L. order layout after scan OCR omitted the printed hyphen."
+            )
         if method == "compact_order_header_verified_ocr":
             po.purchase_order.number.raw_value=compact_check.get("original")
             po.purchase_order.number.evidence.source_text=compact_check.get("original")

@@ -126,6 +126,56 @@ def test_abbreviated_order_column_is_not_confused_with_supplier_or_date():
     assert po.purchase_order.number.value == "225577"
 
 
+def test_segmented_order_number_preserves_prefix_and_printed_hyphen():
+    page = _page([
+        (42, [("BON", 160, 190), ("DE", 195, 215), ("COMMANDE", 220, 300),
+              ("D'ACHAT", 305, 365)]),
+        (72, [("N°", 160, 177), ("02", 184, 200), ("-", 205, 210),
+              ("9260205710", 216, 305)]),
+        (150, [("CCL", 45, 70), ("COLOMIERS", 75, 140), ("www.ccl.fr", 480, 550)]),
+    ])
+    po = SimpleNamespace(purchase_order=PurchaseOrderHeader())
+    _enhance_strict_order_number_v47(po, [page], {})
+    field = po.purchase_order.number
+    assert field.value == "02 - 9260205710"
+    assert field.raw_value == "02 - 9260205710"
+    assert field.evidence.source_text == "02 - 9260205710"
+    assert field.evidence.extraction_method == "explicit_segmented_order_number"
+    assert field.warnings == []
+
+
+def test_ccl_scan_reconstructs_only_missing_segment_separator_and_keeps_raw_evidence():
+    page = _page([
+        (42, [("BON", 160, 190), ("DE", 195, 215), ("COMMANDE", 220, 300),
+              ("D'ACHAT", 305, 365)]),
+        (72, [("N°", 160, 177), ("04", 184, 200),
+              ("9260202817", 216, 305)]),
+        (150, [("CCL", 45, 70), ("MOISSAC", 75, 140), ("www.ccl.fr", 480, 550)]),
+    ])
+    for word in page.words:
+        word.source = "ocr"
+    po = SimpleNamespace(purchase_order=PurchaseOrderHeader())
+    _enhance_strict_order_number_v47(po, [page], {})
+    field = po.purchase_order.number
+    assert field.value == "04 - 9260202817"
+    assert field.raw_value == "04 9260202817"
+    assert field.evidence.source_text == "04 9260202817"
+    assert field.evidence.extraction_method == "explicit_segmented_order_number_reconstructed_separator"
+    assert len(field.warnings) == 1
+
+
+def test_unseparated_numeric_groups_are_not_reformatted_without_corroborated_layout():
+    page = _page([
+        (42, [("BON", 160, 190), ("DE", 195, 215), ("COMMANDE", 220, 300)]),
+        (72, [("N°", 160, 177), ("04", 184, 200),
+              ("9260202817", 216, 305)]),
+        (150, [("AUTRE", 45, 85), ("SOCIETE", 90, 150)]),
+    ])
+    po = SimpleNamespace(purchase_order=PurchaseOrderHeader())
+    _enhance_strict_order_number_v47(po, [page], {})
+    assert po.purchase_order.number.value != "04 - 9260202817"
+
+
 def test_spaced_number_below_numero_header_keeps_all_digit_groups():
     page = _page([
         (50, [("COMMANDE", 10, 80)]),

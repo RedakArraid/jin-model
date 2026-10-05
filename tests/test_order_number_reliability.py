@@ -79,6 +79,18 @@ class OrderNumberReliabilityTests(unittest.TestCase):
         self.assertIn("ORDER_NUMBER_CORE_WARNING", check_order_number(payload, {})["issues"])
         self.assertEqual(check_order_number({}, {})["issues"], ["ORDER_NUMBER_MISSING"])
 
+    def test_reconstructed_segment_separator_keeps_raw_source_traceability(self):
+        payload = order("04 - 9260202817", "04 9260202817")
+        payload["purchase_order"]["number"]["evidence"]["extraction_method"] = (
+            "explicit_segmented_order_number_reconstructed_separator"
+        )
+        payload["purchase_order"]["number"]["warnings"] = [
+            "Separator reconstructed from corroborated C.C.L. order layout."
+        ]
+        result = check_order_number(payload, {})
+        self.assertNotIn("ORDER_NUMBER_EVIDENCE_MISSING", result["issues"])
+        self.assertIn("ORDER_NUMBER_CORE_WARNING", result["issues"])
+
     def test_replacement_of_a_different_plausible_core_number_requires_review(self):
         payload = order("124 126", "COMMANDE 124 126 AV STALINGRAD")
         payload["purchase_order"]["number_original"] = {"value": "5405637 /1877"}
