@@ -26,6 +26,43 @@ class GenericDocumentFieldsTests(unittest.TestCase):
             "SIRET 775 708 373 00011 - TVA FR 71 775 708 373",
         )
 
+    def test_coherent_core_page_wins_over_noisier_second_ocr_for_vat(self):
+        payload = {
+            "document": {"primary_document_type": "remittance_advice", "page_count": 1},
+            "pages": [{
+                "page": 1,
+                "text": (
+                    "S.A. au capital RCS Montpellier B 775 588 692 "
+                    "NAF 4672Z TVA FR 25 775 588 692 "
+                    "Siret 775 588 692 00258 IBAN FR76\n"
+                    "LIBELLE DATE VOTRE REF. NOTRE REF. MONTANT\n"
+                    "Total Virement 154.036,48 EUR"
+                ),
+            }],
+            "weak_field_suggestions": {
+                "recognized_pages": [{
+                    "page": 1,
+                    "text_source": "tesseract_ocr",
+                    "text": (
+                        "RCE Montpellier 8775 588 602 NAF 4672Z "
+                        "TVA FR 25 775 688 602 Sie 775 588 692 00258\n"
+                        "LIBELLE DATE VOTRE REF. NOTRE REF. MONTANT\n"
+                        "Total Virement 154.036,48 EUR"
+                    ),
+                }],
+            },
+        }
+
+        out = enrich_generic_document_fields(payload)
+        self.assertEqual(
+            [item["vat_number"] for item in out["document_tax_identifiers"]],
+            ["FR25775588692"],
+        )
+        self.assertIn(
+            "RCS Montpellier B 775 588 692",
+            out["document_tax_identifiers"][0]["evidence"]["source_text"],
+        )
+
     def test_approval_form_keeps_cited_order_as_reference_only(self):
         payload = {
             "document": {"primary_document_type": "approval_form", "page_count": 1},

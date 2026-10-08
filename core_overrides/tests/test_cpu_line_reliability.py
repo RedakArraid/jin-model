@@ -7,10 +7,15 @@ from po_ocr.models import PageResult, PurchaseOrderHeader, WordToken, Evidence, 
 from po_ocr.pdf_native import _needs_hybrid_ocr, _supplement_native_words, extract_native_page
 from po_ocr.extract import all_rows, extract_totals, compact_transaction_header_candidate, verify_compact_header_number
 from uda.business import (
+    _clean_po_number_v48,
     _enhance_order_header_from_page_layout,
+    _enhance_inline_transaction_header_v46,
     _enhance_strict_order_number_v47,
     _extract_geometry_table_items_v46,
+    _price_then_quantity_table_items,
     _quantity_first_table_items,
+    _summary_table_totals_v48,
+    _two_row_erp_table_items,
     _strict_text_totals_v48,
 )
 
@@ -21,6 +26,31 @@ def _page(rows, number=1):
     return PageResult(page=number, width=600, height=842, source_type="native_pdf",
                       text="\n".join(" ".join(t for t, _, _ in cells) for _, cells in rows),
                       words=words, confidence=1.0)
+
+
+def test_duplicate_pdf_layer_cleanup_preserves_composite_po_suffix():
+    po = SimpleNamespace(purchase_order=PurchaseOrderHeader(number=ExtractedField(
+        value="5416718 5416718 / 1877 1877",
+        evidence=Evidence(
+            page=1, bbox=(20, 125, 450, 146),
+            source_text="5416718 5416718 / 1877 1877",
+        ),
+    )))
+
+    _clean_po_number_v48(po, {"layout": {"po_number_tail_cleanup": True}})
+
+    assert po.purchase_order.number.value == "5416718 / 1877"
+    assert po.purchase_order.number.evidence.extraction_method == (
+        "po_number_composite_duplicate_cleanup_v60"
+    )
+
+
+def test_duplicate_pdf_layer_cleanup_still_collapses_simple_identifier():
+    po = SimpleNamespace(purchase_order=PurchaseOrderHeader(number=ExtractedField(
+        value="5416718 5416718",
+    )))
+    _clean_po_number_v48(po, {"layout": {"po_number_tail_cleanup": True}})
+    assert po.purchase_order.number.value == "5416718"
 
 
 def test_native_ocr_gate_includes_inline_images_but_skips_native_tables_and_logos():
@@ -81,6 +111,82 @@ def test_geometry_keeps_net_price_when_an_extra_list_price_column_is_present():
     assert (line.quantity, line.unit_price, line.line_total) == (2, 51, 102)
     assert line.description == "VALVE RENFORCEE"
     assert line.uom == "PIECE"
+
+
+def test_geometry_recognizes_purchase_price_pa_header_and_free_type_error_total():
+    page = _page([
+        (180, [("Code", 30, 53), ("art", 55, 69), ("Référence", 79, 122),
+               ("Désignation", 239, 291), ("Qte", 411, 428), ("U", 441, 450),
+               ("P.A", 463, 480), ("HT", 484, 499), ("Montant", 505, 543), ("HT", 545, 560)]),
+        (220, [("H51094", 29, 61), ("7716780589", 68, 119), ("CACHE", 150, 185),
+               ("TUBES", 190, 225), ("3.000", 411, 434), ("U", 439, 446),
+               ("30.00", 475, 498), ("90.00", 523, 546), ("€", 548, 553)]),
+        (250, [("H37381", 29, 61), ("8733501984", 68, 119), ("CLIMATISEUR", 150, 220),
+               ("1.000", 411, 434), ("U", 439, 446), ("0.00", 480, 498),
+               ("#Type!", 515, 545), ("€", 548, 553)]),
+    ])
+    lines, charges = _extract_geometry_table_items_v46([page], {})
+    assert charges == []
+    assert len(lines) == 2
+    assert lines[0].material_number == "H51094"
+    assert lines[0].supplier_material_number == "7716780589"
+    assert (lines[0].quantity, lines[0].unit_price, lines[0].line_total) == (3, 30, 90)
+    assert lines[1].material_number == "H37381"
+    assert lines[1].supplier_material_number == "8733501984"
+    assert (lines[1].quantity, lines[1].unit_price, lines[1].line_total) == (1, 0, 0)
+
+
+def test_price_then_quantity_layout_calculates_missing_line_amount():
+    page = _page([
+        (435, [("Ref", 20, 33), ("commande", 35, 78), ("N°", 131, 141), ("offre", 142, 161),
+               ("de", 163, 173), ("prix", 175, 190), ("Ref", 232, 245), ("fournisseur", 247, 291),
+               ("Code", 354, 374), ("i", 375, 378), ("COPITOLE", 380, 418),
+               ("Désignation", 443, 489), ("Tarif", 606, 624), ("unitaire", 626, 656),
+               ("HT", 658, 669), ("Quantité", 689, 723)]),
+        (456, [("06-253460", 31, 72), ("(vide)", 142, 164), ("87168354790", 299, 351),
+               ("T36272", 365, 393), ("Kit", 454, 464), ("vase", 466, 483),
+               ("d'expansion", 485, 530), ("93,03", 664, 686), ("1", 723, 728)]),
+    ])
+    lines = _price_then_quantity_table_items([page])
+    assert len(lines) == 1
+    assert lines[0].material_number == "87168354790"
+    assert lines[0].supplier_material_number == "87168354790"
+    assert lines[0].customer_material_number == "T36272"
+    assert lines[0].description == "Kit vase d'expansion"
+    assert (lines[0].quantity, lines[0].unit_price, lines[0].line_total) == (1, 93.03, 93.03)
+
+
+def test_standalone_header_date_is_used_as_order_date():
+    page = _page([(370, [("Date", 20, 45), ("11/08/2026", 55, 112)])])
+    page.width=842
+    page.height=595
+    po = SimpleNamespace(
+        purchase_order=PurchaseOrderHeader(),
+        supplier=SimpleNamespace(code=None),
+        buyer=SimpleNamespace(name=None,legal_name=None,contact=SimpleNamespace(name=None,phone=None)),
+    )
+    _enhance_inline_transaction_header_v46(po,[page],{})
+    assert po.purchase_order.order_date.value == "2026-08-11"
+    assert po.purchase_order.order_date.evidence.extraction_method == "standalone_header_date"
+
+
+def test_two_row_erp_layout_aligns_description_quantity_and_commercial_row():
+    page = _page([
+        (340, [("DESIGNATION",20,110),("QUANTITES",300,350),("DELAI",390,425),("MONTANT",520,575)]),
+        (355, [("CODE",20,55),("REFERENCE",90,145),("FOURNISSEUR",150,225),("Sem/Ann",390,430),("P.U",470,490),("NET",515,535),("H.T.",540,565)]),
+        (380, [("ADAPTATEUR",20,90),("RF",95,110),("OXYLIS",115,160),("2,00",315,340),("14/26",390,425)]),
+        (395, [("5560438",20,60),("7716780588",90,145),("/",155,158),("DEROG",165,205),("VBE-030226-0929",210,295),("PIECE",360,400),("20,00",470,495),("40,00",525,550)]),
+        (418, [("CHAUDIERE",20,85),("MURALE",90,145),("GAZ",150,175),("5,00",315,340),("14/26",390,425)]),
+        (433, [("4913906",20,60),("7716705092",90,145),("7716705092",150,205),("/",210,213),("DEROG",220,260),("VBE-030226-0929",265,350),("PIECE",360,400),("615,00",465,500),("3.075,00",515,560)]),
+        (470, [("HORAIRES",20,80),("DE",85,100),("RECEPTION",105,175)]),
+    ])
+    lines=_two_row_erp_table_items([page])
+    assert len(lines)==2
+    assert (lines[0].material_number,lines[0].supplier_material_number)==("5560438","7716780588")
+    assert (lines[0].quantity,lines[0].unit_price,lines[0].line_total)==(2,20,40)
+    assert lines[0].delivery_week=="14/26"
+    assert (lines[1].material_number,lines[1].supplier_material_number)==("4913906","7716705092")
+    assert (lines[1].quantity,lines[1].unit_price,lines[1].line_total)==(5,615,3075)
 
 
 def test_geometry_recovers_missing_quantity_label_from_repeated_aligned_unit_cells():
@@ -277,7 +383,7 @@ def test_attached_numero_below_order_title_beats_acknowledgement_number():
     ])
     po = SimpleNamespace(purchase_order=PurchaseOrderHeader())
     _enhance_strict_order_number_v47(po, [page], {})
-    assert po.purchase_order.number.value == "5516418 /1877"
+    assert po.purchase_order.number.value == "5516418 / 1877"
 
 
 def test_bon_de_commande_explicit_number_beats_product_identifier():
@@ -518,3 +624,40 @@ def test_printed_net_ht_footer_overrides_merchandise_subtotal_without_adding_cha
     assert po.totals.subtotal == 777.89
     assert po.totals.total_vat == 155.61
     assert po.totals.grand_total == 933.64
+
+
+def test_summary_table_reads_label_value_cells_without_confusing_vat_rate():
+    table = SimpleNamespace(
+        data=[[
+            "TVA (%)\n20",
+            "Valeur HT\n6 957.34",
+            "Valeur TVA\n1 391.47",
+            "TOTAL TTC\n8 348.81 €",
+        ]],
+        source=SimpleNamespace(page=2),
+        confidence=0.98,
+    )
+    po = SimpleNamespace(totals=Totals())
+    _summary_table_totals_v48(po, [table], {})
+    assert po.totals.total_net == 6957.34
+    assert po.totals.total_vat == 1391.47
+    assert po.totals.total_gross == 8348.81
+    assert po.totals.grand_total == 8348.81
+
+
+def test_mixed_total_header_does_not_overwrite_net_with_ttc_and_keeps_explicit_eur():
+    page = _page([
+        (700, [("Escompte",20,70),("Total",80,110),("HT",115,130),(":",135,138),("12",470,482),("990,00",485,525)]),
+        (720, [("Total",20,50),("TVA",55,75),(":",80,83),("2",470,478),("598,00",482,520)]),
+        (740, [("Montant",20,65),("HT",70,85),("Ecotaxe",100,150),("HT",155,170),("Port",185,210),("HT",215,230),("Total",430,460),("TTC",465,485),(":",490,493),("15",500,512),("588,00",515,555)]),
+        (760, [("EUR",20,45),("12",80,92),("990,00",95,135),("0,00",160,185),("0,00",210,235),("20,00",270,300),("2",350,358),("598,00",362,402),("15",500,512),("588,00",515,555)]),
+        (780, [("NET",400,425),("A",430,438),("PAYER",442,480),(":",485,488),("15",500,512),("588,00",515,555)]),
+    ])
+    po=SimpleNamespace(purchase_order=PurchaseOrderHeader(),totals=Totals())
+    _strict_text_totals_v48(po,[page],{})
+    assert po.totals.total_net==12990
+    assert po.totals.total_vat==2598
+    assert po.totals.total_gross==15588
+    assert po.totals.grand_total==15588
+    assert po.totals.currency=="EUR"
+    assert po.purchase_order.currency.value=="EUR"

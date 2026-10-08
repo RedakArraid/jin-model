@@ -76,6 +76,18 @@ def _page_texts(payload: dict[str, Any]) -> list[tuple[int, str]]:
     recognized = (
         (payload.get("weak_field_suggestions") or {}).get("recognized_pages") or []
     )
+
+    def label_score(text: str) -> int:
+        folded = _fold(text)
+        return sum(
+            bool(re.search(rf"\b{marker}\b", folded))
+            for marker in (
+                "TVA", "VAT", "SIRET", "SIREN", "COMMANDE", "ORDER",
+                "FACTURE", "INVOICE", "ADRESSE", "ADDRESS", "TOTAL",
+                "DATE", "MONTANT", "QUANTITE", "FOURNISSEUR", "ACHETEUR",
+            )
+        )
+
     for page in recognized:
         if (
             isinstance(page, dict)
@@ -86,7 +98,16 @@ def _page_texts(payload: dict[str, Any]) -> list[tuple[int, str]]:
             # stream is not searchable as human-readable text. The weak field
             # router already OCRs the correctly rendered page; reuse exactly
             # that source-backed text for document-wide IDs such as VAT.
-            found[int(page.get("page") or 1)] = str(page["text"])
+            page_number = int(page.get("page") or 1)
+            router_text = str(page["text"])
+            native_text = found.get(page_number, "")
+            # Router OCR is a recovery source, not an unconditional authority.
+            # Keep an already coherent core page: a second OCR pass can turn a
+            # correct legal identifier into a different, coincidentally valid
+            # VAT number. Use the router only when it materially restores
+            # semantic labels (typical of a rotated/reversed native layer).
+            if not native_text or label_score(router_text) >= label_score(native_text) + 2:
+                found[page_number] = router_text
     if found:
         return sorted(found.items())
     raw_text = str(payload.get("raw_text") or "")

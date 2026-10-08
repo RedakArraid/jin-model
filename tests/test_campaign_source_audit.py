@@ -155,6 +155,19 @@ class CampaignSourceAuditTests(unittest.TestCase):
         self.assertEqual(statuses["controle_type_source"], "COHERENT_SOURCE")
         self.assertNotIn("TYPE_A_VERIFIER", reasons)
 
+    def test_legacy_order_label_joined_to_question_mark_supports_type(self):
+        statuses, reasons = _field_statuses({
+            "model": {"is_order": True, "order_number": "PR 5 1A4 67618"},
+            "source_text": (
+                "COMMANDEN? DRANCY\n"
+                "PR 5 1A4 67618 93700 DRANCY\n"
+                "Adresse Livraison: PROLIANS BA ALES"
+            ),
+            "automatic_checks": {"type": "A_VERIFIER"},
+        })
+        self.assertEqual(statuses["controle_type_source"], "COHERENT_SOURCE")
+        self.assertNotIn("TYPE_A_VERIFIER", reasons)
+
     def test_grouped_order_numbers_are_all_source_supported(self):
         statuses, reasons = _field_statuses({
             "model": {
@@ -355,6 +368,21 @@ class CampaignSourceAuditTests(unittest.TestCase):
             statuses["controle_adresse_source"], "MANQUANTE_AVEC_LIBELLE_SOURCE"
         )
         self.assertIn("ADRESSE_LIVRAISON_MANQUANTE", reasons)
+
+    def test_structured_prolians_form_without_title_is_an_order(self):
+        statuses, reasons = _field_statuses({
+            "model": {"is_order": True, "order_number": "PR I 1A4 44170"},
+            "source_text": (
+                "PR I 1A4 44170\n"
+                "Adresse Livraison: PROLIANS BA BAGNOLS\n"
+                "CODE REFERENCE FOURNISSEUR Sem/Ann P.U NET H.T.\n"
+                "NUMERO DE COMMANDE COMPLET A RAPPELER"
+            ),
+            "automatic_checks": {"type": "A_VERIFIER"},
+        })
+
+        self.assertEqual(statuses["controle_type_source"], "COHERENT_SOURCE")
+        self.assertNotIn("TYPE_A_VERIFIER", reasons)
 
 
 if __name__ == "__main__":

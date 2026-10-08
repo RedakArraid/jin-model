@@ -39,11 +39,20 @@ _EXPLICIT_CODE_RES = (
         r"(?P<code>[A-Z0-9][A-Z0-9._/-]{1,19})\b",
         re.I,
     ),
+    re.compile(
+        # Bare Magasin/Site/Dépôt captions often introduce a business
+        # activity, not a routing code. Their explicit ``CODE ...`` forms are
+        # still handled above; this shorthand is reserved for ``Agence``.
+        r"(?:^|[\n|])\s*AGENCE\s*[:#-]?\s*"
+        r"(?P<code>[A-Z0-9][A-Z0-9._/-]{1,19})\b",
+        re.I,
+    ),
 )
 _STOP_CODES = {
     "ADRESSE", "AGENCE", "ATTN", "BAT", "BATIMENT", "BP", "CEDEX", "CENTRE",
     "CLIENT", "CODE", "CS", "DEPOT", "DESTINATAIRE", "FR", "FRANCE", "LIVRAISON",
-    "MAGASIN", "PORT", "QUAI", "RUE", "SITE", "TSA", "ZA", "ZAC", "ZAE", "ZI",
+    "DE", "DU", "LA", "LE", "LES", "MAGASIN", "PORT", "QUAI", "RUE",
+    "SITE", "TSA", "ZA", "ZAC", "ZAE", "ZI",
 }
 
 
@@ -60,13 +69,21 @@ def _code(value: Any) -> str | None:
     return text or None
 
 
-def _valid_code(value: Any, *, explicit: bool = False) -> bool:
+def _valid_code(
+    value: Any, *, explicit: bool = False, corroborated_numeric: bool = False,
+) -> bool:
     code = _code(value)
     if not code or not _CODE_TOKEN_RE.fullmatch(code) or _fold(code) in _STOP_CODES:
         return False
     if len(code) < 2 or len(code) > 20:
         return False
-    if re.fullmatch(r"\d{5}", code) or re.fullmatch(r"\d{8,}", code):
+    if code.isdigit():
+        # A numeric agency identifier can look exactly like a French postcode.
+        # Accept it only behind an explicit label or when another independent
+        # source (the order-number prefix) corroborates the isolated delivery
+        # token.  Long digit strings remain transaction/contact identifiers.
+        return bool((explicit or corroborated_numeric) and 2 <= len(code) <= 7)
+    if re.fullmatch(r"\d{8,}", code):
         return False
     return explicit or any(char.isalpha() for char in code)
 
@@ -135,20 +152,27 @@ def _address(block: dict[str, Any]) -> dict[str, Any]:
 
 def _delivery_tokens(po: dict[str, Any]) -> set[str]:
     values: list[Any] = []
+    postal_codes: set[str] = set()
     for block in po.get("business_addresses") or []:
         if not isinstance(block, dict) or str(block.get("role") or "").lower() not in DELIVERY_ROLES:
             continue
         address = _address(block)
+        if postal_code := _code(address.get("postal_code")):
+            postal_codes.add(postal_code)
         values.extend(address.get("raw_lines") or [])
         values.extend(address.get(key) for key in ("address_complement", "line1", "line2", "line3"))
     ship_to = po.get("ship_to")
     if isinstance(ship_to, dict):
         address = _address(ship_to)
+        if postal_code := _code(address.get("postal_code")):
+            postal_codes.add(postal_code)
         values.extend(address.get("raw_lines") or [])
         values.extend(address.get(key) for key in ("address_complement", "line1", "line2", "line3"))
     return {
         code for value in values
-        if (code := _code(value)) and _valid_code(code)
+        if (code := _code(value))
+        and code not in postal_codes
+        and _valid_code(code, corroborated_numeric=code.isdigit())
     }
 
 
@@ -162,6 +186,38 @@ def _candidate_evidence_for_delivery_token(
     for block in blocks:
         if _same_code(block.get("text"), code):
             return _block_evidence(block, "isolated_delivery_block_code_v1")
+    return None
+
+
+def _source_page_bbox(block: dict[str, Any]) -> tuple[Any, Any]:
+    source = block.get("source") if isinstance(block.get("source"), dict) else {}
+    return source.get("page") or block.get("page"), source.get("bbox") or block.get("bbox")
+
+
+def _delivery_postal_codes(po: dict[str, Any]) -> set[str]:
+    postcodes: set[str] = set()
+    for block in _delivery_blocks(po):
+        address = _address(block)
+        if postcode := _code(address.get("postal_code")):
+            postcodes.add(postcode)
+    return postcodes
+
+
+def _near_delivery_heading(
+    blocks: list[dict[str, Any]], code_block: dict[str, Any],
+) -> dict[str, Any] | None:
+    code_page, code_bbox = _source_page_bbox(code_block)
+    if not isinstance(code_bbox, (list, tuple)) or len(code_bbox) != 4:
+        return None
+    for block in blocks:
+        folded = _fold(block.get("text"))
+        if not re.search(r"\b(?:ADRESSE DE LIVRAISON|A LIVRER|SHIP TO|DELIVER TO)\b", folded):
+            continue
+        page, bbox = _source_page_bbox(block)
+        if page != code_page or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+            continue
+        if 0 <= float(code_bbox[1]) - float(bbox[1]) <= 180:
+            return block
     return None
 
 
@@ -186,6 +242,46 @@ def _explicit_candidates(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         "reason": "explicit_customer_agency_code_label",
                         "evidence": _block_evidence(block, "explicit_customer_agency_code_v1"),
                     })
+
+    # Vector PDFs often split ``Agence`` and its value into two text blocks.
+    # Pair only an isolated role label with the nearest code-shaped block on
+    # the same visual row and page.
+    for label in blocks:
+        if _fold(label.get("text")) != "AGENCE":
+            continue
+        label_page, label_bbox = _source_page_bbox(label)
+        if not isinstance(label_bbox, (list, tuple)) or len(label_bbox) != 4:
+            continue
+        aligned: list[tuple[float, dict[str, Any], str]] = []
+        label_center_y = (float(label_bbox[1]) + float(label_bbox[3])) / 2
+        for block in blocks:
+            if block is label:
+                continue
+            page, bbox = _source_page_bbox(block)
+            if page != label_page or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                continue
+            code = _code(block.get("text"))
+            block_center_y = (float(bbox[1]) + float(bbox[3])) / 2
+            gap = float(bbox[0]) - float(label_bbox[2])
+            if (
+                code and _valid_code(code, explicit=True)
+                and 0 <= gap <= 300
+                and abs(block_center_y - label_center_y) <= 12
+            ):
+                aligned.append((gap, block, code))
+        if aligned:
+            _, block, code = min(aligned, key=lambda item: item[0])
+            candidates.append({
+                "value": code,
+                "confidence": 0.995,
+                "reason": "paired_customer_agency_label_and_code",
+                "evidence": _block_evidence(
+                    block, "paired_customer_agency_label_code_v2"
+                ),
+                "corroborating_evidence": [
+                    _block_evidence(label, "customer_agency_role_label_v2")
+                ],
+            })
     return candidates
 
 
@@ -202,19 +298,139 @@ def _corroborated_candidates(
         if not _ORDER_LABEL_RE.search(_fold(text)):
             continue
         match = _TRAILING_CODE_RE.search(text)
-        if not match or folded_number not in _fold(text[:match.start()]):
+        if match and folded_number in _fold(text[:match.start()]):
+            code = _code(match.group("code"))
+            if code and _valid_code(code) and code in delivery_tokens:
+                corroboration = _candidate_evidence_for_delivery_token(blocks, code)
+                candidates.append({
+                    "value": code,
+                    "confidence": 0.99,
+                    "reason": "order_suffix_corroborated_in_delivery_block",
+                    "evidence": _block_evidence(block, "corroborated_customer_agency_code_v1"),
+                    "corroborating_evidence": [corroboration] if corroboration else [],
+                })
+
+    # Some customer systems encode a numeric branch/site at the beginning of
+    # the order identifier and print it as a separate item in the delivery zone.
+    # Require all three independent layout signals: the order prefix, an exact
+    # isolated block, and a nearby delivery heading. This also handles codes
+    # that the address parser correctly kept out of postal ``raw_lines``.
+    prefix = re.match(r"^(\d{2,7})(?=[A-Z])", folded_number)
+    if prefix:
+        code = prefix.group(1)
+        order_blocks = [
+            block for block in blocks
+            if _ORDER_LABEL_RE.search(_fold(block.get("text")))
+            and folded_number in _fold(block.get("text"))
+        ]
+        code_blocks = [block for block in blocks if _same_code(block.get("text"), code)]
+        postcode_conflict = code in _delivery_postal_codes(po)
+        if (
+            order_blocks and not postcode_conflict
+            and _valid_code(code, corroborated_numeric=True)
+        ):
+            for code_block in code_blocks:
+                heading = _near_delivery_heading(blocks, code_block)
+                if not heading:
+                    continue
+                candidates.append({
+                    "value": code,
+                    "confidence": 0.99,
+                    "reason": "order_prefix_corroborated_in_delivery_zone",
+                    "evidence": _block_evidence(
+                        code_block, "corroborated_numeric_customer_agency_code_v1"
+                    ),
+                    "corroborating_evidence": [
+                        _block_evidence(order_blocks[0], "customer_agency_order_prefix_v1"),
+                        _block_evidence(heading, "customer_agency_delivery_zone_v1"),
+                    ],
+                })
+                break
+
+    # In a common two-column order layout, the five-digit delivery agency is
+    # printed as an isolated token below ``Adresse de livraison``.  It may be
+    # different from the five-digit order prefix: one identifies the emitting
+    # entity, the other the destination agency.  Promote the destination only
+    # when the order has the structured ``12345CA...`` shape, the token is a
+    # right-column block near the delivery heading, and it is not the postal
+    # code.  These layout constraints avoid guessing from arbitrary numbers.
+    structured_numeric_order = re.match(r"^\d{5}CA[A-Z0-9]{6,}$", folded_number)
+    if structured_numeric_order:
+        order_blocks = [
+            block for block in blocks
+            if _ORDER_LABEL_RE.search(_fold(block.get("text")))
+            and folded_number in _fold(block.get("text"))
+        ]
+        postcodes = _delivery_postal_codes(po)
+        for code_block in blocks:
+            code = _code(code_block.get("text"))
+            if (
+                not code
+                or not re.fullmatch(r"\d{5}", code)
+                or code in postcodes
+                or not _valid_code(code, corroborated_numeric=True)
+            ):
+                continue
+            heading = _near_delivery_heading(blocks, code_block)
+            if not heading:
+                continue
+            _, code_bbox = _source_page_bbox(code_block)
+            _, heading_bbox = _source_page_bbox(heading)
+            if not (
+                isinstance(code_bbox, (list, tuple)) and len(code_bbox) == 4
+                and isinstance(heading_bbox, (list, tuple)) and len(heading_bbox) == 4
+                and float(code_bbox[0]) >= float(heading_bbox[0]) + 100
+            ):
+                continue
+            candidates.append({
+                "value": code,
+                "confidence": 0.989,
+                "reason": "isolated_numeric_agency_in_delivery_zone",
+                "evidence": _block_evidence(
+                    code_block, "isolated_numeric_delivery_agency_code_v2"
+                ),
+                "corroborating_evidence": [
+                    _block_evidence(order_blocks[0], "structured_customer_order_v2")
+                    if order_blocks else None,
+                    _block_evidence(heading, "customer_agency_delivery_zone_v2"),
+                ],
+            })
+            break
+    return candidates
+
+
+def _agency_email_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Recover an explicit agency code carried by an agency mailbox.
+
+    This remains template-independent: the local part must literally start
+    with ``agence-``, ``agence_`` or ``agence.``.  A line break immediately
+    after the separator is tolerated because narrow PDF columns commonly wrap
+    ``agence-ppc.toulouse@...`` at that exact position.
+    """
+    candidates: list[dict[str, Any]] = []
+    for page_number, page in enumerate(payload.get("pages") or [], 1):
+        if not isinstance(page, dict):
             continue
-        code = _code(match.group("code"))
-        if not code or not _valid_code(code) or code not in delivery_tokens:
-            continue
-        corroboration = _candidate_evidence_for_delivery_token(blocks, code)
-        candidates.append({
-            "value": code,
-            "confidence": 0.99,
-            "reason": "order_suffix_corroborated_in_delivery_block",
-            "evidence": _block_evidence(block, "corroborated_customer_agency_code_v1"),
-            "corroborating_evidence": [corroboration] if corroboration else [],
-        })
+        source = str(page.get("text") or "")
+        joined = re.sub(r"(?<=[._-])\s*\n\s*", "", source)
+        for match in re.finditer(
+            r"\bAGENCE[._-](?P<code>[A-Z0-9]+(?:[._-][A-Z0-9]+){0,2})@",
+            joined,
+            flags=re.I,
+        ):
+            code = _code(match.group("code"))
+            if not code or not _valid_code(code, explicit=True):
+                continue
+            candidates.append({
+                "value": code,
+                "confidence": 0.994,
+                "reason": "explicit_agency_mailbox_code",
+                "evidence": {
+                    "page": int(page.get("page") or page_number),
+                    "source_text": match.group(0).rstrip("@"),
+                    "extraction_method": "explicit_agency_mailbox_code_v3",
+                },
+            })
     return candidates
 
 
@@ -267,6 +483,7 @@ def enrich_customer_agency_codes(payload: dict[str, Any]) -> dict[str, Any]:
     blocks = _blocks(payload)
     candidates = _explicit_candidates(blocks)
     candidates.extend(_corroborated_candidates(blocks, po, _delivery_tokens(po)))
+    candidates.extend(_agency_email_candidates(payload))
     selected = _select(candidates)
     if candidates:
         payload["customer_agency_code_candidates"] = candidates

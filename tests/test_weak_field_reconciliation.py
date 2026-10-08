@@ -151,6 +151,46 @@ class WeakFieldReconciliationTests(unittest.TestCase):
         self.assertEqual(header["number"]["value"], "CF352124")
         self.assertEqual(header["number_original"]["value"], "H7736504817")
 
+    def test_date_from_same_explicit_order_metadata_table_fills_missing_date(self):
+        payload = base_payload()
+        number = order_candidate("FBC22025806")
+        number["source"] = "geometry_explicit_order_metadata_v3"
+        payload["weak_field_suggestions"]["anchored_fields"].update({
+            "order_number": number,
+            "order_date": {
+                "value": "04/02/26",
+                "confidence": 0.995,
+                "source": "geometry_anchor_v2",
+                "page": 1,
+                "bbox": [338, 284, 374, 295],
+            },
+        })
+
+        out = reconcile_weak_fields(payload)
+        date = out["business_extractions"]["purchase_order"]["purchase_order"]["order_date"]
+
+        self.assertEqual(date["value"], "2026-02-04")
+        self.assertEqual(date["raw_value"], "04/02/26")
+        self.assertTrue(any(
+            action.get("action") == "promote_order_date"
+            for action in out["weak_field_reconciliation"]["actions"]
+        ))
+
+    def test_date_without_same_explicit_order_table_is_not_promoted(self):
+        payload = base_payload()
+        payload["weak_field_suggestions"]["anchored_fields"].update({
+            "order_number": order_candidate("FBC22025806"),
+            "order_date": {
+                "value": "04/02/26", "confidence": 0.995,
+                "source": "geometry_anchor_v2", "page": 1,
+            },
+        })
+
+        out = reconcile_weak_fields(payload)
+        header = out["business_extractions"]["purchase_order"]["purchase_order"]
+
+        self.assertNotIn("order_date", header)
+
     def test_explicit_geometry_replaces_source_labeled_phone_even_if_core_method_is_strong(self):
         payload = base_payload()
         payload["pages"] = [{
@@ -263,6 +303,31 @@ class WeakFieldReconciliationTests(unittest.TestCase):
         out = reconcile_weak_fields(payload)
         header = out["business_extractions"]["purchase_order"]["purchase_order"]
         self.assertEqual(header["number"]["value"], "5405637 /1877")
+        self.assertNotIn("number_original", header)
+        self.assertFalse(any(
+            action.get("action") == "promote_order_number"
+            for action in out.get("reconciliation_actions") or []
+        ))
+
+    def test_geometry_prefix_never_truncates_reconstructed_composite_number(self):
+        payload = base_payload()
+        header = payload["business_extractions"]["purchase_order"]["purchase_order"]
+        header["number"] = {
+            "value": "5416718 /1877",
+            "evidence": {
+                "page": 1,
+                "bbox": [20, 125, 450, 146],
+                "source_text": "5416718 5416718 / 1877 1877",
+                "extraction_method": "po_number_composite_duplicate_cleanup_v60",
+            },
+        }
+        payload["weak_field_suggestions"]["anchored_fields"]["order_number"] = (
+            order_candidate("5416718")
+        )
+
+        out = reconcile_weak_fields(payload)
+
+        self.assertEqual(header["number"]["value"], "5416718 /1877")
         self.assertNotIn("number_original", header)
         self.assertFalse(any(
             action.get("action") == "promote_order_number"
@@ -393,6 +458,37 @@ class WeakFieldReconciliationTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0]["address"]["building"], "THERMLOG Bâtiment F")
         self.assertIn("Bâtiment F", selected[0]["formatted_address"])
+
+    def test_distant_buyer_copy_does_not_pollute_explicit_delivery(self):
+        delivery = ship_candidate(
+            "IZI confort Amiens", "7", "rue", "Ambroise Croizat",
+            "80450", "CAMON",
+        )
+        delivery["source_line"] = 16
+        buyer_copy = {
+            **ship_candidate(
+                None, "7", "rue", "Ambroise Croizat", "80450", "CAMON",
+            ),
+            "role": "unknown",
+            "source_line": 1,
+        }
+        buyer_copy["components"].update({
+            "building": "Lot 118 - ZA La Blanche Tâche",
+            "industrial_zone": "ZA La Blanche Tâche",
+        })
+        payload = base_payload()
+        payload["weak_field_suggestions"]["address_candidates"] = [
+            buyer_copy, delivery,
+        ]
+
+        out = reconcile_weak_fields(payload)
+        selected = next(
+            item for item in out["business_extractions"]["purchase_order"]["business_addresses"]
+            if item["role"] == "ship_to"
+        )
+
+        self.assertNotIn("building", selected["address"])
+        self.assertNotIn("industrial_zone", selected["address"])
 
     def test_same_site_longer_street_occurrence_completes_delivery_street(self):
         payload = base_payload()
@@ -730,6 +826,63 @@ class WeakFieldReconciliationTests(unittest.TestCase):
         self.assertEqual(selected[0]["address"]["street"], "ROUTE NATIONALE")
         self.assertEqual(selected[0]["address"]["postal_code"], "45774")
         self.assertEqual(selected[0]["address"]["city"], "SARAN CEDEX")
+
+    def test_delivery_label_without_de_strips_inline_phone_fax_and_page(self):
+        payload = base_payload()
+        payload["pages"] = [{
+            "page": 1,
+            "text": (
+                "Adresse Livraison: Cd Rglt\n"
+                "PROLIANS DP ORANGE Tél: 04 90 00 00 00\n"
+                "585 AVENUE DE VERDUN Fax: 04 90 00 00 01\n"
+                "VIREMENT\n"
+                "ORANGE\n"
+                "84100 ORANGE PAGE 1\n"
+                "DESIGNATION QUANTITE PRIX"
+            ),
+        }]
+
+        out = reconcile_weak_fields(payload)
+        selected = [
+            item for item in out["business_extractions"]["purchase_order"]["business_addresses"]
+            if item["role"] == "ship_to"
+        ]
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["party_name"], "PROLIANS DP ORANGE")
+        self.assertEqual(selected[0]["address"]["house_number"], "585")
+        self.assertEqual(selected[0]["address"]["street"], "AVENUE DE VERDUN")
+        self.assertEqual(selected[0]["address"]["postal_code"], "84100")
+        self.assertEqual(selected[0]["address"]["city"], "ORANGE")
+        self.assertNotIn("address_complement", selected[0]["address"])
+
+    def test_delivery_block_parses_post_box_zone_and_page_without_number(self):
+        payload = base_payload()
+        payload["pages"] = [{
+            "page": 1,
+            "text": (
+                "Adresse Livraison: Cd Rglt: 030 J LE 15\n"
+                "PROLIANS DP TOULON Tél: 0820003000\n"
+                "CPS Fax: 0143117317\n"
+                "391 Avenue J.L LAMBOT\n"
+                "BP 67 Z.I. EST VIREMENT\n"
+                "TOULON\n"
+                "83079 TOULON PAGE\n"
+                "DESIGNATION QUANTITES DELAI MONTANT"
+            ),
+        }]
+        out = reconcile_weak_fields(payload)
+        selected = [
+            item for item in out["business_extractions"]["purchase_order"]["business_addresses"]
+            if item["role"] == "ship_to"
+        ]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["party_name"], "PROLIANS DP TOULON")
+        self.assertEqual(selected[0]["address"]["house_number"], "391")
+        self.assertEqual(selected[0]["address"]["street"], "Avenue J.L LAMBOT")
+        self.assertEqual(selected[0]["address"]["po_box"], "BP 67")
+        self.assertEqual(selected[0]["address"]["industrial_zone"], "Z.I. EST")
+        self.assertEqual(selected[0]["address"]["postal_code"], "83079")
 
     def test_explicit_delivery_block_ignores_footer_geometry_false_positives(self):
         payload = base_payload()

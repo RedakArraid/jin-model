@@ -34,7 +34,69 @@ class DeliveryAddressTests(unittest.TestCase):
             },
         })
         self.assertEqual(clean["one_line"].count("BATIMENT B5"), 1)
-        self.assertEqual(clean["components"]["building"], "BATIMENT B5")
+        self.assertNotIn("building", clean["components"])
+
+    def test_partial_street_repeated_in_zone_is_removed(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "AU FORUM DU BATIMENT",
+            "department": "ZI LA PALUDS",
+            "address": {
+                "building": "AU FORUM DU BATIMENT",
+                "house_number": "430",
+                "street": "AV DE LA PALUDS",
+                "industrial_zone": "ZI LA PALUDS - 430 AV DE LA",
+                "postal_code": "13400",
+                "city": "AUBAGNE",
+                "country": "France",
+            },
+        })
+        self.assertEqual(clean["components"]["industrial_zone"], "ZI LA PALUDS")
+        self.assertNotIn("building", clean["components"])
+        self.assertEqual(clean["one_line"].count("430 AV DE LA PALUDS"), 1)
+        self.assertNotIn("ZI LA PALUDS - 430 AV DE LA", clean["one_line"])
+
+    def test_longer_recipient_replaces_redundant_short_site_name(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "REXEL CHAMPIGNY",
+            "department": "REXEL CHAMPIGNY SUR MARNE",
+            "address": {
+                "house_number": "91",
+                "street": "RUE MARCEL PAUL",
+                "postal_code": "94500",
+                "city": "CHAMPIGNY-SUR-MARNE",
+            },
+        })
+        self.assertEqual(clean["components"]["recipient"], "REXEL CHAMPIGNY SUR MARNE")
+        self.assertNotIn("department", clean["components"])
+        self.assertEqual(clean["lines"].count("REXEL CHAMPIGNY SUR MARNE"), 1)
+
+    def test_prolians_regional_site_alias_is_not_printed_twice(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "PROLIANS DR SAINT ETIENNE",
+            "department": "PROLIANS ST ETIENNE",
+            "address": {
+                "house_number": "3", "street": "RUE JEAN SNELLA",
+                "postal_code": "42000", "city": "SAINT-ETIENNE",
+            },
+        })
+
+        self.assertNotIn("department", clean["components"])
+        self.assertEqual(clean["lines"].count("PROLIANS DR SAINT ETIENNE"), 1)
+
+        joined = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "PROLIANS DR SAINT ETIENNE PROLIANS ST ETIENNE",
+            "address": {
+                "house_number": "3", "street": "RUE JEAN SNELLA",
+                "postal_code": "42000", "city": "SAINT-ETIENNE",
+            },
+        })
+        self.assertEqual(
+            joined["components"]["recipient"], "PROLIANS DR SAINT ETIENNE"
+        )
 
     def test_legal_form_alone_is_not_recipient_and_exact_site_duplicate_is_removed(self):
         clean = clean_delivery_address({
@@ -143,6 +205,47 @@ class DeliveryAddressTests(unittest.TestCase):
             clean["one_line"],
             "SOROFI MONTELIMAR, ZA DE FORTUNEAU, 26200 MONTELIMAR, FRANCE",
         )
+
+    def test_repeated_zone_with_payment_instruction_is_not_printed(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "PROLIANS BA BEZIERS",
+            "address": {
+                "house_number": "24", "street": "RUE MARTIN LUTHER KING",
+                "industrial_zone": "ZI LE CAPISCOL",
+                "address_complement": "ZI LE CAPISCOL VIREMENT",
+                "cs": "CS 63009", "postal_code": "34536", "city": "BEZIERS",
+                "country": "France",
+            },
+        })
+        self.assertNotIn("address_complement", clean["components"])
+        self.assertEqual(clean["one_line"].count("ZI LE CAPISCOL"), 1)
+        self.assertNotIn("VIREMENT", clean["one_line"])
+
+    def test_vat_and_zone_fused_into_recipient_are_separated(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": (
+                "PROLIANS BA PERPIGNAN N�TVA EUROPE FR25775588692 "
+                "Z.I SAINT CHARLES"
+            ),
+            "address": {
+                "street": "AVENUE DE BRUXELLES BP 5151 VIREMENT",
+                "postal_code": "66031", "city": "PERPIGNAN CEDEX",
+                "country": "France",
+            },
+        })
+
+        self.assertEqual(clean["components"]["recipient"], "PROLIANS BA PERPIGNAN")
+        self.assertEqual(clean["components"]["industrial_zone"], "Z.I SAINT CHARLES")
+        self.assertEqual(clean["components"]["street"], "AVENUE DE BRUXELLES")
+        self.assertEqual(clean["components"]["po_box"], "BP 5151")
+        self.assertEqual(clean["one_line"], (
+            "PROLIANS BA PERPIGNAN, AVENUE DE BRUXELLES, Z.I SAINT CHARLES, "
+            "BP 5151, 66031 PERPIGNAN CEDEX, FRANCE"
+        ))
+        self.assertNotIn("TVA", clean["one_line"])
+        self.assertNotIn("VIREMENT", clean["one_line"])
 
     def test_delivery_department_is_kept_and_bare_street_type_is_removed(self):
         clean = clean_delivery_address({
@@ -353,6 +456,25 @@ class DeliveryAddressTests(unittest.TestCase):
         self.assertNotIn("department", duplicate["components"])
         self.assertEqual(duplicate["one_line"].count("AGNEAUX"), 2)
 
+    def test_phone_and_shipping_terms_are_not_address_complements(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "PPC",
+            "address": {
+                "house_number": "28",
+                "street": "BOULEVARD LENINE",
+                "address_complement": "Portable: | Condition liv : Livre franco",
+                "postal_code": "76800",
+                "city": "ST ETIENNE DU ROUVRAY",
+                "country": "France",
+            },
+        })
+        self.assertNotIn("address_complement", clean["components"])
+        self.assertEqual(
+            clean["one_line"],
+            "PPC, 28 BOULEVARD LENINE, 76800 ST ETIENNE DU ROUVRAY, FRANCE",
+        )
+
     def test_shipping_instruction_is_not_exposed_as_delivery_department(self):
         clean = clean_delivery_address({
             "role": "ship_to",
@@ -382,6 +504,20 @@ class DeliveryAddressTests(unittest.TestCase):
                 "FRANCE",
             ],
         )
+
+    def test_delivery_wish_sentence_is_not_a_department(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "ESPINOSA",
+            "department": "Livraison souhaitée à la société ESPINOSA",
+            "address": {
+                "house_number": "43", "street": "Boulevard Berthelot",
+                "postal_code": "34000", "city": "Montpellier",
+            },
+        })
+
+        self.assertNotIn("department", clean["components"])
+        self.assertNotIn("LIVRAISON SOUHAITEE", clean["one_line"])
 
     def test_city_repeated_as_complement_is_removed(self):
         clean = clean_delivery_address({
@@ -488,6 +624,57 @@ class DeliveryAddressTests(unittest.TestCase):
         self.assertEqual(clean["components"]["industrial_zone"], "ZA DE FORTUNEAU")
         self.assertNotIn("| FR", clean["one_line"])
 
+    def test_client_identifier_is_not_an_address_complement(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "REXEL France",
+            "address": {
+                "house_number": "2", "street": "RUE DE PARIS",
+                "address_complement": "CLI: 6133247",
+                "postal_code": "75001", "city": "PARIS",
+            },
+        })
+
+        self.assertNotIn("address_complement", clean["components"])
+        self.assertNotIn("6133247", clean["one_line"])
+
+    def test_payment_method_is_not_an_address_complement(self):
+        clean = clean_delivery_address({
+            "role": "ship_to", "party_name": "PROLIANS LC AGNEAUX",
+            "address": {
+                "house_number": "1522", "street": "ROUTE DE PERIERS",
+                "address_complement": "VIREMENT", "po_box": "BP 63",
+                "postal_code": "50180", "city": "AGNEAUX",
+            },
+        })
+        self.assertNotIn("VIREMENT", clean["one_line"])
+        self.assertNotIn("address_complement", clean["components"])
+
+    def test_access_code_is_not_a_postal_address_component(self):
+        clean = clean_delivery_address({
+            "role": "ship_to", "party_name": "ISERBA",
+            "address": {
+                "house_number": "2104", "street": "RUE JEAN JAURES",
+                "address_complement": "code cadenas 2375",
+                "postal_code": "71410", "city": "SANVIGNES LES MINES",
+            },
+        })
+        self.assertNotIn("2375", clean["one_line"])
+        self.assertNotIn("address_complement", clean["components"])
+
+    def test_care_of_line_follows_business_recipient(self):
+        clean = clean_delivery_address({
+            "role": "ship_to", "party_name": "CHEZ ISERBA",
+            "department": "CONFOGAZ IDF",
+            "address": {
+                "house_number": "17", "street": "RUE DU BOIS MOUSSAY",
+                "postal_code": "93240", "city": "STAINS",
+            },
+        })
+        self.assertEqual(clean["components"]["recipient"], "CONFOGAZ IDF")
+        self.assertEqual(clean["components"]["department"], "CHEZ ISERBA")
+        self.assertEqual(clean["lines"][:2], ["CONFOGAZ IDF", "CHEZ ISERBA"])
+
     def test_delivery_instruction_is_removed_from_zone_and_city_hyphens_are_tightened(self):
         clean = clean_delivery_address({
             "role": "ship_to",
@@ -547,6 +734,105 @@ class DeliveryAddressTests(unittest.TestCase):
         self.assertNotIn("department", combined["components"])
         self.assertEqual(combined["components"]["industrial_zone"], "Z.A.E.")
         self.assertEqual(combined["one_line"].count("ROUTE DE NISSERGUES"), 1)
+
+    def test_interleaved_zone_and_street_columns_are_reassembled(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "PROLIANS GW SAINT AVOLD",
+            "department": "ZI DU",
+            "address": {
+                "house_number": "76",
+                "house_number_suffix": "BIS",
+                "street": "RUE ALTMAYER",
+                "industrial_zone": "ZI DU 76 BIS RUE ALTMAYER",
+                "address_complement": "RUE DU GROS HETRE",
+                "postal_code": "57500",
+                "city": "SAINT-AVOLD",
+                "country": "France",
+            },
+        })
+
+        self.assertEqual(
+            clean["components"]["industrial_zone"], "ZI DU GROS HETRE",
+        )
+        self.assertNotIn("address_complement", clean["components"])
+        self.assertNotIn("department", clean["components"])
+        self.assertEqual(clean["one_line"].count("76 BIS RUE ALTMAYER"), 1)
+
+    def test_address_like_recipient_is_promoted_to_street(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "205, Av General Pruneau",
+            "department": "ANCONETTI / Depot ANC. TOULON",
+            "address": {"postal_code": "83000", "city": "TOULON"},
+        })
+        self.assertNotIn("recipient", clean["components"])
+        self.assertEqual(clean["components"]["street"], "205, Av General Pruneau")
+        self.assertEqual(
+            clean["lines"],
+            [
+                "ANCONETTI / DEPOT ANC. TOULON",
+                "205, AV GENERAL PRUNEAU",
+                "83000 TOULON",
+            ],
+        )
+
+    def test_address_like_recipient_is_promoted_when_line1_repeats_it(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "205, Av General Pruneau",
+            "department": "ANCONETTI / Depot ANC. TOULON",
+            "address": {
+                "line1": "205, Av General Pruneau",
+                "postal_code": "83000",
+                "city": "TOULON",
+            },
+        })
+        self.assertNotIn("recipient", clean["components"])
+        self.assertEqual(clean["components"]["street"], "205, Av General Pruneau")
+
+    def test_locality_line_does_not_block_street_promotion(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "205, Av General Pruneau",
+            "department": "ANCONETTI / Depot ANC. TOULON",
+            "address": {
+                "line1": "83000 Toulon",
+                "postal_code": "83000",
+                "city": "TOULON",
+            },
+        })
+        self.assertNotIn("recipient", clean["components"])
+        self.assertEqual(clean["components"]["street"], "205, Av General Pruneau")
+        self.assertEqual(clean["lines"][0], "ANCONETTI / DEPOT ANC. TOULON")
+
+    def test_hyphenated_bare_zone_marker_is_removed(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "PROLIANS",
+            "address": {
+                "street": "RUE DE L'INDUSTRIE",
+                "industrial_zone": "-ZI",
+                "postal_code": "34009",
+                "city": "MONTPELLIER",
+            },
+        })
+        self.assertNotIn("industrial_zone", clean["components"])
+        self.assertNotIn("-ZI", clean["one_line"])
+
+    def test_ocr_two_dot_a_dot_d_is_normalized_as_activity_zone(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "PROLIANS BA MILLAU",
+            "address": {
+                "industrial_zone": "2.A.D DE RAUJOLLES",
+                "street": "7 RUE ANDRE DUPONT",
+                "postal_code": "12100",
+                "city": "CREISSELS",
+            },
+        })
+        self.assertEqual(clean["components"]["industrial_zone"], "Z.A.D. DE RAUJOLLES")
+        self.assertIn("Z.A.D. DE RAUJOLLES", clean["one_line"])
 
 
 if __name__ == "__main__":

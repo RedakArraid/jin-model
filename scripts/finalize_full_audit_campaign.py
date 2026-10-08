@@ -144,7 +144,7 @@ def _field_statuses(item: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
     order_match = re.search(
         r"(?:BON\s+DE\s+COMMANDE|COMMANDE(?:\s+|[^\n]{1,40})FOURNISSEUR|"
         r"COMMANDE\s+REGROUPEE|"
-        r"\bCOMMANDE\s+N(?:O|UMERO)?[^\w\n]{0,3}\s*[A-Z0-9]|PURCHASE\s+ORDER|"
+        r"\bCOMMANDE\s*N(?:[?]|O|UMERO)?[^\w\n]{0,3}\s*[A-Z0-9]|PURCHASE\s+ORDER|"
         r"BESTELLUNG|(?:^|\n)\s*C\s+O\s+M\s+M\s+A\s+N\s+D\s+E\b|"
         r"(?:^|\n)\s*COMMANDE(?:\s+(?:N(?:O|UMERO)?[^\w\n]{0,3})?"
         r"\s*[A-Z0-9]|\s+DATE\s+DE\s+LIVRAISON|\s*(?:\n|$)))",
@@ -152,11 +152,21 @@ def _field_statuses(item: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
         flags=re.I,
     )
     structured_cpo_match = bool(
-        re.search(r"\bADRESSE\s+DE\s+LIVRAISON\b", folded_top)
-        and re.search(r"\bREF(?:ERENCE)?\s+CDE\s*:\s*[A-Z0-9]", folded_top)
-        and re.search(
-            r"\b(?:TARIF|PRIX)\s+UNITAIRE\b[^\n]{0,100}\bQUANTITE\b",
-            folded_top,
+        (
+            re.search(r"\bADRESSE\s+DE\s+LIVRAISON\b", folded_top)
+            and re.search(r"\bREF(?:ERENCE)?\s+CDE\s*:\s*[A-Z0-9]", folded_top)
+            and re.search(
+                r"\b(?:TARIF|PRIX)\s+UNITAIRE\b[^\n]{0,100}\bQUANTITE\b",
+                folded_top,
+            )
+        )
+        or (
+            # Legacy PROLIANS forms sometimes omit a large ``COMMANDE``
+            # title, but retain the delivery role and the supplier-reference
+            # line table with its net-amount column.
+            re.search(r"\bADRESSE\s+LIVRAISON\s*:", folded_top)
+            and re.search(r"\bCODE\s+REFERENCE\s+FOURNISSEUR\b", folded_top)
+            and re.search(r"\bNET\s+H\.?T\.?\b", folded_top)
         )
     )
     # A real purchase order can legitimately mention its applicable purchase

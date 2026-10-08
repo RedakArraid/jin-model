@@ -20,6 +20,7 @@ PERCENT_RE = re.compile(r"\b\d+(?:[.,]\d+)?\s*%")
 
 DOCUMENT_SIGNATURES: list[tuple[str, tuple[str, ...], int]] = [
     ("order_cancellation", ("demande d'annulation d'une commande", "annulation de commande", "order cancellation"), 1),
+    ("remittance_advice", ("remittance advice", "avis de virement", "total virement", "date de valeur"), 2),
     ("approval_form", ("rb general approval form", "general approval form", "approver(s)", "approval workflow"), 1),
     ("invoice", ("invoice", "facture", "rechnung", "invoice number", "total ttc", "amount due"), 2),
     ("delivery_note", ("delivery note", "bon de livraison", "lieferschein", "packing list"), 1),
@@ -270,6 +271,28 @@ def _transaction_title(text: str) -> str | None:
     """
     number = r"(?:n[\u00b0\u00bao]?|no\.?|num(?:ero)?|number|#)"
     folded_header = ascii_fold(text[:1800]).casefold()
+    folded_page = ascii_fold(text[:12000]).casefold()
+    remittance_markers = sum(
+        marker in folded_page
+        for marker in (
+            "virement bancaire",
+            "total virement",
+            "date de valeur",
+            "reglement du releve",
+            "libelle date votre ref. notre ref. montant",
+        )
+    )
+    if (
+        "remittance advice" in folded_page
+        or "avis de virement" in folded_page
+        or remittance_markers >= 3
+        or (
+            "total virement" in folded_page
+            and "date de valeur" in folded_page
+            and len(re.findall(r"(?m)^\s*(?:factf|avoif)\b", folded_page)) >= 2
+        )
+    ):
+        return "remittance_advice"
     if re.search(
         r"\b(?:demande\s+d[' ]?annulation\s+d[' ]?une\s+commande|"
         r"annulation\s+de\s+commande|order\s+cancellation)\b",
@@ -371,6 +394,7 @@ def classify_page(text: str, *, family: str = "pdf", page_number: int | None = N
     folded_lines = [" ".join(ascii_fold(line).casefold().split()) for line in text.splitlines()]
     scores: dict[str, float] = {
         "order_cancellation": 0.0,
+        "remittance_advice": 0.0,
         "approval_form": 0.0,
         "order_confirmation": 0.0,
         "purchase_order": 0.0,
@@ -442,7 +466,18 @@ def classify_page(text: str, *, family: str = "pdf", page_number: int | None = N
         if term in low:
             # A footer referring to terms is not itself a page of legal terms.
             add("legal_terms", pts if legal_heading else min(pts, 1.5), term)
-    article_markers = re.findall(r"(?:^|\s)(\d{1,2}(?:\.\d{1,2}){0,3})\s+[a-zà-ÿ]", low)
+    # Clause numbers are layout markers, not arbitrary numbers followed by a
+    # word. Searching the whitespace-flattened page used to count addresses,
+    # dates and quantities (for example ``42 RUE`` or ``1 PCE``) as legal
+    # articles. On short purchase-order pages that false legal score could
+    # trigger the anti-legal guard and divide the PO score by four. Real legal
+    # clauses start on their own extracted line, so retain the line boundary.
+    article_markers = [
+        match.group(1)
+        for line in folded_lines
+        if (match := re.match(r"^(\d{1,2}(?:\.\d{1,2}){0,3})\s+[a-zà-ÿ]", line))
+        and int(match.group(1).split(".", 1)[0]) <= 20
+    ]
     if len(article_markers) >= 4:
         add("legal_terms", min(7.0, 1.0 + len(article_markers) * 0.35), f"numbered-clauses:{len(article_markers)}")
     legal_vocab = _contains_any(low, [
@@ -455,6 +490,7 @@ def classify_page(text: str, *, family: str = "pdf", page_number: int | None = N
     # Other common document types.
     for kind, terms in {
         "order_cancellation": [("demande d'annulation d'une commande", 10.0), ("annulation de commande", 8.0), ("order cancellation", 8.0)],
+        "remittance_advice": [("remittance advice", 10.0), ("avis de virement", 9.0), ("total virement", 5.0), ("date de valeur", 3.0)],
         "approval_form": [("rb general approval form", 9.0), ("general approval form", 7.0), ("approval workflow", 4.0), ("approver(s)", 2.0)],
         "invoice": [("facture", 4.0), ("invoice", 4.0), ("amount due", 2.0), ("total ttc", 2.0)],
         "delivery_note": [("bon de livraison", 6.0), ("delivery note", 6.0), ("packing list", 4.0)],
@@ -529,7 +565,7 @@ def aggregate_page_classifications(page_classifications: list[dict[str, Any]], *
 
     # Transactional pages take precedence over appended legal/supporting pages.
     transactional_priority = [
-        "order_cancellation", "order_confirmation", "purchase_order", "invoice", "delivery_note",
+        "order_cancellation", "remittance_advice", "order_confirmation", "purchase_order", "invoice", "delivery_note",
         "request_for_quotation", "quotation",
     ]
     primary = None

@@ -3,6 +3,7 @@ data/
 feedback/
 artifacts/
 *.zip
+dist/
 .env
 .DS_Store
 __pycache__/

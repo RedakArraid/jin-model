@@ -24,6 +24,7 @@ from jin_runtime.clean_output import build_clean_output, clean_output_schema
 from jin_runtime.ban_reference import LocalBanReference
 from jin_runtime.delivery_addresses import enrich_delivery_addresses
 from jin_runtime.customer_agency_codes import enrich_customer_agency_codes
+from jin_runtime.header_fields import reconcile_header_fields
 from jin_runtime.weak_field_reconciliation import reconcile_weak_fields
 from jin_runtime.generic_document_fields import enrich_generic_document_fields
 from jin_runtime.grouped_order_fields import enrich_grouped_order_fields
@@ -219,6 +220,7 @@ async def extract(request: Request) -> Response:
             else:
                 payload.setdefault("runtime_warnings", []).append({"component": "field_router", "detail": "MODEL_NOT_LOADED"})
         payload = reconcile_weak_fields(payload)
+        payload = reconcile_header_fields(payload)
         payload = audit_and_repair_output(payload, repair=True)
         payload = ban_reference.enrich(payload)
         payload = enrich_customer_agency_codes(payload)

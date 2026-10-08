@@ -1,5 +1,16 @@
 # Changelog
 
+## 5.10.0-header-reliability
+
+- Audited the complete SHA-256-deduplicated 2,925-document order archive through iterative unseen discovery and validation batches.
+- Hardened source-backed customer order-number extraction across C.C.L., PPC/PARTEDIS, SISCA and segmented or table-based layouts without dropping separators or leading zeroes.
+- Added generic numeric and textual customer-agency-code recovery, including wrapped explicit agency mailboxes, while keeping business identifiers out of postal labels.
+- Reconciled buyer, supplier, delivery party and contact roles across multi-column and interleaved PDF text layers.
+- Cleaned delivery labels by separating VAT text, industrial zones, BP/CS/TSA routing, payment terms and contact data from postal components.
+- Added compact, consumer-oriented JSON normalization and UI-safe party/address output with source evidence, scores and explicit review warnings.
+- Added reproducible campaign tooling, source-support audits, selective replay and recoverable PDF deduplication.
+- Final unseen batch: 48/48 customer order numbers source-supported, 47/47 explicit delivery addresses source-supported, one non-explicit address intentionally left blank.
+
 ## 5.9.2-segmented-order-number
 
 - Preserve complete segmented customer order numbers such as `02 - 9260205710` instead of retaining only the long numeric segment.

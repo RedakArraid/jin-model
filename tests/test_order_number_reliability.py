@@ -120,6 +120,27 @@ class OrderNumberReliabilityTests(unittest.TestCase):
         result = check_order_number(payload, {})
         self.assertNotIn("ORDER_NUMBER_REPLACED_DIFFERENT_CORE_VALUE", result["issues"])
 
+    def test_disqualified_original_candidate_does_not_recreate_conflict(self):
+        payload = order("219298", "219298")
+        payload["purchase_order"]["number"]["evidence"]["extraction_method"] = (
+            "explicit_date_piece_order_column_v60"
+        )
+        payload["purchase_order"]["number_original"] = {
+            "value": "219928",
+            "disqualified_reason": "LESS_RELEVANT_OR_CLIPPED_HEADER_REFERENCE",
+        }
+        result = check_order_number(payload, {
+            "anchored_field_candidates": {"order_number": [{
+                "value": "219928", "page": 1,
+                "source": "geometry_explicit_order_label_v3",
+            }]},
+        })
+        self.assertNotIn("ORDER_NUMBER_CANDIDATES_DISAGREE", result["issues"])
+        self.assertEqual(
+            result["corroborating_candidates"][0]["ignored_reason"],
+            "LESS_RELEVANT_OR_CLIPPED_HEADER_REFERENCE",
+        )
+
     def test_same_page_explicit_geometry_prefix_corroborates_full_number(self):
         payload = order("PR 7 604 52249", "PR 7 604 52249")
         result = check_order_number(payload, {
@@ -131,6 +152,39 @@ class OrderNumberReliabilityTests(unittest.TestCase):
                     "source": "geometry_explicit_order_label_v3",
                 }
             }
+        })
+        self.assertNotIn("ORDER_NUMBER_CANDIDATES_DISAGREE", result["issues"])
+        self.assertTrue(result["corroborating_candidates"][0]["agrees"])
+
+    def test_geometry_cde_prefix_corroborates_repeated_suffix_identifier(self):
+        payload = order("264018 / EX", "264018 / EX")
+        payload["purchase_order"]["number"]["evidence"]["extraction_method"] = (
+            "repeated_explicit_order_suffix_v61"
+        )
+        result = check_order_number(payload, {
+            "anchored_field_candidates": {"order_number": [
+                {
+                    "value": "CDE264018", "page": 1,
+                    "source": "geometry_explicit_order_label_v3",
+                },
+                {
+                    "value": "CDE264018", "page": 2,
+                    "source": "geometry_explicit_order_label_v3",
+                },
+            ]}
+        })
+        self.assertNotIn("ORDER_NUMBER_CANDIDATES_DISAGREE", result["issues"])
+
+    def test_geometry_candidate_missing_only_separator_corroborates_full_identifier(self):
+        payload = order("1435 / MON", "1 435 / MON")
+        payload["purchase_order"]["number"]["evidence"]["extraction_method"] = (
+            "explicit_supplier_order_suffix_v62"
+        )
+        result = check_order_number(payload, {
+            "anchored_fields": {"order_number": {
+                "value": "1 435 MON", "page": 1,
+                "source": "geometry_explicit_order_label_v3",
+            }},
         })
         self.assertNotIn("ORDER_NUMBER_CANDIDATES_DISAGREE", result["issues"])
         self.assertTrue(result["corroborating_candidates"][0]["agrees"])
@@ -152,6 +206,30 @@ class OrderNumberReliabilityTests(unittest.TestCase):
                 }
             }
         })
+        self.assertNotIn("ORDER_NUMBER_CANDIDATES_DISAGREE", result["issues"])
+        self.assertEqual(
+            result["corroborating_candidates"][0]["ignored_reason"],
+            "LOWER_BODY_REFERENCE_BELOW_INLINE_PO_HEADER",
+        )
+
+    def test_explicit_top_order_label_outranks_later_project_reference(self):
+        payload = order("026389599", "Commande N° 026389599")
+        payload["purchase_order"]["number"]["evidence"].update({
+            "page": 1,
+            "bbox": [39, 12, 554, 32],
+            "extraction_method": "explicit_order_label",
+        })
+        result = check_order_number(payload, {
+            "anchored_fields": {
+                "order_number": {
+                    "value": "25021",
+                    "page": 1,
+                    "bbox": [466, 518, 551, 534],
+                    "source": "geometry_explicit_order_label_v3",
+                }
+            }
+        })
+
         self.assertNotIn("ORDER_NUMBER_CANDIDATES_DISAGREE", result["issues"])
         self.assertEqual(
             result["corroborating_candidates"][0]["ignored_reason"],

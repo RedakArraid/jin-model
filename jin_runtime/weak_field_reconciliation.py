@@ -9,6 +9,7 @@ action for auditability.
 from __future__ import annotations
 
 import copy
+from datetime import datetime
 import hashlib
 import re
 import unicodedata
@@ -414,7 +415,25 @@ def _enrich_equivalent_candidate(
     enriched = copy.deepcopy(candidate)
     enriched_components = enriched.setdefault("components", {})
     for item in related[1:]:
+        base_line = candidate.get("source_line")
+        item_line = item.get("source_line")
+        nearby_copy = bool(
+            base_line is None
+            or item_line is None
+            or abs(int(base_line) - int(item_line)) <= 6
+        )
         for key, value in (item.get("components") or {}).items():
+            if (
+                key in {
+                    "building", "industrial_zone", "business_park",
+                    "lieu_dit", "address_complement",
+                }
+                and not nearby_copy
+            ):
+                # Same street/postcode can occur once as the buyer address and
+                # later as a shorter explicit delivery block. Do not import
+                # site complements from that distant copy.
+                continue
             if value and not enriched_components.get(key):
                 enriched_components[key] = value
     def clean_street_extension(item: dict[str, Any]) -> bool:
@@ -522,6 +541,29 @@ def _field_from_anchor(candidate: dict[str, Any]) -> dict[str, Any]:
             "extraction_method": candidate.get("source") or "geometry_anchor",
         },
     }
+
+
+def _date_field_from_anchor(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    raw = str(candidate.get("value") or "").strip()
+    parsed = None
+    for date_format in (
+        "%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y",
+        "%d-%m-%y", "%d.%m.%Y", "%d.%m.%y",
+    ):
+        try:
+            parsed = datetime.strptime(raw, date_format)
+            break
+        except ValueError:
+            continue
+    if parsed is None:
+        return None
+    field = _field_from_anchor(candidate)
+    field.update({
+        "value": parsed.date().isoformat(),
+        "raw_value": raw,
+        "normalized_value": parsed.date().isoformat(),
+    })
+    return field
 
 
 def _plausible_order_candidate(candidate: dict[str, Any]) -> bool:
@@ -649,7 +691,7 @@ def _explicit_source_delivery_candidates(payload: dict[str, Any]) -> list[dict[s
         if not (
             "ADRESSE DE LIVRAISON EST" in label
             or "A LIVRER A L ADRESSE CI DESSOUS" in label
-            or re.search(r"\b(?:ADRESSE|HDRESSE|DRESSE) DE LIVRAISON\b", label)
+            or re.search(r"\b(?:ADRESSE|HDRESSE|DRESSE) (?:DE )?LIVRAISON\b", label)
             or "LIEU DE LIVRAISON" in label
         ):
             continue
@@ -665,17 +707,32 @@ def _explicit_source_delivery_candidates(payload: dict[str, Any]) -> list[dict[s
         following = []
         for value in lines[index + 1:index + 9]:
             if re.match(
-                r"^(?:TEL|TELEPHONE|FAX|EMAIL|REGLEMENT|ATTENTION|MODE D EXPEDITION|CODE\b|MONTANT\b)",
+                r"^(?:TEL|TELEPHONE|FAX|EMAIL|REGLEMENT|ATTENTION|MODE D EXPEDITION|"
+                r"DESIGNATION|CODE\s+REFERENCE|CODE\b|MONTANT\b)",
                 _norm(value),
             ):
                 break
             cleaned = re.split(r"\bHEURE\s+DE\s+RECEPTION\b", value, maxsplit=1, flags=re.I)[0]
+            cleaned = re.split(
+                r"\s+(?:T[^\s:]{0,5}L(?:[^\s:]*)?|FAX)\s*:",
+                cleaned,
+                maxsplit=1,
+                flags=re.I,
+            )[0]
+            cleaned = re.sub(
+                r"\s+PAGE(?:\s+\d+(?:\s*/\s*\d+)?)?\s*$",
+                "",
+                cleaned,
+                flags=re.I,
+            )
             cleaned = re.sub(
                 r"(?:\s+\d{1,2}\s*[Hh]\s*\d{2}){1,4}\s*$",
                 "",
                 cleaned,
             ).strip(" ,;:-")
-            if cleaned:
+            if cleaned and _norm(cleaned) not in {
+                "VIREMENT", "CHEQUE", "CB", "CARTE BANCAIRE",
+            }:
                 following.append(cleaned)
         labelled_one_line_pattern = re.compile(
             rf"^(?:(?P<industrial>Z\.?\s*[IAE]\.?|ZAC|ZAE)\s+)?"
@@ -804,7 +861,15 @@ def _explicit_source_delivery_candidates(payload: dict[str, Any]) -> list[dict[s
                 prefix_extras.append(value)
             else:
                 party_lines.append(value)
-        party = " ".join(party_lines).strip(" ,;:-")
+        if (
+            len(party_lines) >= 2
+            and all(len(_compact(value)) <= 6 for value in party_lines[1:])
+        ):
+            # A short depot code such as ``CPS`` is a separate line, not part
+            # of the printed company name.
+            party = party_lines[0].strip(" ,;:-")
+        else:
+            party = " ".join(party_lines).strip(" ,;:-")
         if not street_match or not party or len(party) > 100:
             continue
         components = {
@@ -818,6 +883,18 @@ def _explicit_source_delivery_candidates(payload: dict[str, Any]) -> list[dict[s
         extras = prefix_extras + block[street_index + 1:locality_index]
         for extra in extras:
             folded = _norm(extra)
+            if folded == _norm(locality.group("city")):
+                continue
+            routing_zone = re.match(
+                r"^B\.?\s*P\.?\s*(?P<bp>\d+)\s+"
+                r"(?P<zone>Z\.?\s*I\.?\s+.+?)(?:\s+VIREMENT)?$",
+                extra,
+                flags=re.I,
+            )
+            if routing_zone:
+                components["po_box"] = f"BP {routing_zone.group('bp')}"
+                components["industrial_zone"] = routing_zone.group("zone").strip()
+                continue
             if re.match(r"^(?:ZI|ZA|ZAC|ZAE|ZONE)\b", folded):
                 components["industrial_zone"] = extra
             elif re.match(r"^(?:PARC|TECHNIPARC|TECHNOPARC)\b", folded):
@@ -991,6 +1068,7 @@ def reconcile_weak_fields(payload: dict[str, Any]) -> dict[str, Any]:
     anchored = suggestions.get("anchored_fields") or {}
     actions: list[dict[str, Any]] = []
     order_candidate = anchored.get("order_number")
+    date_candidate = anchored.get("order_date")
 
     po = _find_purchase_order(payload)
     if not po and isinstance(order_candidate, dict) and _plausible_order_candidate(order_candidate):
@@ -1028,6 +1106,9 @@ def reconcile_weak_fields(payload: dict[str, Any]) -> dict[str, Any]:
             "spatial_order_number",
             "native_table_anchor",
             "multiblock_order_number",
+            "po_number_composite_duplicate_cleanup_v60",
+            "explicit_reference_commande_column_v60",
+            "explicit_date_piece_order_column_v60",
         }
         current_is_contact = _source_labels_contact_number(payload, current_value)
         current_compact = _compact(current_value)
@@ -1083,6 +1164,32 @@ def reconcile_weak_fields(payload: dict[str, Any]) -> dict[str, Any]:
                 "to": candidate_value,
                 "reason": "explicit_geometry_order_label" if explicit else "missing_core_value",
             })
+
+    if (
+        po
+        and isinstance(order_candidate, dict)
+        and str(order_candidate.get("source") or "").startswith(
+            "geometry_explicit_order_metadata_"
+        )
+        and isinstance(date_candidate, dict)
+        and date_candidate.get("value")
+        and float(date_candidate.get("confidence") or 0.0) >= 0.99
+        and int(date_candidate.get("page") or 0) == int(order_candidate.get("page") or 0)
+    ):
+        header = po.get("purchase_order")
+        if not isinstance(header, dict):
+            header = po
+        current_date = header.get("order_date")
+        if not _value(current_date):
+            promoted_date = _date_field_from_anchor(date_candidate)
+            if promoted_date:
+                header["order_date"] = promoted_date
+                actions.append({
+                    "action": "promote_order_date",
+                    "from": None,
+                    "to": promoted_date["value"],
+                    "reason": "same_explicit_geometry_order_metadata_table",
+                })
 
     if po:
         addresses = po.setdefault("business_addresses", [])

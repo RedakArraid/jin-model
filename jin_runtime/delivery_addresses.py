@@ -99,6 +99,15 @@ def _clean_street_ocr(value: Any) -> str | None:
     # remain untouched.
     text = re.sub(r"\b[Dd][34](?=[A-Za-zÀ-ÿ])", "d'", text)
     text = re.sub(r"\bLIMIERE\b", "LUMIERE", text, flags=re.I)
+    # Payment terms live in the neighboring column on several ERP layouts and
+    # can be appended to the last postal token (``... BP 5151 VIREMENT``).
+    # They are never part of a thoroughfare.
+    text = re.sub(
+        r"\s+(?:VIREMENTS?|CHEQUE|PAIEMENT|REGLEMENT)\s*$",
+        "",
+        text,
+        flags=re.I,
+    )
     # A standalone trailing zone abbreviation is not part of the street name.
     text = re.sub(r"\s*[- ]+(?:ZI|ZA|ZAC|ZAE)[- ]*$", "", text, flags=re.I)
     return _text(text)
@@ -135,6 +144,10 @@ def _street_line(address: dict[str, Any], matched: dict[str, Any]) -> str | None
     street = _preferred_street(address, matched)
     if not street:
         fallback = _text(address.get("line1"))
+        if fallback and re.match(r"^\d{5}\b", fallback):
+            # A locality-only line (``83000 Toulon``) cannot stand in for a
+            # street and must not prevent recovery from another table column.
+            return None
         if fallback and any(
             _norm(fallback) == _norm(address.get(key))
             for key in (
@@ -166,9 +179,14 @@ def _clean_address_complement(value: Any) -> str | None:
     if not text:
         return None
     folded = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().casefold()
+    if re.match(r"^(?:cli|client|code\s+client)\s*[:#]", folded):
+        return None
+    if folded in {"virement", "cheque", "carte bancaire", "cb"}:
+        return None
     if re.search(
         r"\b(?:contact|correspondant|a l'attention|en express|merci de|code d.?ouverture|"
-        r"code porte|digicode|horaires?|reception|adherent|livraison de preference|"
+        r"code porte|code cadenas|digicode|horaires?|reception|adherent|portable|conditions? liv|"
+        r"livraison de preference|"
         r"livrer de preference|livraison le matin|pas de livraison|instruction de livraison)\b",
         folded,
     ):
@@ -203,12 +221,23 @@ def _clean_site_component(value: Any) -> str | None:
     text = _text(value)
     if not text:
         return None
+    if re.fullmatch(r"-\s*(?:ZI|ZA|ZAC|ZAE)\s*-?", text, flags=re.I):
+        return None
     text = re.split(
         r"\s*\|\s*(?:LIVRAISON|MERCI\s+DE\s+LIVRER|A\s+LIVRER|INSTRUCTION)\b",
         text,
         maxsplit=1,
         flags=re.I,
     )[0]
+    # Common OCR confusion on French activity-zone abbreviations: a printed
+    # ``Z.A.D.`` is sometimes read as ``2.A.D.``. Keep this deliberately
+    # restricted to the beginning of a site component.
+    text = re.sub(
+        r"^2\s*\.\s*A\s*\.\s*D\s*\.?(?=\s|$)",
+        "Z.A.D.",
+        text,
+        flags=re.I,
+    )
     text = re.sub(r"\b[Zz][|1]\s*", "ZI ", text)
     text = re.split(r"\s*\|\s*(?:U|QTE|QUANTIT[ÉE])\b", text, maxsplit=1, flags=re.I)[0]
     text = re.sub(r"\s*\|\s*(?:FR|FRANCE)\s*$", "", text, flags=re.I)
@@ -221,6 +250,35 @@ def _site_norm(value: Any) -> str:
     normalized = _norm(value)
     normalized = re.sub(r"\bROIND\s+POINT\b", "ROND POINT", normalized)
     return " ".join(STREET_TYPE_ALIASES.get(token, token) for token in normalized.split())
+
+
+def _company_site_norm(value: Any) -> str:
+    """Normalize harmless company/site aliases used on adjacent label lines."""
+    tokens = []
+    for token in _norm(value).split():
+        if token == "DR":
+            # ``DR`` (direction régionale) is commonly present on only one of
+            # two otherwise identical PROLIANS recipient lines.
+            continue
+        tokens.append({"ST": "SAINT", "STE": "SAINTE"}.get(token, token))
+    return " ".join(tokens)
+
+
+def _deduplicate_concatenated_company_site(value: Any) -> str | None:
+    """Split two OCR-joined aliases of the same site and keep the first."""
+    text = _text(value)
+    if not text:
+        return None
+    first_token = text.split()[0]
+    repeated = re.search(
+        rf"\s+(?={re.escape(first_token)}\b)", text, flags=re.I
+    )
+    if not repeated:
+        return text
+    first, second = text[:repeated.start()].strip(), text[repeated.end():].strip()
+    if _company_site_norm(first) == _company_site_norm(second):
+        return first
+    return text
 
 
 def _redundant_compound_department(
@@ -261,10 +319,25 @@ def _clean_delivery_party(value: Any) -> str | None:
     if any(marker in folded for marker in (
         " AU CAPITAL ", " RCS ", " TVA ", " CONDITIONS ", " ADRESSE DE LIVRAISON ",
         " FOURNISSEUR ", " MODE D EXPEDITION ", " VEUILLEZ NOUS AVISER ",
-        " TOUTE EXPEDITION ", " FACTURE EN ", " HTTP ", " WWW ", "@",
+        " TOUTE EXPEDITION ", " FACTURE EN ", " CATALOGUE ", " PLAN DE VENTE ",
+        " PROCHAINS MOIS ", " HTTP ", " WWW ", "@",
     )):
         return None
+    delivery_wish_sentence = bool(
+        folded.startswith("LIVRAISON")
+        and "SOUHAIT" in folded
+        and "SOCI" in folded
+    )
+    if folded.startswith(("A FACTURER", "A LIVRER")) or delivery_wish_sentence or len(text.split()) > 10:
+        return None
     return text
+
+
+def _looks_like_street(value: Any) -> bool:
+    return bool(re.match(
+        r"^\d+[A-Z]?\s+(?:RUE|R|AVENUE|AV|ROUTE|RTE|BOULEVARD|BD|CHEMIN|IMPASSE|ALLEE|QUAI)\b",
+        _norm(value),
+    ))
 
 
 def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
@@ -320,15 +393,96 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
         inferred_po_box = _prefixed(postal_routing_code, "BP")
         postal_routing_code = None
 
+    raw_party_name = _text(block.get("party_name"))
+    embedded_site = None
+    if raw_party_name:
+        site_match = re.search(
+            r"\b(?P<site>(?:Z\.?\s*[IAE]\.?|ZAC|ZAE|ZONE)\s+.+?)\s*$",
+            raw_party_name,
+            flags=re.I,
+        )
+        if site_match:
+            embedded_site = _clean_site_component(site_match.group("site"))
+        # An adjacent VAT row may be fused between the recipient and its site.
+        # Preserve the proven company prefix and recover the postal zone
+        # separately instead of publishing the complete noisy OCR sentence.
+        raw_party_name = re.split(
+            r"\s+N\s*(?:[Â°º�]|O)?\s*TVA\b|\s+TVA\s+(?:EUROPE|INTRA)?\b",
+            raw_party_name,
+            maxsplit=1,
+            flags=re.I,
+        )[0].strip(" ,;|:-")
+    recipient = _deduplicate_concatenated_company_site(
+        _clean_delivery_party(raw_party_name)
+    )
+    street = _preferred_street(address, matched if verified else {})
+    source_street_line = _street_line(address, matched if verified else {})
+    if not industrial_zone and embedded_site:
+        industrial_zone = embedded_site
+    routing_match = re.search(
+        r"\s+B\.?\s*P\.?\s*(?P<number>\d{2,})\s*$",
+        source_street_line or "",
+        flags=re.I,
+    )
+    if routing_match and not any(
+        address.get(key) for key in ("po_box", "postal_box", "bp")
+    ):
+        inferred_po_box = f"BP {routing_match.group('number')}"
+        source_street_line = _text(
+            (source_street_line or "")[:routing_match.start()]
+        )
+        if street:
+            street = _text(re.sub(
+                r"\s+B\.?\s*P\.?\s*\d{2,}\s*$",
+                "",
+                street,
+                flags=re.I,
+            ))
+    if recipient and _looks_like_street(recipient) and (
+        not source_street_line or _norm(source_street_line) == _norm(recipient)
+    ):
+        # Some table layouts put the complete street in the recipient column.
+        # Promote it to the postal street field instead of displaying it as a
+        # company name (for example ``205, Av General Pruneau``).
+        street = _clean_street_ocr(recipient)
+        source_street_line = street
+        recipient = None
+
+    department = _clean_delivery_party(block.get("department"))
+    if department and re.match(r"^2\s*\.\s*A\s*\.\s*D\b", department, flags=re.I):
+        department = _clean_site_component(department)
+    if recipient and department and _norm(recipient).startswith("CHEZ "):
+        # A care-of line is routing information; the adjacent company remains
+        # the business recipient and must be shown first in the postal label.
+        recipient, department = department, recipient
+    if (
+        recipient
+        and department
+        and "/" not in department
+        and not re.search(
+            r"\b(?:RUE|AVENUE|AV|ROUTE|RTE|BOULEVARD|BD|CHEMIN|IMPASSE|QUAI|ALLEE)\b",
+            department,
+            flags=re.I,
+        )
+        and _company_site_norm(recipient) != _company_site_norm(department)
+        and _company_site_norm(department).startswith(
+            _company_site_norm(recipient) + " "
+        )
+    ):
+        # Prefer the complete site name rather than publishing both a short
+        # recipient and its longer duplicate (``REXEL CHAMPIGNY`` followed by
+        # ``REXEL CHAMPIGNY SUR MARNE``).
+        recipient, department = department, None
+
     components: dict[str, Any] = {
-        "recipient": _clean_delivery_party(block.get("party_name")),
-        "department": _clean_delivery_party(block.get("department")),
+        "recipient": recipient,
+        "department": department,
         "building": _text(address.get("building")),
         "residence": _text(address.get("residence")),
         "house_number": _text(matched.get("house_number") if verified else None)
                         or _text(address.get("house_number") or address.get("building_number")),
         "house_number_suffix": _text(address.get("house_number_suffix")),
-        "street": _preferred_street(address, matched if verified else {}),
+        "street": street,
         "industrial_zone": industrial_zone,
         "business_park": _clean_site_component(address.get("business_park") or address.get("activity_park")),
         "lieu_dit": _text(address.get("lieu_dit") or address.get("place_name")),
@@ -364,6 +518,25 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
             })
     if components.get("industrial_zone") and components.get("street"):
         combined_site = str(components["industrial_zone"])
+        split_site_street = re.match(
+            r"^(?P<site>(?:ZAC|ZAE|ZONE|Z\.?\s*[IAE]\.?)\b.+?)\s*[-–]\s*"
+            r"(?P<street_fragment>.+)$",
+            combined_site,
+            flags=re.I,
+        )
+        if (
+            split_site_street
+            and source_street_line
+            and len(_site_norm(split_site_street.group("street_fragment"))) >= 5
+            and _site_norm(source_street_line).startswith(
+                _site_norm(split_site_street.group("street_fragment"))
+            )
+        ):
+            # The right half is a clipped duplicate of the independently
+            # structured street: ``ZI LA PALUDS - 430 AV DE LA`` plus
+            # ``430 AV DE LA PALUDS``.  Keep only the actual zone on this line.
+            components["industrial_zone"] = split_site_street.group("site").strip()
+            combined_site = str(components["industrial_zone"])
         combined_match = re.match(
             r"^(?P<zone>ZAC|ZAE|ZONE|Z\.?\s*[IAE]\.?(?:\s*[AE]\.?)?)\s+(?P<tail>.+)$",
             combined_site,
@@ -375,15 +548,57 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
             == _site_norm(components["street"])
         ):
             components["industrial_zone"] = combined_match.group("zone")
+        elif combined_match and source_street_line:
+            # A two-column PDF can interleave ``ZI DU GROS HETRE`` with
+            # ``76 BIS RUE ALTMAYER`` as ``ZI DU 76 BIS RUE ALTMAYER`` plus
+            # ``RUE DU GROS HETRE``. Reassemble the site only when the zone
+            # tail ends with the complete, independently structured street.
+            tail = combined_match.group("tail")
+            street_suffix = re.search(
+                rf"(?P<lead>.*?)\s*{re.escape(source_street_line)}\s*$",
+                tail,
+                flags=re.I,
+            )
+            complement_site = re.match(
+                r"^(?:RUE|ROUTE|AVENUE|BOULEVARD|CHEMIN|IMPASSE|ALLEE)\s+"
+                r"(?P<lead>DU|DES|DE\s+LA|DE\s+L['â€™]?|DE)\s+"
+                r"(?P<site>.+)$",
+                str(components.get("address_complement") or ""),
+                flags=re.I,
+            )
+            if (
+                street_suffix
+                and complement_site
+                and _site_norm(street_suffix.group("lead"))
+                == _site_norm(complement_site.group("lead"))
+            ):
+                components["industrial_zone"] = " ".join((
+                    combined_match.group("zone"),
+                    street_suffix.group("lead").strip(),
+                    complement_site.group("site").strip(),
+                ))
+                components.pop("address_complement", None)
     if components.get("address_complement"):
-        cleaned_complement = _without_duplicate_routing(
-            components["address_complement"],
-            (
-                ("BP", components.get("po_box")),
-                ("TSA", components.get("tsa")),
-                ("CS", components.get("cs")),
-            ),
-        )
+        if components.get("industrial_zone"):
+            zone_key = _site_norm(components["industrial_zone"])
+            complement_key = _site_norm(components["address_complement"])
+            trailing_instruction = complement_key[len(zone_key):].strip() \
+                if complement_key.startswith(zone_key) else ""
+            if trailing_instruction in {
+                "VIREMENT", "CHEQUE", "PAGE", "REGLEMENT", "PAIEMENT",
+            }:
+                components.pop("address_complement", None)
+        if not components.get("address_complement"):
+            cleaned_complement = None
+        else:
+            cleaned_complement = _without_duplicate_routing(
+                components["address_complement"],
+                (
+                    ("BP", components.get("po_box")),
+                    ("TSA", components.get("tsa")),
+                    ("CS", components.get("cs")),
+                ),
+            )
         if cleaned_complement:
             components["address_complement"] = cleaned_complement
         else:
@@ -392,6 +607,13 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
         components.get("department")
         and components.get("city")
         and _norm(components["department"]) == _norm(components["city"])
+    ):
+        components.pop("department", None)
+    if (
+        components.get("recipient")
+        and components.get("department")
+        and _company_site_norm(components["recipient"])
+        == _company_site_norm(components["department"])
     ):
         components.pop("department", None)
     if (
@@ -409,8 +631,16 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
     if (
         components.get("department")
         and components.get("industrial_zone")
-        and _site_norm(components["department"])
-        == _site_norm(components["industrial_zone"])
+        and (
+            _site_norm(components["department"])
+            == _site_norm(components["industrial_zone"])
+            or (
+                re.match(r"^(?:ZONE|ZAC|ZAE|ZA|ZI)\b", _norm(components["department"]))
+                and _site_norm(components["industrial_zone"]).startswith(
+                    _site_norm(components["department"]) + " "
+                )
+            )
+        )
     ):
         components.pop("department", None)
     if components.get("building") and any(
@@ -423,7 +653,7 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
         components.get("department"),
         (
             components.get("recipient"),
-            _street_line(address, matched if verified else {}),
+            source_street_line,
             components.get("building"),
             components.get("residence"),
             components.get("industrial_zone"),
@@ -433,6 +663,14 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
         ),
     ):
         components.pop("department", None)
+    if components.get("building") and any(
+        _company_site_norm(components["building"])
+        and _company_site_norm(components["building"])
+        in _company_site_norm(components.get(key))
+        for key in ("recipient", "department")
+        if components.get(key)
+    ):
+        components.pop("building", None)
 
     lines: list[str] = []
     _append(lines, components.get("recipient"))
@@ -447,7 +685,7 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
         ):
             continue
         _append(lines, value)
-    _append(lines, _street_line(address, matched if verified else {}))
+    _append(lines, source_street_line)
     for key in ("industrial_zone", "business_park", "lieu_dit", "address_complement"):
         _append(lines, components.get(key))
     for key in ("po_box", "tsa", "cs", "postal_routing_code"):

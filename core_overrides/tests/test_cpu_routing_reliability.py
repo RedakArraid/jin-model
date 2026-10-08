@@ -83,6 +83,44 @@ Bon de commande : il doit mentionner les modalites de livraison.
     assert page["explicit_document_title"] is None
 
 
+def test_untitled_garanka_order_is_not_demoted_by_numeric_address_and_rows():
+    page = classify_page("""GARANKA HOLDING
+42 RUE MICHAEL FARADAY
+37170 CHAMBRAY LES TOURS
+SIRET 504 035 056 00044
+COMMANDE E.L.M. leblanc
+N° Commande Date N° Client
+A2601949 16/07/2026 15017119
+Adresse de Livraison
+GARANKA HOLDING
+42 RUE MICHAEL FARADAY
+37170 CHAMBRAY LES TOURS
+Code article Libellé Lot Commandé PU H.T. Casier
+EL 87167603280 JOINT 2,00 2,0 12,65
+EL 87167631990 BLOC GAZ 1,00 1,0 75,24
+EL 87167708730 CLIP 1,00 1,0 7,41
+EL 87167458880 VENTILATEUR 1,00 1,0 131,10
+EL 87167654140 SONDE 1,00 1,0 20,52
+EL 8716122434 ECHANGEUR 1,00 1,0 181,83
+Signature Total H.T. Net 441,40
+""")
+    assert page["type"] == "purchase_order"
+    assert page["explicit_document_title"] is None
+    assert page["confidence"] >= 0.45
+    assert page["scores"].get("legal_terms", 0.0) < 3.0
+
+
+def test_numbered_legal_clauses_still_contribute_to_legal_routing():
+    page = classify_page("""Modalites applicables au fournisseur
+1 Champ d'application de la relation
+2 Responsabilite du fournisseur
+3 Confidentialite des informations
+4 Droit applicable et litiges
+""")
+    assert page["type"] == "legal_terms"
+    assert any(signal.startswith("numbered-clauses:4") for signal in page["signals"])
+
+
 def test_acknowledgement_reminder_is_not_a_new_purchase_order():
     page = classify_page("""Relance retour(s) sans AR
 Nous n'avons pas reçu votre accusé de réception pour la commande 5423707.
@@ -121,6 +159,24 @@ Le reliquat ci-dessus est abandonne.
 """)
     assert page["type"] == "generic_document"
     assert page["explicit_document_title"] == "generic_document"
+
+
+def test_remittance_advice_with_many_invoice_references_is_not_an_order():
+    text = """PROLIANS BAURES
+Madame, Monsieur,
+Nous vous informons qu'un virement bancaire a ete emis, en votre faveur,
+en reglement du releve ci-dessous.
+LIBELLE DATE VOTRE REF. NOTRE REF. MONTANT
+FACTF 02/02/26 2587888754 1818888 103,92 EUR
+FACTF 06/02/26 2587890652 4817620 9.248,00 EUR
+AVOIF 04/03/26 2587978596 4837673 1.198,80- EUR
+Total Virement 154.036,48 EUR
+Date de valeur 15/04/26
+"""
+    page = classify_page(text)
+    assert page["type"] == "remittance_advice"
+    assert page["explicit_document_title"] == "remittance_advice"
+    assert detect_document_type(text, "pdf") == "remittance_advice"
 
 
 def test_grouped_order_is_still_a_purchase_order():

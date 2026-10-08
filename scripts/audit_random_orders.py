@@ -32,7 +32,8 @@ VAT_PATTERNS = (
     re.compile(r"\b(?:LU|ATU|PT|PL|GB)[A-Z0-9 .-]{8,14}\b", re.I),
 )
 ORDER_LABEL_RE = re.compile(
-    r"(?:BON\s+DE\s+COMMANDE|COMMANDE\s+(?:CLIENT|FOURNISSEUR|REGROUPEE)|PURCHASE\s+ORDER|"
+    r"(?:BON\s+DE\s+COMMANDE|COMMANDE\s+(?:CLIENT|FOURNISSEUR|REGROUPEE)|"
+    r"COMMANDE\s*N(?:[?]|O|UMERO)?\s*[A-Z0-9]|PURCHASE\s+ORDER|"
     r"BESTELLUNG|BESTELLNR|N[°O]\s*(?:DE\s*)?COMMANDE|ORDER\s+(?:NO|NUMBER))",
     re.I,
 )
@@ -40,6 +41,17 @@ DELIVERY_LABEL_RE = re.compile(
     r"(?:(?:ADRESSE|HDRESSE)\s+(?:DE\s+LIVRAISON|DESTINATAIRE)|LIEU\s+DE\s+LIVRAISON|"
     r"A\s+LIVRER(?:\s+A)?|SHIP\s+TO|"
     r"DELIVERY\s+ADDRESS|WARENEMPF[AÄ]NGER)", re.I,
+)
+DATE_LABEL_RE = re.compile(
+    r"(?:DATE\s+(?:DE\s+)?COMMANDE|ORDER\s+DATE|DATE\s+D['’]EMISSION|"
+    r"(?:FAIT|EMIS)\s+LE)", re.I,
+)
+AGENCY_LABEL_RE = re.compile(
+    r"(?:CODE\s+(?:AGENCE|SITE|ETABLISSEMENT)|AGENCE\s*(?:CLIENT)?|"
+    r"CUSTOMER\s+(?:BRANCH|SITE)\s+CODE)", re.I,
+)
+CONTACT_LABEL_RE = re.compile(
+    r"(?:CONTACT|INTERLOCUTEUR|DEMANDEUR|ACHETEUR|TELEPHONE|COURRIEL|E-?MAIL)", re.I,
 )
 
 
@@ -163,8 +175,23 @@ def _extract_model(payload: dict[str, Any]) -> dict[str, Any]:
     header = po.get("purchase_order") or po
     number = header.get("number") or header.get("order_number") or {}
     clean = payload.get("normalized_output") or {}
-    delivery = ((clean.get("order") or {}).get("delivery_address") or {})
+    clean_order = clean.get("order") or payload.get("order") or {}
+    delivery = clean_order.get("delivery_address") or {}
     verification = delivery.get("verification") or {}
+    order_date = clean_order.get("order_date") or header.get("order_date") or header.get("date") or {}
+    agency = (
+        clean_order.get("customer_agency_code")
+        or header.get("customer_agency_code")
+        or payload.get("customer_agency_code")
+        or {}
+    )
+    parties = clean_order.get("parties") or {}
+    buyer = parties.get("buyer") or {}
+    buyer_contact = buyer.get("contact") or {}
+    bill_to = parties.get("bill_to") or {}
+    bill_to_contact = bill_to.get("contact") or {}
+    ship_to = parties.get("ship_to") or {}
+    ship_to_contact = ship_to.get("contact") or {}
     vat = _model_vat_candidates(po)
     if not vat:
         vat = _model_vat_candidates(payload.get("document_tax_identifiers") or [])
@@ -192,6 +219,32 @@ def _extract_model(payload: dict[str, Any]) -> dict[str, Any]:
         "order_numbers": grouped_numbers,
         "order_number_score": _confidence(number),
         "order_number_evidence": number.get("evidence") if isinstance(number, dict) else None,
+        "order_date": _value(order_date),
+        "order_date_raw": order_date.get("raw_value") if isinstance(order_date, dict) else None,
+        "order_date_score": _confidence(order_date),
+        "order_date_evidence": order_date.get("evidence") if isinstance(order_date, dict) else None,
+        "customer_agency_code": _value(agency),
+        "customer_agency_site": agency.get("site") if isinstance(agency, dict) else None,
+        "customer_agency_score": _confidence(agency),
+        "customer_agency_status": (
+            agency.get("status") or agency.get("validation_status")
+            if isinstance(agency, dict) else None
+        ),
+        "customer_agency_evidence": agency.get("evidence") if isinstance(agency, dict) else None,
+        "buyer_name": buyer.get("name") or buyer.get("legal_name"),
+        "buyer_code": buyer.get("code") or buyer.get("customer_code"),
+        "buyer_vat_number": buyer.get("vat_number"),
+        "buyer_contact_name": buyer_contact.get("name"),
+        "buyer_contact_email": buyer_contact.get("email"),
+        "buyer_contact_phone": buyer_contact.get("phone"),
+        "bill_to_name": bill_to.get("name") or bill_to.get("legal_name"),
+        "bill_to_contact_name": bill_to_contact.get("name"),
+        "bill_to_contact_email": bill_to_contact.get("email"),
+        "bill_to_contact_phone": bill_to_contact.get("phone"),
+        "ship_to_name": ship_to.get("name") or ship_to.get("legal_name"),
+        "ship_to_contact_name": ship_to_contact.get("name"),
+        "ship_to_contact_email": ship_to_contact.get("email"),
+        "ship_to_contact_phone": ship_to_contact.get("phone"),
         "delivery_address": delivery.get("formatted"),
         "delivery_lines": delivery.get("formatted_lines") or [],
         "delivery_components": delivery.get("components") or {},
@@ -238,13 +291,71 @@ def _automatic_checks(model: dict[str, Any], text: str, source_vat: list[str]) -
     elif model["is_order"] and not number:
         number_check = "FAUX_MANQUANT"
 
+    date_evidence = model.get("order_date_evidence") or {}
+    date_source = date_evidence.get("source_text") or model.get("order_date_raw")
+    if model.get("order_date") and date_source and _norm(date_source) in _norm(text):
+        date_check = "BON_PREUVE"
+    elif model.get("order_date"):
+        date_check = "A_VERIFIER"
+    elif model["is_order"]:
+        date_check = "ABSENT"
+    else:
+        date_check = "NON_APPLICABLE"
+
+    agency = model.get("customer_agency_code")
+    agency_evidence = model.get("customer_agency_evidence") or {}
+    agency_source = agency_evidence.get("source_text")
+    if agency and _norm(agency) in _norm(text):
+        agency_check = "BON_SOURCE"
+    elif agency and agency_source and _norm(agency_source) in _norm(text):
+        agency_check = "BON_PREUVE"
+    elif agency:
+        agency_check = "A_VERIFIER"
+    else:
+        # Agency codes are optional. Their absence is not an extraction error
+        # unless a later audit proves that an agency marker exists in source.
+        agency_check = "ABSENT"
+
+    buyer_name = model.get("buyer_name")
+    if buyer_name and _norm(buyer_name) in _norm(text):
+        buyer_check = "BON_SOURCE"
+    elif buyer_name:
+        buyer_check = "A_VERIFIER"
+    else:
+        buyer_check = "ABSENT"
+
+    buyer_contacts = [
+        model.get("buyer_contact_name"),
+        model.get("buyer_contact_email"),
+        model.get("buyer_contact_phone"),
+    ]
+    present_contacts = [value for value in buyer_contacts if value]
+    if present_contacts and all(_norm(value) in _norm(text) for value in present_contacts):
+        buyer_contact_check = "BON_SOURCE"
+    elif present_contacts:
+        buyer_contact_check = "A_VERIFIER"
+    else:
+        buyer_contact_check = "ABSENT"
+
+    ship_to_name = model.get("ship_to_name")
+    if ship_to_name and _norm(ship_to_name) in _norm(text):
+        ship_to_check = "BON_SOURCE"
+    elif ship_to_name:
+        ship_to_check = "A_VERIFIER"
+    else:
+        ship_to_check = "ABSENT"
+
     components = model.get("delivery_components") or {}
     essential = [components.get("postal_code"), components.get("city")]
     address_check = "A_VERIFIER"
     if model.get("delivery_address") and all(value and _norm(value) in _norm(text) for value in essential):
         address_check = "BON_CONTENU_A_CONFIRMER_ROLE"
     elif model["is_order"] and not model.get("delivery_address"):
-        address_check = "FAUX_MANQUANT"
+        address_check = (
+            "FAUX_MANQUANT"
+            if DELIVERY_LABEL_RE.search(text)
+            else "ABSENTE_SOURCE_EXPLICITE"
+        )
 
     model_vat = model.get("vat_number")
     vat_evidence = model.get("vat_evidence") or {}
@@ -262,8 +373,17 @@ def _automatic_checks(model: dict[str, Any], text: str, source_vat: list[str]) -
         vat_check = "FAUX_MANQUANT"
     else:
         vat_check = "BON_ABSENT_SOURCE"
-    return {"type": type_check, "order_number": number_check,
-            "delivery_address": address_check, "vat": vat_check}
+    return {
+        "type": type_check,
+        "order_number": number_check,
+        "order_date": date_check,
+        "customer_agency_code": agency_check,
+        "buyer": buyer_check,
+        "buyer_contact": buyer_contact_check,
+        "ship_to": ship_to_check,
+        "delivery_address": address_check,
+        "vat": vat_check,
+    }
 
 
 def _csv_row(item: dict[str, Any]) -> dict[str, Any]:
@@ -278,6 +398,27 @@ def _csv_row(item: dict[str, Any]) -> dict[str, Any]:
         "numero_commande_client": model.get("order_number") or " | ".join(model.get("order_numbers") or []),
         "nombre_commandes_client": len(model.get("order_numbers") or []) or (1 if model.get("order_number") else 0),
         "score_numero_commande": model.get("order_number_score"),
+        "date_commande": model.get("order_date"),
+        "date_commande_source": model.get("order_date_raw"),
+        "score_date_commande": model.get("order_date_score"),
+        "code_agence_client": model.get("customer_agency_code"),
+        "site_code_agence": model.get("customer_agency_site"),
+        "score_code_agence": model.get("customer_agency_score"),
+        "statut_code_agence": model.get("customer_agency_status"),
+        "client_acheteur": model.get("buyer_name"),
+        "code_client": model.get("buyer_code"),
+        "tva_client": model.get("buyer_vat_number"),
+        "contact_client": model.get("buyer_contact_name"),
+        "email_contact_client": model.get("buyer_contact_email"),
+        "telephone_contact_client": model.get("buyer_contact_phone"),
+        "client_facture": model.get("bill_to_name"),
+        "contact_facturation": model.get("bill_to_contact_name"),
+        "email_contact_facturation": model.get("bill_to_contact_email"),
+        "telephone_contact_facturation": model.get("bill_to_contact_phone"),
+        "destinataire_livraison": model.get("ship_to_name"),
+        "contact_livraison": model.get("ship_to_contact_name"),
+        "email_contact_livraison": model.get("ship_to_contact_email"),
+        "telephone_contact_livraison": model.get("ship_to_contact_phone"),
         "adresse_livraison": model.get("delivery_address"),
         "score_role_livraison": model.get("delivery_role_score"),
         "score_adresse_livraison": model.get("delivery_address_score"),
@@ -287,6 +428,11 @@ def _csv_row(item: dict[str, Any]) -> dict[str, Any]:
         "decision_modele": model.get("decision"),
         "verification_type": checks["type"],
         "verification_numero": checks["order_number"],
+        "verification_date_commande": checks["order_date"],
+        "verification_code_agence": checks["customer_agency_code"],
+        "verification_client": checks["buyer"],
+        "verification_contact_client": checks["buyer_contact"],
+        "verification_destinataire": checks["ship_to"],
         "verification_adresse_livraison": checks["delivery_address"],
         "verification_tva": checks["vat"],
         "verdict_global": "A_VERIFIER_MANUELLEMENT",
@@ -307,8 +453,23 @@ def main(argv: list[str] | None = None) -> int:
         help="Replay the exact relative filenames from a JSON list instead of drawing a new sample.",
     )
     parser.add_argument(
+        "--inventory-file", type=Path,
+        help=(
+            "Optional semicolon-delimited inventory with SHA256 and Path columns. "
+            "Uses the verified hashes instead of rereading every PDF before a draw."
+        ),
+    )
+    parser.add_argument(
         "--exclude-sample", action="append", type=Path, default=[],
         help="JSON file containing relative filenames to exclude; may be repeated.",
+    )
+    parser.add_argument(
+        "--exclude-sha-file", action="append", type=Path, default=[],
+        help="JSON list of SHA-256 contents to exclude; may be repeated.",
+    )
+    parser.add_argument(
+        "--exclude-bundle", action="append", type=Path, default=[],
+        help="Review bundle whose item SHA-256 values must be excluded; may be repeated.",
     )
     parser.add_argument(
         "--force-reextract", action="store_true",
@@ -324,11 +485,31 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     folder = args.folder.resolve()
     excluded: set[str] = set()
+    excluded_hashes: set[str] = set()
     for sample_path in args.exclude_sample:
         values = json.loads(sample_path.read_text(encoding="utf-8"))
         if not isinstance(values, list):
             raise SystemExit(f"Excluded sample must be a JSON list: {sample_path}")
         excluded.update(str(value).replace("\\", "/") for value in values)
+    for sha_path in args.exclude_sha_file:
+        values = json.loads(sha_path.read_text(encoding="utf-8-sig"))
+        if not isinstance(values, list):
+            raise SystemExit(f"Excluded SHA file must be a JSON list: {sha_path}")
+        for value in values:
+            digest = str(value).strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise SystemExit(f"Invalid SHA-256 in {sha_path}: {value}")
+            excluded_hashes.add(digest)
+    for bundle_path in args.exclude_bundle:
+        previous = json.loads(bundle_path.read_text(encoding="utf-8-sig"))
+        items = previous.get("items") if isinstance(previous, dict) else None
+        if not isinstance(items, list):
+            raise SystemExit(f"Excluded bundle must contain an items list: {bundle_path}")
+        for item in items:
+            digest = str((item or {}).get("sha256") or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise SystemExit(f"Invalid or missing SHA-256 in {bundle_path}: {item}")
+            excluded_hashes.add(digest)
     if args.sample_file:
         values = json.loads(args.sample_file.read_text(encoding="utf-8"))
         if not isinstance(values, list) or not values:
@@ -350,13 +531,45 @@ def main(argv: list[str] | None = None) -> int:
             seen_hashes.add(digest)
             selected.append((digest, path))
         args.count = len(selected)
+    elif args.inventory_file:
+        unique: dict[str, Path] = {}
+        with args.inventory_file.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter=";")
+            if not reader.fieldnames or not {"SHA256", "Path"}.issubset(reader.fieldnames):
+                raise SystemExit(
+                    f"Inventory must contain SHA256 and Path columns: {args.inventory_file}"
+                )
+            for row in reader:
+                digest = str(row.get("SHA256") or "").strip().lower()
+                if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                    raise SystemExit(
+                        f"Invalid SHA-256 in inventory {args.inventory_file}: {digest}"
+                    )
+                path = Path(str(row.get("Path") or "")).resolve()
+                try:
+                    relative = path.relative_to(folder).as_posix()
+                except ValueError as exc:
+                    raise SystemExit(
+                        f"Inventory path escapes source folder: {path}"
+                    ) from exc
+                if relative in excluded or digest in excluded_hashes:
+                    continue
+                if not path.is_file() or path.suffix.lower() != ".pdf":
+                    raise SystemExit(f"Inventory PDF not found: {path}")
+                unique.setdefault(digest, path)
+        selected = list(unique.items())
+        random.Random(args.seed).shuffle(selected)
+        selected = selected[:args.count]
     else:
         candidates = sorted(path for path in folder.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf")
         unique: dict[str, Path] = {}
         for path in candidates:
             if path.relative_to(folder).as_posix() in excluded:
                 continue
-            unique.setdefault(_sha256(path), path)
+            digest = _sha256(path)
+            if digest.lower() in excluded_hashes:
+                continue
+            unique.setdefault(digest, path)
         selected = list(unique.items())
         random.Random(args.seed).shuffle(selected)
         selected = selected[:args.count]
@@ -391,7 +604,7 @@ def main(argv: list[str] | None = None) -> int:
             planned_names = [path.relative_to(folder).as_posix() for _, path in selected]
             previous_names = [str(item.get("filename") or "") for item in previous_items]
             if (
-                int(previous_bundle.get("seed")) == args.seed
+                (bool(args.sample_file) or int(previous_bundle.get("seed")) == args.seed)
                 and int(previous_bundle.get("count")) == args.count
                 and previous_names == planned_names
             ):
@@ -438,6 +651,9 @@ def main(argv: list[str] | None = None) -> int:
                         "number": _contexts(text, [re.compile(re.escape(str(model.get('order_number'))), re.I)])
                                   if model.get("order_number") else [],
                         "delivery": _contexts(text, [DELIVERY_LABEL_RE]),
+                        "date": _contexts(text, [DATE_LABEL_RE]),
+                        "agency": _contexts(text, [AGENCY_LABEL_RE]),
+                        "contact": _contexts(text, [CONTACT_LABEL_RE]),
                         "vat": _contexts(text, [VAT_LABEL_RE]),
                     },
                     "source_text": text,
@@ -465,7 +681,8 @@ def main(argv: list[str] | None = None) -> int:
             writer.writerows(rows)
     errors = [item for item in bundle if "error" in item]
     print(json.dumps({"selected": len(bundle), "succeeded": len(rows), "errors": len(errors),
-                      "seed": args.seed, "output": str(output)}, ensure_ascii=False))
+                      "seed": args.seed, "excluded_sha256": len(excluded_hashes),
+                      "output": str(output)}, ensure_ascii=False))
     return int(bool(errors))
 
 

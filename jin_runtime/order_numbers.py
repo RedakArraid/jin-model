@@ -86,13 +86,27 @@ def _explicit_geometry_prefix_is_compatible(
 ) -> bool:
     """Treat a same-page explicit spatial prefix as partial corroboration."""
     candidate_value = normalize_identifier(candidate.get("value"))
+    identifier_base = identifier.split("/", 1)[0]
+    candidate_base = re.sub(r"^CDE(?=\d)", "", candidate_value)
+    repeated_suffix = (
+        str(evidence.get("extraction_method") or "")
+        == "repeated_explicit_order_suffix_v61"
+        and candidate_base == identifier_base
+    )
+    separator_only_equivalent = bool(
+        re.sub(r"[^A-Z0-9]", "", candidate_value)
+        == re.sub(r"[^A-Z0-9]", "", identifier)
+    )
     return bool(
         str(candidate.get("source") or "").startswith("geometry_explicit_order_")
         and candidate_value
-        and len(candidate_value) >= 5
-        and len(candidate_value) < len(identifier)
-        and identifier.startswith(candidate_value)
-        and candidate.get("page") == evidence.get("page")
+        and len(candidate_base) >= 5
+        and (
+            (len(candidate_value) < len(identifier) and identifier.startswith(candidate_value))
+            or candidate_base == identifier_base
+            or separator_only_equivalent
+        )
+        and (candidate.get("page") == evidence.get("page") or repeated_suffix)
     )
 
 
@@ -106,7 +120,13 @@ def _inline_header_outranks_lower_body_candidate(
     customer's PO identifier; a geometry label several rows below on the same
     page is useful metadata, but is not a competing document identifier.
     """
-    if str(evidence.get("extraction_method") or "") != "inline_transaction_header":
+    if str(evidence.get("extraction_method") or "") not in {
+        "inline_transaction_header",
+        "explicit_attached_numero_below_order_title",
+        "explicit_order_label",
+        "explicit_composite_erp_order_id",
+        "explicit_n_de_commande",
+    }:
         return False
     if not str(candidate.get("source") or "").startswith("geometry_explicit_order_"):
         return False
@@ -164,6 +184,9 @@ def check_order_number(po: dict[str, Any], suggestions: dict[str, Any]) -> dict[
             "spatial_order_number",
             "native_table_anchor",
             "multiblock_order_number",
+            "po_number_composite_duplicate_cleanup_v60",
+            "explicit_reference_commande_column_v60",
+            "explicit_date_piece_order_column_v60",
         }
         if (
             original_value
@@ -198,13 +221,20 @@ def check_order_number(po: dict[str, Any], suggestions: dict[str, Any]) -> dict[
             lower_body_reference = _inline_header_outranks_lower_body_candidate(
                 candidate, evidence
             )
+            disqualified_original = bool(
+                isinstance(original, dict)
+                and original.get("disqualified_reason")
+                and normalize_identifier(original_value) == candidate_value
+            )
             detail = {"value": candidate["value"], "page": candidate.get("page"),
                       "bbox": candidate.get("bbox"), "agrees": agrees,
                       "source": candidate.get("source")}
             if lower_body_reference:
                 detail["ignored_reason"] = "LOWER_BODY_REFERENCE_BELOW_INLINE_PO_HEADER"
+            elif disqualified_original:
+                detail["ignored_reason"] = str(original.get("disqualified_reason"))
             corroboration.append(detail)
-            if not agrees and not lower_body_reference:
+            if not agrees and not lower_body_reference and not disqualified_original:
                 issues.append("ORDER_NUMBER_CANDIDATES_DISAGREE")
         field_warnings = set(field.get("warnings") or []) if isinstance(field, dict) else set()
         field_warnings.discard("promoted_from_explicit_geometry_anchor")

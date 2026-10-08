@@ -426,8 +426,14 @@ def _enhance_inline_transaction_header_v46(po, pages, config: dict):
         # Date commande : 06/08/2026
         if not po.purchase_order.order_date.value:
             dm=re.search(r"\bDATE\s+(?:DE\s+)?COMMANDE\s*[:.-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\b", text, flags=re.I)
+            if not dm:
+                # A plain ``Date`` line in the transaction-header zone is the
+                # document date. Delivery dates use their own qualified label
+                # and therefore do not match this full-line grammar.
+                dm=re.fullmatch(r"\s*DATE\s*[:.-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s*", text, flags=re.I)
             if dm and parse_date(dm.group(1)):
-                po.purchase_order.order_date=_make_spatial_field(dm.group(1), pg.page, row.bbox, kind="date", method="labeled_order_date")
+                method="labeled_order_date" if "commande" in low else "standalone_header_date"
+                po.purchase_order.order_date=_make_spatial_field(dm.group(1), pg.page, row.bbox, kind="date", method=method)
 
         # Code fournisseur : 20 501 -> 20501
         cm=re.search(r"\bCODE\s+FOURNISSEUR\s*[:.-]?\s*([0-9][0-9 ]{1,20})", text, flags=re.I)
@@ -456,6 +462,18 @@ def _enhance_inline_transaction_header_v46(po, pages, config: dict):
         pm=re.search(r"\bPORT\s*[:.-]?\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9 .'-]{1,40})", text, flags=re.I)
         if pm and not re.search(r"\d+[,.]\d+", pm.group(1)):
             po.logistics.shipping_method=" ".join(pm.group(1).split())
+
+    # Landscape purchase orders often place the metadata block below 48% of
+    # page height. Scan farther only for the unambiguous full-line Date grammar;
+    # the broader transaction-header rules above deliberately keep their tighter
+    # header-zone boundary.
+    if not po.purchase_order.order_date.value:
+        for row in rows:
+            if _row_center_safe(row)>pg.height*0.72: break
+            dm=re.fullmatch(r"\s*DATE\s*[:.-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s*",row.text,flags=re.I)
+            if dm and parse_date(dm.group(1)):
+                po.purchase_order.order_date=_make_spatial_field(dm.group(1),pg.page,row.bbox,kind="date",method="standalone_header_date")
+                break
 
     # Split label/value columns: a short business reference can be printed below a
     # generic "Référence" label while another unrelated label shares the same row.
@@ -552,7 +570,10 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                 if "adressage" in wl or ("code" in wl and "reference" not in wl): anchors.setdefault("secondary", center(w))
                 if "designation" in wl or "description" in wl: anchors["description"]=center(w)
                 if "quantite" in wl or wl in {"qte","qty"}: anchors["quantity"]=center(w)
-                if wl in {"pu","px","prix"} or "unitaire" in wl: anchors.setdefault("price", center(w))
+                # P.A (prix d'achat) is a common ERP label for the net unit
+                # purchase price. Keep the dotted form because ``header_token``
+                # intentionally preserves punctuation inside an OCR token.
+                if wl in {"pu","px","prix","pa","p.a"} or "unitaire" in wl: anchors.setdefault("price", center(w))
                 if wl == "net" and "price" in anchors and center(w)>anchors["price"]:
                     anchors["price"]=(anchors["price"]+center(w))/2
                 elif wl == "net": anchors.setdefault("price", center(w))
@@ -799,6 +820,135 @@ def _quantity_first_table_items(pages, default_currency="EUR"):
                 currency=default_currency,page=page.page,bbox=row.bbox,raw_text=row.text,confidence=confidence,
                 warnings=["Line total calculated from printed quantity and unit price; no printed line amount."]))
     return _dedupe_line_items(items),charges
+
+
+def _price_then_quantity_table_items(pages, default_currency="EUR"):
+    """Parse order rows whose explicit unit-price column precedes quantity.
+
+    This layout is common in purchasing portals and may omit a printed line
+    amount entirely. The supplier reference and description are mandatory; the
+    line amount is then transparently calculated from the printed price and
+    quantity.
+    """
+    import re
+    from po_ocr.extract import all_rows
+    from po_ocr.models import LineItem
+
+    items=[]
+    for page in pages:
+        rows=all_rows([page],y_factor=0.50)
+        header_idx=None; bounds=None
+        for idx,row in enumerate(rows):
+            words=row.words
+            norms=[_fold(word.text).strip(" .:/") for word in words]
+            supplier_i=next((i for i,n in enumerate(norms) if n=="fournisseur" and i>0 and norms[i-1] in {"ref","reference"}),None)
+            code_i=next((i for i,n in enumerate(norms) if n=="code" and supplier_i is not None and i>supplier_i),None)
+            desc_i=next((i for i,n in enumerate(norms) if n in {"designation","description","libelle"}),None)
+            # A quote-number column may itself contain the word ``prix``.
+            # The actual unit-price heading must sit after the description.
+            price_i=next((i for i,n in enumerate(norms) if desc_i is not None and i>desc_i and n in {"tarif","prix","pu","p.a","pa"}),None)
+            qty_i=next((i for i,n in enumerate(norms) if price_i is not None and i>price_i and n in {"quantite","qte","qty","quantity"}),None)
+            if None in (supplier_i,desc_i,price_i,qty_i): continue
+            supplier_start=words[supplier_i-1].bbox[0]
+            code_start=words[code_i].bbox[0] if code_i is not None else words[desc_i].bbox[0]
+            desc_start=words[desc_i].bbox[0]; price_start=words[price_i].bbox[0]; qty_start=words[qty_i].bbox[0]
+            if not (supplier_start < code_start <= desc_start < price_start < qty_start): continue
+            header_idx=idx; bounds=(supplier_start,code_start,desc_start,price_start,qty_start)
+            break
+        if header_idx is None: continue
+        supplier_start,code_start,desc_start,price_start,qty_start=bounds
+        for row in rows[header_idx+1:]:
+            if _row_center_safe(row)>page.height*0.90: break
+            low=_fold(row.text)
+            if re.search(r"\b(?:total\s+(?:ht|ttc|net)|valeur\s+tva)\b",low): break
+            def zone(x0,x1=None):
+                return [word for word in row.words if (word.bbox[0]+word.bbox[2])/2>=x0 and (x1 is None or (word.bbox[0]+word.bbox[2])/2<x1)]
+            supplier=" ".join(word.text for word in zone(supplier_start,code_start)).strip()
+            internal=" ".join(word.text for word in zone(code_start,desc_start)).strip()
+            description=" ".join(word.text for word in zone(desc_start,price_start)).strip()
+            price_raw=" ".join(word.text for word in zone(price_start,qty_start)).strip()
+            qty_raw=" ".join(word.text for word in zone(qty_start)).strip()
+            if not supplier or sum(ch.isdigit() for ch in supplier)<5 or not re.fullmatch(r"[A-Za-z0-9._/ -]+",supplier): continue
+            quantity=_parse_native_decimal(qty_raw); price=_parse_native_decimal(price_raw)
+            if quantity is None or price is None or not description: continue
+            amount=round(float(quantity)*float(price),6)
+            items.append(LineItem(
+                line_number=str(len(items)+1),material_number=supplier,article_number=supplier,
+                supplier_material_number=supplier,customer_material_number=internal or None,
+                description=description,quantity=quantity,ordered_quantity=quantity,
+                unit_price=price,net_unit_price=price,line_total=amount,line_net_amount=amount,
+                currency=default_currency,page=page.page,bbox=row.bbox,raw_text=row.text,
+                confidence=float(row.confidence)*0.97,
+                warnings=["Line total calculated from printed quantity and unit price; no printed line amount."],
+            ))
+    return _dedupe_line_items(items)
+
+
+def _two_row_erp_table_items(pages, default_currency="EUR"):
+    """Parse ERP tables where description/quantity precede code/price/amount.
+
+    A logical product is printed on two physical rows: the first contains its
+    description, ordered quantity and delivery week; the second contains buyer
+    code, supplier reference, UOM, unit price and amount. Activation requires
+    the explicit two-line table header and arithmetic consistency.
+    """
+    import re
+    from po_ocr.extract import all_rows
+    from po_ocr.models import LineItem
+
+    number=r"[-+]?(?:\d{1,3}(?:[ .']\d{3})+|\d+)(?:[,.]\d+)?"
+    description_re=re.compile(rf"^(?P<desc>.+?)\s+(?P<qty>{number})\s+(?P<week>\d{{1,2}}\s*/\s*\d{{2,4}})\s*$",re.I)
+    detail_re=re.compile(
+        rf"^(?P<code>[A-Z0-9][A-Z0-9._/-]{{2,29}})\s+"
+        rf"(?P<supplier>[A-Z0-9][A-Z0-9._/-]{{5,29}})"
+        rf"(?:\s+(?P=supplier))?\s+(?P<meta>.*?)\s+"
+        rf"(?P<uom>PIEC(?:E|ES)?|PCE|PCS|EA|UN|U|KG|BOX|L|M)\s+"
+        rf"(?P<price>{number})\s+(?P<amount>{number})(?:\s*[€$£])?\s*$",re.I,
+    )
+    items=[]
+    for page in pages:
+        rows=all_rows([page],y_factor=0.50)
+        start=None
+        for idx,row in enumerate(rows[:-1]):
+            low=_fold(row.text); next_low=_fold(rows[idx+1].text)
+            if all(term in low for term in ("designation","quantite","delai","montant")) and all(term in next_low for term in ("code","reference","fournisseur")):
+                start=idx+2; break
+        if start is None: continue
+        pending=None
+        for row in rows[start:]:
+            text=" ".join(row.text.split())
+            low=_fold(text)
+            if any(term in low for term in ("horaires de reception","siege social","siret","total ht","total ttc")):
+                pending=None
+                if "horaires de reception" in low or "siege social" in low: break
+                continue
+            dm=description_re.fullmatch(text)
+            if dm:
+                qty=_parse_native_decimal(dm.group("qty"))
+                if qty is not None:
+                    pending=(dm.group("desc").strip(),qty,re.sub(r"\s+","",dm.group("week")),row)
+                continue
+            detail=detail_re.fullmatch(text)
+            if detail is None or pending is None: continue
+            description,quantity,week,description_row=pending
+            price=_parse_native_decimal(detail.group("price")); amount=_parse_native_decimal(detail.group("amount"))
+            if price is None or amount is None: pending=None; continue
+            expected=float(quantity)*float(price); tolerance=max(0.04,abs(expected)*0.006)
+            if abs(float(amount)-expected)>tolerance: pending=None; continue
+            metadata=detail.group("meta").strip(" /-;:")
+            raw=" | ".join(x for x in (description,text) if x)
+            items.append(LineItem(
+                line_number=str(len(items)+1),material_number=detail.group("code"),article_number=detail.group("code"),
+                supplier_material_number=detail.group("supplier"),description=description,
+                quantity=quantity,ordered_quantity=quantity,uom=detail.group("uom"),
+                unit_price=price,net_unit_price=price,line_total=amount,line_net_amount=amount,
+                currency=default_currency,delivery_week=week,delivery_period=week,
+                notes=[metadata] if metadata else [],raw_text=raw,page=page.page,
+                bbox=_bbox_union(description_row.words+row.words),
+                confidence=min(float(description_row.confidence),float(row.confidence))*0.985,
+            ))
+            pending=None
+    return _dedupe_line_items(items)
 
 
 def _enhance_paired_party_zones_v46(po, pages, config: dict):
@@ -3209,7 +3359,25 @@ def _clean_po_number_v48(po, config: dict):
     field=po.purchase_order.number
     raw=" ".join(str(field.value or "").split()).strip()
     if not raw: return po
-    repeated = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]{3,39})\s+\1(?:\s*/.*)?$", raw, flags=re.I)
+    # Hybrid/native PDF layers can duplicate every visual token. Preserve the
+    # complete composite identifier instead of dropping its slash suffix:
+    # ``5416718 5416718 / 1877 1877`` -> ``5416718 / 1877``.
+    # Keep the separator spacing printed by the customer.  This value is
+    # exposed directly to API/UI consumers, so removing the space after the
+    # slash made an otherwise correct identifier look truncated.
+    repeated_composite = re.fullmatch(
+        r"([A-Za-z0-9][A-Za-z0-9._-]{3,39})\s+\1\s*/\s*"
+        r"([A-Za-z0-9][A-Za-z0-9._-]{1,39})\s+\2",
+        raw, flags=re.I,
+    )
+    if repeated_composite:
+        clean = f"{repeated_composite.group(1)} / {repeated_composite.group(2)}"
+        field.value=field.raw_value=field.normalized_value=clean
+        field.semantic_confidence=max(float(field.semantic_confidence or 0.0),0.99)
+        field.final_confidence=max(float(field.final_confidence or 0.0),0.985)
+        if getattr(field,"evidence",None): field.evidence.extraction_method="po_number_composite_duplicate_cleanup_v60"
+        return po
+    repeated = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]{3,39})\s+\1", raw, flags=re.I)
     if repeated:
         clean = repeated.group(1)
         field.value=field.raw_value=field.normalized_value=clean
@@ -3353,6 +3521,26 @@ def _summary_table_totals_v48(po, tables, config: dict, default_currency: str="E
         data=table.data or []
         for row in data:
             if len(row)<2: continue
+            # Some ERP PDFs encode each summary column as a self-contained
+            # ``label\nvalue`` cell instead of using separate header/value rows.
+            # Parse only explicit monetary labels: ``TVA (%)\n20`` is a rate,
+            # while ``Valeur TVA\n1 391,47`` is the tax amount.
+            for cell in row:
+                parts=_split_cell_lines(cell)
+                if len(parts)<2: continue
+                label=" ".join(parts[:-1]); low=_fold(label)
+                num=_parse_native_decimal(parts[-1])
+                if num is None: continue
+                if re.search(r"\b(?:total\s+ttc|ttc\s+total|net\s+a\s+payer|amount\s+due)\b",low):
+                    po.totals.amount_due=float(num); po.totals.grand_total=float(num)
+                    po.totals.total_gross=float(num); po.totals.total_after_tax=float(num)
+                elif ("valeur tva" in low or re.fullmatch(r"t\.?v\.?a\.?(?:\s+montant)?",low)) and not re.search(r"%|taux",low):
+                    po.totals.total_vat=float(num); po.totals.total_tax=float(num)
+                elif re.search(r"\b(?:valeur\s+h\.?t\.?|total\s+h\.?t\.?|total\s+net\s+h\.?t\.?)\b",low):
+                    po.totals.total_net=float(num); po.totals.subtotal=float(num); po.totals.total_before_tax=float(num)
+                else:
+                    continue
+                po.totals.currency=po.totals.currency or default_currency
             labels=_split_cell_lines(row[0]); values=_split_cell_lines(row[1])
             if len(labels)>=2 and len(values)>=2 and abs(len(labels)-len(values))<=1:
                 for lab,val in zip(labels,values):
@@ -3380,6 +3568,13 @@ def _strict_text_totals_v48(po, pages, config: dict, default_currency: str="EUR"
         for idx,row in enumerate(rows):
             text=" ".join(row.text.split()); low=_fold(text)
             kind=None
+            # An explicit ISO currency at the start of a monetary summary row
+            # is stronger than stray OCR symbols elsewhere in the document.
+            currency_match=re.match(r"^\s*(EUR|USD|GBP|CHF|CAD|AUD)\b(?=.*\d)",text,flags=re.I)
+            if currency_match:
+                currency=currency_match.group(1).upper()
+                po.purchase_order.currency=_make_spatial_field(currency,pg.page,row.bbox,method="explicit_summary_currency",confidence=0.995)
+                po.totals.currency=currency
             # Footer grids can collapse all header cells into one native-table
             # string. Use the printed NET H.T. column and its aligned next-row
             # amount, not an earlier merchandise subtotal or the neighboring VAT.
@@ -3416,7 +3611,7 @@ def _strict_text_totals_v48(po, pages, config: dict, default_currency: str="EUR"
                                 po.totals.total_gross=value; po.totals.total_after_tax=value
                             po.totals.currency=po.totals.currency or default_currency
                             break
-            if "net a payer" in low or "amount due" in low: kind="grand"
+            if "net a payer" in low or "amount due" in low or re.search(r"\btotal\s+t\.?t\.?c\.?\b",low): kind="grand"
             elif re.search(r"\b(?:montant\s+ht\s+net|total\s+ht|total\s+net\s+ht|montant\s+ht)\b",low): kind="net"
             elif re.search(r"\btva\s*\d*(?:[.,]\d+)?\s*%?\b",low) and not re.search(r"\btva\s*(?:intra|ic\b)|\b(?:numero|n[°ºo])\s*tva",low): kind="vat"
             if not kind: continue
@@ -3717,6 +3912,8 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     geometry_lines, geometry_charges = _extract_geometry_table_items_v46(pages, config, default_currency=default_currency)
     amount_only_lines = _extract_amount_only_geometry_v47(pages, config, default_currency=default_currency)
     quantity_first_lines, quantity_first_charges = _quantity_first_table_items(pages, default_currency)
+    price_then_quantity_lines = _price_then_quantity_table_items(pages, default_currency)
+    two_row_erp_lines = _two_row_erp_table_items(pages, default_currency)
 
     # V4.6 hypothesis competition.  Structural quality alone is not enough: a bad
     # parser can be arithmetically self-consistent while misreading the columns.  We
@@ -3746,6 +3943,8 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     if geometry_lines: hypotheses.append(("geometry",geometry_lines,geometry_charges,0.08))
     if amount_only_lines: hypotheses.append(("amount_only_geometry",amount_only_lines,[],0.11))
     if quantity_first_lines: hypotheses.append(("quantity_first_table",quantity_first_lines,quantity_first_charges,0.12))
+    if price_then_quantity_lines: hypotheses.append(("price_then_quantity_table",price_then_quantity_lines,[],0.14))
+    if two_row_erp_lines: hypotheses.append(("two_row_erp_table",two_row_erp_lines,[],0.16))
     ranked=sorted(((hypothesis_score(ls,ch,sb),name,ls,ch) for name,ls,ch,sb in hypotheses),reverse=True,key=lambda x:x[0])
     parser_diag={"selected":"current","scores":{name:round(hypothesis_score(ls,ch,sb),4) for name,ls,ch,sb in hypotheses}}
     if ranked and ranked[0][2]:
