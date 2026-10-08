@@ -196,6 +196,7 @@ class LineItem(BaseModel):
     product_code: str | None = None
     customer_material_number: str | None = None
     supplier_material_number: str | None = None
+    material_reference_source_prefix: str | None = None
     manufacturer_part_number: str | None = None
     manufacturer_name: str | None = None
     ean: str | None = None
@@ -257,8 +258,11 @@ class LineItem(BaseModel):
     contract_number: str | None = None
     contract_line: str | None = None
     quote_number: str | None = None
+    quote_numbers: list[str] = Field(default_factory=list)
     quote_date: str | None = None
     quote_line: str | None = None
+    derogation_number: str | None = None
+    derogation_numbers: list[str] = Field(default_factory=list)
     customer_reference: str | None = None
     requisition_number: str | None = None
     requisition_line: str | None = None
@@ -386,6 +390,9 @@ class PurchaseOrderHeader(BaseModel):
     contract_number: ExtractedField = Field(default_factory=ExtractedField)
     framework_contract_number: ExtractedField = Field(default_factory=ExtractedField)
     quote_number: ExtractedField = Field(default_factory=ExtractedField)
+    quote_numbers: list[ExtractedField] = Field(default_factory=list)
+    derogation_number: ExtractedField = Field(default_factory=ExtractedField)
+    derogation_numbers: list[ExtractedField] = Field(default_factory=list)
     rfq_number: ExtractedField = Field(default_factory=ExtractedField)
     project_number: ExtractedField = Field(default_factory=ExtractedField)
     project_name: ExtractedField = Field(default_factory=ExtractedField)
@@ -472,6 +479,8 @@ class PurchaseOrderResult(BaseModel):
     totals: Totals = Field(default_factory=Totals)
     taxes: list[TaxSummary] = Field(default_factory=list)
     tax_identifiers: list[dict[str, Any]] = Field(default_factory=list)
+    quote_references: list[dict[str, Any]] = Field(default_factory=list)
+    derogation_references: list[dict[str, Any]] = Field(default_factory=list)
     notes: dict[str, list[str]] = Field(default_factory=dict)
     extra_fields: list[ExtraField] = Field(default_factory=list)
     unclassified_tables: list[GenericTable] = Field(default_factory=list)

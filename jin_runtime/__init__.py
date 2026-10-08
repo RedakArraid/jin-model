@@ -1,1 +1,1 @@
-__version__ = "5.11.0-line-item-patterns"
+__version__ = "5.12.0-commercial-metadata"

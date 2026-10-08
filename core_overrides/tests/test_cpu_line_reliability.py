@@ -14,6 +14,7 @@ from uda.business import (
     _extract_geometry_table_items_v46,
     _material_anchored_split_table_items_v61,
     _material_anchored_numeric_row_items_v61,
+    _separate_additional_charge_lines_v62,
     _sanitize_non_product_lines_v61,
     _price_then_quantity_table_items,
     _quantity_first_table_items,
@@ -528,6 +529,34 @@ def test_geometry_keeps_alphabetic_shipping_code_in_document_amount():
     assert charges[0].charge_type == "shipping"
     assert charges[0].parent_material_number is None
     assert lines[0].line_total + charges[0].amount == pytest.approx(203.17)
+
+
+def test_final_normalizer_moves_shipping_and_tax_rows_out_of_products():
+    product = LineItem(
+        line_number="1", material_number="87167716300", description="CARTER",
+        quantity=1, unit_price=100, line_total=100, currency="EUR", page=1,
+    )
+    shipping = LineItem(
+        line_number="2", material_number="PORTSTD", description="FRAIS DE PORT STANDARD",
+        quantity=1, unit_price=20, line_total=20, currency="EUR", page=1,
+        raw_text="PORTSTD | FRAIS DE PORT STANDARD | 1 | 20,00 | 20,00",
+    )
+    tax = LineItem(
+        line_number="3", material_number="TGAP", description="TAXE TGAP",
+        quantity=1, unit_price=2.5, line_total=2.5, currency="EUR", page=1,
+    )
+    po = SimpleNamespace(
+        lines=[product, shipping, tax], additional_charges=[],
+        totals=Totals(total_net=122.5, currency="EUR"),
+    )
+
+    po, counts = _separate_additional_charge_lines_v62(po, {})
+
+    assert [line.material_number for line in po.lines] == ["87167716300"]
+    assert [charge.charge_type for charge in po.additional_charges] == ["shipping", "tax"]
+    assert [charge.amount for charge in po.additional_charges] == [20, 2.5]
+    assert po.totals.total_shipping == 20
+    assert counts == {"shipping": 1, "tax": 1}
 
 
 def _compact_header_page(prefix="CF", title="COMMANDE FOURNISSEUR", label=None):

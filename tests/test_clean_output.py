@@ -44,6 +44,24 @@ class CleanOutputTests(unittest.TestCase):
         self.assertEqual(out["order"]["delivery_address"]["role"], "ship_to")
         self.assertNotIn("raw_text", out)
 
+    def test_material_source_prefix_is_explicit_in_clean_references(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "business_extractions": {"purchase_order": {
+                "lines": [{
+                    "material_number": "EL 87167716300",
+                    "supplier_material_number": "87167716300",
+                    "material_reference_source_prefix": "EL",
+                    "description": "CARTER",
+                    "quantity": 1,
+                }],
+            }},
+        }
+        references = build_clean_output(payload)["order"]["line_items"][0]["references"]
+        self.assertEqual(references["material_number"], "EL 87167716300")
+        self.assertEqual(references["supplier_material_number"], "87167716300")
+        self.assertEqual(references["material_reference_source_prefix"], "EL")
+
     def test_reused_physical_address_has_unique_role_specific_ids(self):
         payload = {
             "document": {"primary_document_type": "purchase_order"},

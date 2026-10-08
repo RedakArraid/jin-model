@@ -9,9 +9,10 @@
 <body>
 
 <header class="topbar">
-  <div>
-    <div class="eyebrow">UNIVERSAL DOCUMENT AI V5.1</div>
+  <div class="brand">
+    <div class="eyebrow">EXTRACTION DOCUMENTAIRE · CPU LOCAL</div>
     <h1>JIN Model</h1>
+    <div class="brand-subtitle">Commandes clients, adresses et références commerciales</div>
   </div>
   <div id="health" class="health pending">API…</div>
 </header>
@@ -44,6 +45,7 @@
       <div class="bbox-legend hidden" id="bboxLegend">
         <span class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>Champs</span>
         <span class="legend-item"><span class="legend-dot" style="background:#22c55e"></span>Lignes</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>Frais / taxes</span>
         <span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>Adresses</span>
         <span class="legend-item"><span class="legend-dot" style="background:#a855f7"></span>Totaux</span>
         <span class="legend-item"><span class="legend-dot" style="background:#64748b"></span>Suggestions</span>
@@ -53,7 +55,10 @@
     <div class="results-pane hidden" id="resultsPane">
       <div class="results-toolbar">
         <span id="resultsFileName" class="results-filename"></span>
-        <button id="downloadBtn" class="btn-secondary" disabled>↓ JSON</button>
+        <div class="toolbar-actions">
+          <button id="downloadBtn" class="btn-secondary" disabled>↓ JSON propre</button>
+          <button id="downloadRawBtn" class="btn-secondary" disabled>↓ JSON complet</button>
+        </div>
       </div>
 
       <div id="stateProcessing" class="state-box hidden">
@@ -67,9 +72,19 @@
       <div id="results" class="hidden">
         <div id="metrics" class="metric-grid"></div>
 
+        <section id="extractionChecks" class="result-section review-panel hidden"></section>
+
         <div class="result-section" id="secSummary">
           <h3>Commande</h3>
           <div id="summary" class="kv-grid"></div>
+        </div>
+
+        <div class="result-section" id="secTaxIdentifiers">
+          <div class="section-heading">
+            <h3>Identifiants fiscaux et société</h3>
+            <span class="section-hint">Valeur imprimée ou calculée à partir d’un SIREN/SIRET valide</span>
+          </div>
+          <div id="taxIdentifiers" class="info-card-grid"></div>
         </div>
 
         <div class="result-section" id="secAddresses">
@@ -77,13 +92,33 @@
           <div id="addresses" class="cards"></div>
         </div>
 
-        <div class="result-section" id="secLines">
-          <h3>Lignes produit</h3>
+        <div class="result-section" id="secReferences">
+          <div class="section-heading">
+            <h3>Devis et dérogations</h3>
+            <span class="section-hint">Association uniquement lorsqu’elle est justifiée par le document</span>
+          </div>
           <div class="table-wrap">
-            <table id="linesTable">
+            <table id="referencesTable" class="wide-table">
               <thead><tr>
-                <th>#</th><th>Référence</th><th>Description</th>
-                <th>Qté</th><th>U</th><th>PU</th><th>Montant</th><th>Conf.</th>
+                <th>Type</th><th>Numéro</th><th>Portée</th>
+                <th>Lignes</th><th>Articles</th><th>Conf.</th><th>Source</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="result-section" id="secLines">
+          <div class="section-heading">
+            <h3>Lignes produit</h3>
+            <span class="section-hint">Les ports, taxes et contributions sont exclus de cette liste</span>
+          </div>
+          <div class="table-wrap">
+            <table id="linesTable" class="wide-table">
+              <thead><tr>
+                <th>#</th><th>Référence article</th><th>Description</th>
+                <th>Qté</th><th>U</th><th>PU net</th><th>Montant</th>
+                <th>Devis / dérogation</th><th>Conf.</th>
               </tr></thead>
               <tbody></tbody>
             </table>
@@ -91,11 +126,15 @@
         </div>
 
         <div class="result-section" id="secCharges">
-          <h3>Charges additionnelles</h3>
+          <div class="section-heading">
+            <h3>Frais et taxes hors articles</h3>
+            <span class="section-hint">Port, transport, DEEE, écotaxe et autres frais explicites</span>
+          </div>
           <div class="table-wrap">
-            <table id="chargesTable">
+            <table id="chargesTable" class="wide-table">
               <thead><tr>
-                <th>Type</th><th>Description</th><th>Réf.</th><th>Qté</th><th>PU</th><th>Montant</th>
+                <th>Type</th><th>Code</th><th>Description</th><th>Rattaché à</th>
+                <th>Qté</th><th>PU</th><th>Montant</th>
               </tr></thead>
               <tbody></tbody>
             </table>

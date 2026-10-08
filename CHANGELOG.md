@@ -1,5 +1,24 @@
 # Changelog
 
+## 5.12.0-commercial-metadata
+
+- Preserve several customer quote references per order and per product line, with explicit source-backed links between each quote and the affected lines.
+- Extract derogation numbers at document and line level without assigning document-only references to arbitrary products.
+- Recover quote and derogation references from structured PDF table columns, including repeated material references disambiguated by quantity and amount.
+- Derive a French VAT number from an explicitly labelled, checksum-valid SIREN or SIRET when no printed VAT number is present, while marking the result as derived rather than printed.
+- Cross-check printed French VAT numbers against valid SIREN/SIRET evidence and retain the supporting registration identifier.
+- Move explicit freight, shipping, environmental-fee, tax and surcharge rows out of product lines into typed additional charges, preserving amounts and source evidence.
+- Expose plural commercial references and their line associations in the clean JSON and UI.
+- Refresh the complete frontend with dedicated commercial-reference and tax-identifier views, explicit derived-VAT provenance, separate product/charge tables, source-aware overlays and clean/full JSON downloads.
+
+## 5.11.1-client-reference-prefixes
+
+- Separate configured customer source qualifiers such as GARANKA `EL` from the canonical supplier material reference while retaining the complete printed value for traceability.
+- Support space, `+`, `-`, `/`, `:` and contiguous prefix notation without weakening ordinary numeric-reference safeguards.
+- Confirm previously unknown prefixes only when at least two distinct commercial lines have strongly supported material-reference suffixes in the same document.
+- Keep VAT, telephone, company and postal prefixes blocked from automatic discovery.
+- Add prefix counts to material-pattern diagnostics and cover short numeric and alphanumeric GARANKA references in regression tests.
+
 ## 5.10.0-header-reliability
 
 - Audited the complete SHA-256-deduplicated 2,925-document order archive through iterative unseen discovery and validation batches.

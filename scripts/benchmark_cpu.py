@@ -133,6 +133,7 @@ def create_local_extractor(models_dir: Path | None = None):
     from jin_runtime.document_router import CorpusDocumentRouter
     from jin_runtime.extraction_gate import apply_extraction_gate
     from jin_runtime.generic_document_fields import enrich_generic_document_fields
+    from jin_runtime.commercial_references import enrich_commercial_references
     from jin_runtime.grouped_order_fields import enrich_grouped_order_fields
     from jin_runtime.learning import StatisticalAddressLearner
     from jin_runtime.offline import configure_core_offline
@@ -181,6 +182,7 @@ def create_local_extractor(models_dir: Path | None = None):
         payload = enrich_customer_agency_codes(payload)
         payload = enrich_delivery_addresses(payload)
         payload = enrich_generic_document_fields(payload)
+        payload = enrich_commercial_references(payload)
         payload = enrich_grouped_order_fields(payload)
         return apply_extraction_gate(payload)
 

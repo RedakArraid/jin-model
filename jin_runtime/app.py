@@ -27,6 +27,7 @@ from jin_runtime.customer_agency_codes import enrich_customer_agency_codes
 from jin_runtime.header_fields import reconcile_header_fields
 from jin_runtime.weak_field_reconciliation import reconcile_weak_fields
 from jin_runtime.generic_document_fields import enrich_generic_document_fields
+from jin_runtime.commercial_references import enrich_commercial_references
 from jin_runtime.grouped_order_fields import enrich_grouped_order_fields
 from uda import api as core_api
 
@@ -226,6 +227,7 @@ async def extract(request: Request) -> Response:
         payload = enrich_customer_agency_codes(payload)
         payload = enrich_delivery_addresses(payload)
         payload = enrich_generic_document_fields(payload)
+        payload = enrich_commercial_references(payload)
         payload = enrich_grouped_order_fields(payload)
         payload = apply_extraction_gate(payload)
         payload.setdefault("runtime_layer_version", __version__)

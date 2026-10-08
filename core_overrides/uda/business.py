@@ -1496,12 +1496,36 @@ def _parse_native_decimal(value):
     return parse_number(raw)
 
 
+def _explicit_charge_kind_v62(text: str | None) -> str | None:
+    """Classify rows that are explicitly non-product commercial charges."""
+    import re
+    low = _fold(text)
+    if not low:
+        return None
+    if re.search(r"\b(?:deee|d3ee|weee|eco[- ]?participation|eco[- ]?contribution)\b", low):
+        return "environmental_fee"
+    if (
+        re.search(r"\b(?:frais|forfait|participation|cout)\s+(?:de\s+|du\s+)?(?:port|transport|livraison|expedition)\b", low)
+        or re.search(r"\bport\s+(?:standard|express|ht|facture|forfait)\b", low)
+        or re.search(r"\b(?:shipping|freight)(?:\s+(?:charge|cost|fee))?\b", low)
+        or re.fullmatch(r"(?:port|transport|livraison|expedition)(?:\s+ht)?", low)
+        or re.search(r"\bportstd\b", low)
+    ):
+        return "shipping"
+    if re.search(r"\b(?:ecotaxe|taxe|tax|tgap|contribution\s+(?:fiscale|environnementale))\b", low):
+        return "tax"
+    if re.search(r"\b(?:surcharge|supplement|frais\s+(?:de\s+)?(?:dossier|gestion|manutention|emballage))\b", low):
+        return "surcharge"
+    return None
+
+
 def _fee_kind(text: str | None) -> str | None:
     low = _fold(text)
     if not low:
         return None
-    if any(x in low for x in ("deee", "eco-participation", "eco participation", "ecoparticipation", "weee")):
-        return "environmental_fee"
+    explicit = _explicit_charge_kind_v62(text)
+    if explicit:
+        return explicit
     if any(x in low for x in ("surcharge", "supplement", "supplement", "frais")):
         return "surcharge"
     return None
@@ -3479,6 +3503,93 @@ def _sanitize_non_product_lines_v61(lines, config: dict):
     return kept, dict(sorted(rejected.items()))
 
 
+def _separate_additional_charge_lines_v62(po, config: dict):
+    """Move explicit freight/tax/fee rows out of product lines for every parser."""
+    if not config.get("layout", {}).get("separate_additional_charge_lines", True):
+        return po, {}
+    from collections import Counter
+    from po_ocr.models import AdditionalCharge, Evidence
+
+    kept = []
+    counts = Counter()
+    existing = list(getattr(po, "additional_charges", []) or [])
+    last_product = None
+
+    def same_charge(candidate) -> bool:
+        for current in existing:
+            if current.charge_type != candidate.charge_type or current.page != candidate.page:
+                continue
+            left_amount = current.amount
+            right_amount = candidate.amount
+            if left_amount is not None and right_amount is not None and abs(float(left_amount) - float(right_amount)) > 0.01:
+                continue
+            same_code = bool(
+                _fold(current.code or "")
+                and _fold(current.code or "") == _fold(candidate.code or "")
+            )
+            same_description = _fold(current.description or "") == _fold(candidate.description or "")
+            if same_code or same_description:
+                return True
+        return False
+
+    for line in getattr(po, "lines", []) or []:
+        source = " ".join(
+            str(value) for value in (
+                line.material_number,
+                line.article_number,
+                line.description,
+                line.raw_text,
+            ) if value
+        )
+        kind = _explicit_charge_kind_v62(source)
+        if not kind:
+            kept.append(line)
+            last_product = line
+            continue
+        amount = line.line_total
+        if amount is None and line.quantity is not None and line.unit_price is not None:
+            amount = round(float(line.quantity) * float(line.unit_price), 6)
+        parent = last_product if kind == "environmental_fee" else None
+        charge = AdditionalCharge(
+            charge_type=kind,
+            code=line.material_number or line.article_number,
+            description=line.description or line.raw_text or line.material_number,
+            parent_line_number=parent.line_number if parent else None,
+            parent_material_number=parent.material_number if parent else None,
+            supplier_reference=parent.supplier_material_number if parent else None,
+            quantity=line.quantity,
+            uom=line.uom,
+            unit_price=line.unit_price,
+            amount=amount,
+            currency=line.currency,
+            page=line.page,
+            confidence=line.confidence,
+            evidence=Evidence(
+                page=line.page,
+                bbox=line.bbox,
+                source_text=line.raw_text or line.description,
+                extraction_method="explicit_charge_line_reclassification_v62",
+            ),
+            warnings=["reclassified_from_order_line"],
+        )
+        if not same_charge(charge):
+            existing.append(charge)
+        counts[kind] += 1
+
+    po.lines = kept
+    po.additional_charges = existing
+    for index, line in enumerate(po.lines, 1):
+        line.line_number = str(index)
+    shipping_amounts = [
+        float(charge.amount)
+        for charge in existing
+        if charge.charge_type == "shipping" and charge.amount is not None
+    ]
+    if shipping_amounts and po.totals.total_shipping is None:
+        po.totals.total_shipping = round(sum(shipping_amounts), 6)
+    return po, dict(sorted(counts.items()))
+
+
 def _material_anchored_numeric_row_items_v61(pages, config: dict, default_currency: str = "EUR"):
     """Recover OCR rows from a strong material anchor and arithmetic columns.
 
@@ -4403,6 +4514,7 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
         po.lines=chosen_lines; po.additional_charges=chosen_charges
         parser_diag["selected"]=chosen_name
     po.lines = _dedupe_line_items(po.lines)
+    po, parser_diag["reclassified_additional_charges"] = _separate_additional_charge_lines_v62(po, config)
     parser_diag["supplier_role_enrichments"] = enrich_supplier_material_roles(po.lines, config)
     po.lines, parser_diag["semantic_line_rejections"] = _sanitize_non_product_lines_v61(po.lines, config)
     po = _sanitize_legal_footer_lines_v48(po, config)

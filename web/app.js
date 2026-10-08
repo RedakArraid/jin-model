@@ -19,6 +19,7 @@ const viewerPane      = document.getElementById('viewerPane');
 const resultsPane     = document.getElementById('resultsPane');
 const fileViewer      = document.getElementById('fileViewer');
 const downloadBtn     = document.getElementById('downloadBtn');
+const downloadRawBtn  = document.getElementById('downloadRawBtn');
 const resultsFileName = document.getElementById('resultsFileName');
 const stateProcessing = document.getElementById('stateProcessing');
 const stateError      = document.getElementById('stateError');
@@ -53,18 +54,109 @@ const unitPriceLabel = (line, currency) => {
   return basis != null && basis > 0 && basis !== 1 ? `${amount} / ${fmt(basis)} ${line.uom || 'unités'}` : amount;
 };
 
-const lineReferenceLabel = line => {
-  const primary = line.material_number || line.article_number || line.product_code
+const lineReferenceLabel = (line, includeCommercial = true) => {
+  const sourcePrefix = line.material_reference_source_prefix;
+  const primary = (sourcePrefix && line.supplier_material_number)
+    || line.material_number || line.article_number || line.product_code
     || line.manufacturer_part_number || line.supplier_material_number;
   const details = [];
-  if (line.supplier_material_number && line.supplier_material_number !== primary) {
+  if (sourcePrefix) {
+    details.push(`Préfixe source ${sourcePrefix}`);
+  } else if (line.supplier_material_number && line.supplier_material_number !== primary) {
     details.push(`Fourn. ${line.supplier_material_number}`);
   }
   if (line.customer_material_number && line.customer_material_number !== primary) {
     details.push(`Client ${line.customer_material_number}`);
   }
+  if (includeCommercial) {
+    const quotes = [...new Set([...(line.quote_numbers || []), line.quote_number].filter(Boolean))];
+    const derogations = [...new Set([...(line.derogation_numbers || []), line.derogation_number].filter(Boolean))];
+    if (quotes.length) details.push(`Devis ${quotes.join(', ')}`);
+    if (derogations.length) details.push(`Dérog. ${derogations.join(', ')}`);
+  }
   return [primary, ...details].filter(Boolean).join(' · ') || null;
 };
+
+const extractedValue = value => (
+  value && typeof value === 'object' && 'value' in value ? value.value : value
+);
+
+const uniqueValues = values => [...new Set(
+  (values || []).map(extractedValue).filter(value => value != null && value !== '').map(String),
+)];
+
+const lineCommercialReferences = line => ({
+  quotes: uniqueValues([...(line.quote_numbers || []), line.quote_number]),
+  derogations: uniqueValues([...(line.derogation_numbers || []), line.derogation_number]),
+});
+
+const confidenceLabel = value => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? `${new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 1 }).format(parsed * 100)} %` : null;
+};
+
+const chargeTypeLabel = value => ({
+  shipping: 'Port / transport',
+  environmental_fee: 'Contribution environnementale',
+  tax: 'Taxe',
+  surcharge: 'Frais complémentaire',
+  discount: 'Remise',
+}[value] || value || 'Frais');
+
+const taxRoleLabel = value => ({
+  buyer: 'Acheteur',
+  supplier: 'Fournisseur',
+  buyer_or_issuer: 'Acheteur / émetteur',
+  unknown: 'Rôle non déterminé',
+}[value] || value || 'Rôle non déterminé');
+
+const taxStatusLabel = value => ({
+  CHECKSUM_AND_REGISTRATION_MATCH: 'TVA + SIREN/SIRET concordants',
+  CHECKSUM_VALID: 'TVA valide',
+  DERIVED_FROM_VALID_SIRET: 'Calculée depuis un SIRET valide',
+  DERIVED_FROM_VALID_SIREN: 'Calculée depuis un SIREN valide',
+  SOURCE_SUPPORTED: 'Présente dans la source',
+}[value] || value || 'Non vérifié');
+
+function addTextCell(row, value, className = '') {
+  const cell = document.createElement('td');
+  if (className) cell.className = className;
+  cell.textContent = value ?? '—';
+  row.appendChild(cell);
+  return cell;
+}
+
+function addTagCell(row, groups) {
+  const cell = document.createElement('td');
+  const list = document.createElement('div');
+  list.className = 'tag-list';
+  for (const group of groups) {
+    for (const value of group.values || []) {
+      const tag = document.createElement('span');
+      tag.className = `tag ${group.className || ''}`.trim();
+      tag.textContent = `${group.label} ${value}`;
+      list.appendChild(tag);
+    }
+  }
+  if (list.children.length) cell.appendChild(list);
+  else cell.textContent = '—';
+  row.appendChild(cell);
+  return cell;
+}
+
+function normalizedLine(line) {
+  if (!line.references && !line.pricing && !line.amounts) return line;
+  return {
+    ...line,
+    ...(line.references || {}),
+    quantity: line.quantity,
+    unit_price: line.pricing?.unit_price,
+    net_unit_price: line.pricing?.net_unit_price,
+    price_unit: line.pricing?.price_unit,
+    currency: line.pricing?.currency,
+    line_total: line.amounts?.total ?? line.amounts?.net,
+  };
+}
 
 function uiDeliveryAddresses(result) {
   const normalize = value => String(value || '').normalize('NFKD')
@@ -144,7 +236,9 @@ async function health() {
     const r = await fetch('/api/health');
     const j = await r.json();
     el.className = 'health ok';
-    el.textContent = `API OK · ${j.version}`;
+    const runtime = j.runtime_layer?.version || j.version;
+    const locality = j.runtime_layer?.offline ? 'local' : 'connecté';
+    el.textContent = `API OK · ${runtime} · ${locality}`;
   } catch {
     el.className = 'health bad';
     el.textContent = 'API indisponible';
@@ -224,6 +318,7 @@ function closeTab(idx) {
     fileViewer.innerHTML = '';
     resultsFileName.textContent = '';
     downloadBtn.disabled = true;
+    downloadRawBtn.disabled = true;
     [stateProcessing, stateError, statePending, resultsEl].forEach(el => el.classList.add('hidden'));
     stateEmpty.classList.remove('hidden');
   } else {
@@ -271,11 +366,17 @@ function showActive() {
 
   [stateProcessing, stateError, statePending, stateEmpty, resultsEl].forEach(el => el.classList.add('hidden'));
   downloadBtn.disabled = true;
+  downloadRawBtn.disabled = true;
 
   if      (entry.status === 'processing') { stateProcessing.classList.remove('hidden'); }
   else if (entry.status === 'error')      { stateError.textContent = entry.error; stateError.classList.remove('hidden'); }
   else if (entry.status === 'pending')    { statePending.classList.remove('hidden'); }
-  else if (entry.status === 'done')       { render(entry.result); resultsEl.classList.remove('hidden'); downloadBtn.disabled = false; }
+  else if (entry.status === 'done')       {
+    render(entry.result);
+    resultsEl.classList.remove('hidden');
+    downloadBtn.disabled = false;
+    downloadRawBtn.disabled = false;
+  }
 }
 
 function showViewer(entry) {
@@ -390,6 +491,17 @@ downloadBtn.addEventListener('click', () => {
   URL.revokeObjectURL(a.href);
 });
 
+downloadRawBtn.addEventListener('click', () => {
+  const entry = files[activeIdx];
+  if (!entry?.result) return;
+  const blob = new Blob([JSON.stringify(entry.result, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `jin-complet-${entry.file.name.replace(/\.[^.]+$/, '')}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
 // ── KV + Metrics helpers ────────────────────────────────────────────────────
 function fillKv(container, entries) {
   container.innerHTML = '';
@@ -462,6 +574,7 @@ function collectBoxes(r) {
     ['customer_agency_code', 'Code agence client'],
     ['contract_number',    'N° contrat'],
     ['quote_number',       'N° devis'],
+    ['derogation_number',  'N° dérogation'],
     ['project_number',     'N° projet'],
   ]) {
     const f = po[key];
@@ -477,6 +590,12 @@ function collectBoxes(r) {
   // Lignes produit
   for (const l of (b.lines || [])) {
     if (l.bbox) add(l.bbox, l.page, `L${l.line_number || ''}`, 'line');
+  }
+
+  // Frais, taxes et contributions séparés des lignes produit
+  for (const charge of (b.additional_charges || [])) {
+    const evidence = charge.evidence || {};
+    if (evidence.bbox) add(evidence.bbox, evidence.page || charge.page, chargeTypeLabel(charge.charge_type), 'charge');
   }
 
   // Adresses
@@ -526,6 +645,7 @@ function drawBox(svg, { bbox, label, type }, W, H) {
   const COLORS = {
     field:   '#3b82f6',
     line:    '#22c55e',
+    charge:  '#ef4444',
     address: '#f59e0b',
     total:   '#a855f7',
     weak:    '#64748b',
@@ -572,19 +692,22 @@ function render(r) {
   const be  = r.business_extractions || {};
   const b   = be.purchase_order || {};   // PurchaseOrderResult
   const po  = b.purchase_order  || {};   // PurchaseOrderHeader (ExtractedField objects)
-  const tot = b.totals           || {};
-  const com = b.commercial       || {};
-  const log = b.logistics        || {};
+  const clean = r.normalized_output || {};
+  const cleanOrder = clean.order || {};
+  const cleanDocument = clean.document || {};
+  const tot = Object.keys(b.totals || {}).length ? b.totals : (cleanOrder.totals || {});
+  const com = Object.keys(b.commercial || {}).length ? b.commercial : (cleanOrder.commercial_terms || {});
+  const log = Object.keys(b.logistics || {}).length ? b.logistics : (cleanOrder.logistics || {});
   const cur = pick(po, ['currency.value']) || tot.currency || 'EUR';
 
   // ── Metrics bar ──
   fillMetrics([
-    ['Type',          pick(r, ['document.detected_document_type', 'detected_document_type'])],
+    ['Type',          pick(r, ['document.detected_document_type', 'detected_document_type'], cleanDocument.type)],
+    ['Décision',      pick(r, ['extraction_decision.status', 'quality.decision'], '—')],
     ['Score technique', pick(r, ['quality.overall_confidence',    'overall_confidence'])],
     ['Validation',    pick(b, ['validation.status',              'validation_status'])],
-    ['Revue humaine', pick(r, ['quality.requires_human_review',  'requires_human_review'], false) ? 'OUI' : 'NON'],
     ['Pages',         pick(r, ['document.page_count',            'page_count'])],
-    ['Version',       pick(r, ['document.engine_version',        'engine_version'])],
+    ['Runtime',       r.runtime_layer_version || clean.generator?.runtime || '—'],
   ]);
 
   let checksEl = document.getElementById('extractionChecks');
@@ -654,6 +777,8 @@ function render(r) {
 
   // ── Commande summary ──
   const summaryEl = document.getElementById('summary');
+  const quoteNumbers = (po.quote_numbers || []).map(value => value?.value ?? value).filter(Boolean);
+  const derogationNumbers = (po.derogation_numbers || []).map(value => value?.value ?? value).filter(Boolean);
   fillKv(summaryEl, [
     ['N° commande client', pick(po, ['number.value',             'number'])],
     ['Page du n° client',  r.order_number_check?.source_evidence?.page],
@@ -671,10 +796,81 @@ function render(r) {
     ['Réf. client',       pick(po, ['customer_reference.value', 'customer_reference'])],
     ['Code agence client', pick(po, ['customer_agency_code.value', 'customer_agency_code'])],
     ['N° contrat',        pick(po, ['contract_number.value',    'contract_number'])],
-    ['N° devis',          pick(po, ['quote_number.value',       'quote_number'])],
+    ['N° devis',          quoteNumbers.length ? quoteNumbers.join(', ') : pick(po, ['quote_number.value', 'quote_number'])],
+    ['N° dérogation',     derogationNumbers.length ? derogationNumbers.join(', ') : pick(po, ['derogation_number.value', 'derogation_number'])],
     ['N° projet',         pick(po, ['project_number.value',     'project_number'])],
   ]);
   toggleSection('secSummary', summaryEl.children.length > 0);
+
+  // ── Identifiants fiscaux ──
+  const taxSources = [
+    ...(r.document_tax_identifiers || []),
+    ...(b.tax_identifiers || []),
+    ...(cleanDocument.tax_identifiers || []),
+    ...(cleanOrder.tax_identifiers || []),
+  ];
+  const taxIdentifiers = [];
+  const taxIndexes = new Map();
+  for (const identifier of taxSources) {
+    if (!identifier || !identifier.vat_number) continue;
+    const key = String(identifier.vat_number);
+    if (!taxIndexes.has(key)) {
+      taxIndexes.set(key, taxIdentifiers.length);
+      taxIdentifiers.push({ ...identifier });
+      continue;
+    }
+    const index = taxIndexes.get(key);
+    const current = taxIdentifiers[index];
+    const currentRole = current.role || 'unknown';
+    const nextRole = identifier.role || 'unknown';
+    taxIdentifiers[index] = {
+      ...identifier,
+      ...current,
+      role: currentRole === 'unknown' && nextRole !== 'unknown' ? nextRole : currentRole,
+      siren: current.siren || identifier.siren,
+      siret: current.siret || identifier.siret,
+      registration_number: current.registration_number || identifier.registration_number,
+      validation_status: current.validation_status === 'CHECKSUM_VALID'
+        ? (identifier.validation_status || current.validation_status)
+        : (current.validation_status || identifier.validation_status),
+      supporting_evidence: current.supporting_evidence || identifier.supporting_evidence,
+    };
+  }
+  const taxContainer = document.getElementById('taxIdentifiers');
+  taxContainer.replaceChildren();
+  for (const identifier of taxIdentifiers) {
+    const card = document.createElement('article');
+    card.className = 'info-card';
+    const title = document.createElement('div');
+    title.className = 'card-title';
+    const role = document.createElement('strong');
+    role.textContent = taxRoleLabel(identifier.role);
+    const badge = document.createElement('span');
+    const status = identifier.validation_status || identifier.status;
+    badge.className = `status-badge ${String(status || '').startsWith('DERIVED') ? 'derived' : 'verified'}`;
+    badge.textContent = taxStatusLabel(status);
+    title.append(role, badge);
+    const value = document.createElement('div');
+    value.className = 'card-value';
+    value.textContent = identifier.vat_number;
+    const meta = document.createElement('div');
+    meta.className = 'card-meta';
+    const evidence = identifier.evidence || {};
+    const details = [
+      identifier.siret ? `SIRET : ${identifier.siret}` : null,
+      identifier.siren ? `SIREN : ${identifier.siren}` : null,
+      identifier.registration_number && !identifier.siret && !identifier.siren
+        ? `Immatriculation : ${identifier.registration_number}` : null,
+      identifier.confidence != null ? `Confiance : ${confidenceLabel(identifier.confidence)}` : null,
+      evidence.page ? `Page ${evidence.page}` : null,
+      String(status || '').startsWith('DERIVED') ? 'TVA calculée, non imprimée dans le document' : null,
+      evidence.source_text ? `Source : ${evidence.source_text}` : null,
+    ].filter(Boolean);
+    meta.textContent = details.join(' · ');
+    card.append(title, value, meta);
+    taxContainer.appendChild(card);
+  }
+  toggleSection('secTaxIdentifiers', taxIdentifiers.length > 0);
 
   // ── Adresses ──
   const addrs = uiDeliveryAddresses(r);
@@ -712,56 +908,112 @@ function render(r) {
   }
   toggleSection('secAddresses', addrs.length > 0);
 
+  // ── Devis et dérogations ──
+  const referenceSources = [
+    ...(b.quote_references || []),
+    ...(b.derogation_references || []),
+    ...(cleanOrder.quote_references || []),
+    ...(cleanOrder.derogation_references || []),
+    ...(r.commercial_references || []),
+  ];
+  const referenceMap = new Map();
+  for (const reference of referenceSources) {
+    if (!reference?.number) continue;
+    const type = reference.reference_type || 'quote';
+    const key = `${type}|${reference.number}`;
+    const current = referenceMap.get(key) || {
+      reference_type: type,
+      number: reference.number,
+      scope: reference.scope || 'document',
+      line_numbers: [],
+      material_numbers: [],
+      confidence: reference.confidence,
+      evidence: [],
+    };
+    current.line_numbers = uniqueValues([...(current.line_numbers || []), ...(reference.line_numbers || [])]);
+    current.material_numbers = uniqueValues([...(current.material_numbers || []), ...(reference.material_numbers || [])]);
+    current.evidence = [...(current.evidence || []), ...(reference.evidence || [])];
+    if (current.line_numbers.length) current.scope = 'line';
+    current.confidence = Math.max(Number(current.confidence) || 0, Number(reference.confidence) || 0) || null;
+    referenceMap.set(key, current);
+  }
+  const references = [...referenceMap.values()];
+  const referenceBody = document.querySelector('#referencesTable tbody');
+  referenceBody.replaceChildren();
+  for (const reference of references) {
+    const row = document.createElement('tr');
+    addTextCell(row, reference.reference_type === 'derogation' ? 'Dérogation' : 'Devis');
+    addTextCell(row, reference.number, 'cell-primary');
+    addTextCell(row, reference.scope === 'line' ? 'Ligne(s)' : 'Document');
+    addTextCell(row, reference.line_numbers.length ? reference.line_numbers.join(', ') : '—');
+    addTextCell(row, reference.material_numbers.length ? reference.material_numbers.join(', ') : '—');
+    addTextCell(row, confidenceLabel(reference.confidence));
+    const source = reference.evidence?.[0] || {};
+    addTextCell(row, [source.page ? `p. ${source.page}` : null, source.source_text].filter(Boolean).join(' · ') || '—', 'cell-sub');
+    referenceBody.appendChild(row);
+  }
+  toggleSection('secReferences', references.length > 0);
+
   // ── Lignes produit ──
-  const lines = b.lines || [];
+  const lines = (b.lines?.length ? b.lines : (cleanOrder.line_items || [])).map(normalizedLine);
   const tbody = document.querySelector('#linesTable tbody');
   tbody.innerHTML = '';
   for (const l of lines) {
     const tr = document.createElement('tr');
-    [ l.line_number,
-      lineReferenceLabel(l),
-      l.description,
-      l.quantity,
-      l.uom,
-      unitPriceLabel(l, cur),
-      l.line_total  != null ? money(l.line_total,   l.currency || cur) : null,
-      l.confidence  != null ? fmt(l.confidence) : null,
-    ].forEach(v => {
-      const td = document.createElement('td');
-      td.textContent = v ?? '—';
-      tr.appendChild(td);
-    });
+    const commercialReferences = lineCommercialReferences(l);
+    addTextCell(tr, l.line_number);
+    addTextCell(tr, lineReferenceLabel(l, false), 'cell-primary');
+    addTextCell(tr, l.description);
+    addTextCell(tr, l.quantity != null ? fmt(l.quantity) : null);
+    addTextCell(tr, l.uom);
+    addTextCell(tr, unitPriceLabel(l, cur));
+    addTextCell(tr, l.line_total != null ? money(l.line_total, l.currency || cur) : null);
+    addTagCell(tr, [
+      { label: 'Devis', values: commercialReferences.quotes },
+      { label: 'Dérog.', values: commercialReferences.derogations, className: 'derogation' },
+    ]);
+    addTextCell(tr, confidenceLabel(l.confidence));
     tbody.appendChild(tr);
   }
   toggleSection('secLines', lines.length > 0);
 
   // ── Charges additionnelles ──
-  const charges = be.additional_charges || b.additional_charges || [];
+  const charges = (be.additional_charges?.length ? be.additional_charges
+    : b.additional_charges?.length ? b.additional_charges
+      : (cleanOrder.additional_charges || []));
   const cbody = document.querySelector('#chargesTable tbody');
   cbody.innerHTML = '';
   for (const ch of charges) {
     const tr = document.createElement('tr');
-    [ ch.charge_type,
-      ch.description,
-      ch.supplier_reference || ch.code,
-      ch.quantity != null ? fmt(ch.quantity) : null,
-      ch.unit_price != null ? unitMoney(ch.unit_price, ch.currency || cur) : null,
-      ch.amount     != null ? money(ch.amount,     ch.currency || cur) : null,
-    ].forEach(v => {
-      const td = document.createElement('td');
-      td.textContent = v ?? '—';
-      tr.appendChild(td);
-    });
+    const type = ch.charge_type || ch.type;
+    addTextCell(tr, chargeTypeLabel(type));
+    addTextCell(tr, ch.code || ch.reference || ch.supplier_reference, 'cell-primary');
+    addTextCell(tr, ch.description);
+    addTextCell(tr, ch.parent_line_number
+      ? `Ligne ${ch.parent_line_number}${ch.parent_material_number ? ` · ${ch.parent_material_number}` : ''}`
+      : 'Commande');
+    addTextCell(tr, ch.quantity != null ? fmt(ch.quantity) : null);
+    addTextCell(tr, ch.unit_price != null ? unitMoney(ch.unit_price, ch.currency || cur) : null);
+    addTextCell(tr, ch.amount != null ? money(ch.amount, ch.currency || cur) : null);
     cbody.appendChild(tr);
   }
   toggleSection('secCharges', charges.length > 0);
 
   // ── Totaux ──
   const totEl = document.getElementById('totals');
+  const chargeAmount = type => {
+    const values = charges
+      .filter(charge => (charge.charge_type || charge.type) === type)
+      .map(charge => Number(charge.amount))
+      .filter(Number.isFinite);
+    return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+  };
   fillKv(totEl, [
     ['Sous-total HT',    money(tot.subtotal,                              cur)],
     ['Remise',           money(tot.total_discount,                        cur)],
-    ['Surcharges',       money(tot.total_surcharge ?? tot.total_freight,  cur)],
+    ['Frais de port',    money(tot.total_shipping ?? tot.total_freight ?? chargeAmount('shipping'), cur)],
+    ['Contributions environnementales', money(chargeAmount('environmental_fee'), cur)],
+    ['Autres frais',     money(tot.total_surcharge ?? chargeAmount('surcharge'), cur)],
     ['TVA',              money(tot.total_vat       ?? tot.total_tax,      cur)],
     ['Total avant TVA',  money(tot.total_before_tax,                      cur)],
     ['Total HT',         money(tot.total_net,                             cur)],

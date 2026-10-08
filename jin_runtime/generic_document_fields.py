@@ -17,6 +17,11 @@ _FR_VAT_RE = re.compile(
     r"((?:[0-9OIL][ .-]*){8}[0-9OIL])(?![A-Z0-9])",
     re.I,
 )
+_FRENCH_REGISTRATION_RE = re.compile(
+    r"\b(?P<type>SIRET|SIREN)\s*(?:N\s*(?:[°ºO]|UMERO)?\s*)?[:#.-]?\s*"
+    r"(?P<number>(?:\d[ .-]*){13}\d|(?:\d[ .-]*){8}\d)(?!\d)",
+    re.I,
+)
 _CUSTOMER_ORDER_RE = re.compile(
     r"(?:REF(?:ERENCE)?\.?\s*(?:DE\s+)?COMMANDE\s+CLIENT|"
     r"VOTRE\s+(?:N(?:O|UMERO)?\.?\s*)?COMMANDE|"
@@ -64,6 +69,26 @@ def _valid_french_vat(value: str) -> bool:
     key = int(value[2:4])
     siren = int(value[4:])
     return key == (12 + 3 * (siren % 97)) % 97
+
+
+def _valid_luhn(value: str) -> bool:
+    if not value.isdigit():
+        return False
+    total = 0
+    parity = len(value) % 2
+    for index, char in enumerate(value):
+        digit = int(char)
+        if index % 2 == parity:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
+
+
+def _vat_from_siren(siren: str) -> str:
+    key = (12 + 3 * (int(siren) % 97)) % 97
+    return f"FR{key:02d}{siren}"
 
 
 def _page_texts(payload: dict[str, Any]) -> list[tuple[int, str]]:
@@ -145,6 +170,7 @@ def _request_for_quotation_reference(line: str) -> str | None:
 def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
     """Add exact VAT IDs and explicit customer-order references to a payload."""
     tax_by_value: dict[str, dict[str, Any]] = {}
+    registrations_by_siren: dict[str, dict[str, Any]] = {}
     customer_order: dict[str, Any] | None = None
     request_for_quotation: dict[str, Any] | None = None
     referenced_order: dict[str, Any] | None = None
@@ -167,6 +193,37 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
                 marker in folded
                 for marker in ("TVA", "VAT", "INTRACOM", "INTRA COMMUNAUTAIRE", "TAX NUMBER")
             )
+            for match in _FRENCH_REGISTRATION_RE.finditer(line.upper()):
+                registration_type = match.group("type").upper()
+                number = re.sub(r"\D", "", match.group("number"))
+                expected_length = 14 if registration_type == "SIRET" else 9
+                if len(number) != expected_length or not _valid_luhn(number):
+                    continue
+                siren = number[:9]
+                if not _valid_luhn(siren):
+                    continue
+                role = _party_role(context)
+                candidate = {
+                    "registration_type": registration_type.lower(),
+                    "registration_number": number,
+                    "siren": siren,
+                    "siret": number if registration_type == "SIRET" else None,
+                    "role": role,
+                    "confidence": 0.99,
+                    "validation_status": "CHECKSUM_VALID",
+                    "evidence": {
+                        "page": page_number,
+                        "source_text": line,
+                        "extraction_method": "explicit_french_registration_checksum_v1",
+                    },
+                }
+                existing_registration = registrations_by_siren.get(siren)
+                if (
+                    existing_registration is None
+                    or (candidate.get("siret") and not existing_registration.get("siret"))
+                    or (existing_registration.get("role") == "unknown" and role != "unknown")
+                ):
+                    registrations_by_siren[siren] = candidate
             for match in _FR_VAT_RE.finditer(line.upper()):
                 compact = re.sub(r"[^A-Z0-9]", "", match.group(1) + match.group(2))
                 corrected = compact.translate(str.maketrans({"O": "0", "I": "1", "L": "1"}))
@@ -251,8 +308,65 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
                             },
                         }
 
+    # A valid, explicitly labelled SIREN/SIRET can deterministically corroborate
+    # or derive the French VAT number. Derived values remain clearly identified as
+    # such; they are never presented as text printed verbatim in the document.
+    for siren, registration in registrations_by_siren.items():
+        value = _vat_from_siren(siren)
+        existing = tax_by_value.get(value)
+        support = registration["evidence"]
+        if existing:
+            existing["siren"] = siren
+            if registration.get("siret"):
+                existing["siret"] = registration["siret"]
+            existing["registration_number"] = registration["registration_number"]
+            existing["confidence"] = max(float(existing.get("confidence") or 0), 0.998)
+            existing["validation_status"] = "CHECKSUM_AND_REGISTRATION_MATCH"
+            existing["supporting_evidence"] = support
+            if existing.get("role") == "unknown" and registration.get("role") != "unknown":
+                existing["role"] = registration["role"]
+            continue
+        tax_by_value[value] = {
+            "type": "vat",
+            "vat_number": value,
+            "country_code": "FR",
+            "role": registration["role"],
+            "siren": siren,
+            "siret": registration.get("siret"),
+            "registration_number": registration["registration_number"],
+            "confidence": 0.94 if registration.get("siret") else 0.92,
+            "validation_status": "DERIVED_FROM_VALID_SIRET" if registration.get("siret") else "DERIVED_FROM_VALID_SIREN",
+            "evidence": {
+                **support,
+                "extraction_method": "vat_derived_from_valid_french_registration_v1",
+            },
+            "warnings": ["vat_number_derived_from_registration_identifier_not_printed"],
+        }
+
     if tax_by_value:
         payload["document_tax_identifiers"] = list(tax_by_value.values())
+        business = payload.get("business_extractions") or {}
+        purchase_order = business.get("purchase_order")
+        if isinstance(purchase_order, dict):
+            core_identifiers = {
+                item.get("vat_number"): item
+                for item in purchase_order.get("tax_identifiers") or []
+                if isinstance(item, dict) and item.get("vat_number")
+            }
+            core_identifiers.update(tax_by_value)
+            purchase_order["tax_identifiers"] = list(core_identifiers.values())
+            for item in tax_by_value.values():
+                role = item.get("role")
+                if role not in {"buyer", "supplier"}:
+                    continue
+                party = purchase_order.get(role)
+                if not isinstance(party, dict):
+                    continue
+                if not party.get("vat_number"):
+                    party["vat_number"] = item["vat_number"]
+                registration = item.get("siret") or item.get("siren")
+                if registration and not party.get("company_registration_number"):
+                    party["company_registration_number"] = registration
     document_references = payload.setdefault("document_references", {})
     if customer_order:
         document_references["customer_order_number"] = customer_order

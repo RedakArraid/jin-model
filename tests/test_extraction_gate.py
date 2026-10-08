@@ -105,6 +105,73 @@ class ExtractionGateTests(unittest.TestCase):
         reasons = apply_extraction_gate(payload)["extraction_decision"]["reasons"]
         self.assertIn("PARTY_CONTACT_ROLE_CONFLICT", {r["code"] for r in reasons})
 
+    def test_dedicated_contact_validation_overrides_nested_candidate_overlap(self):
+        payload = complete_order()
+        po = payload["business_extractions"]["purchase_order"]
+        po["buyer"].update(
+            phone="05 63 54 83 23",
+            contact={"phone": "0820003000"},
+        )
+        po["supplier"].update(
+            phone="0820003000",
+            contact={"phone": "0820003000"},
+        )
+        po["validation"]["checks"] = {
+            "purchase_order_contact_collision": {
+                "valid": True,
+                "collisions": [],
+            }
+        }
+
+        reasons = apply_extraction_gate(payload)["extraction_decision"]["reasons"]
+
+        self.assertNotIn("PARTY_CONTACT_ROLE_CONFLICT", {r["code"] for r in reasons})
+
+    def test_dedicated_contact_validation_conflict_still_requires_review(self):
+        payload = complete_order()
+        payload["business_extractions"]["purchase_order"]["validation"]["checks"] = {
+            "purchase_order_contact_collision": {
+                "valid": False,
+                "collisions": [{"field": "phone"}],
+            }
+        }
+
+        reasons = apply_extraction_gate(payload)["extraction_decision"]["reasons"]
+
+        self.assertIn("PARTY_CONTACT_ROLE_CONFLICT", {r["code"] for r in reasons})
+
+    def test_contact_collision_validation_accepts_explicit_distinct_role_numbers(self):
+        payload = complete_order()
+        po = payload["business_extractions"]["purchase_order"]
+        po["buyer"].update(phone="05 63 54 83 23", contact={"phone": "0820003000"})
+        po["supplier"].update(phone="0820003000", contact={"phone": "0820003000"})
+        po["validation"]["checks"] = {
+            "purchase_order_contact_collision": {"valid": True, "collisions": []}
+        }
+
+        codes = {
+            item["code"]
+            for item in apply_extraction_gate(payload)["extraction_decision"]["reasons"]
+        }
+
+        self.assertNotIn("PARTY_CONTACT_ROLE_CONFLICT", codes)
+
+    def test_contact_collision_validation_rejects_actual_collision(self):
+        payload = complete_order()
+        payload["business_extractions"]["purchase_order"]["validation"]["checks"] = {
+            "purchase_order_contact_collision": {
+                "valid": False,
+                "collisions": [{"field": "phone"}],
+            }
+        }
+
+        codes = {
+            item["code"]
+            for item in apply_extraction_gate(payload)["extraction_decision"]["reasons"]
+        }
+
+        self.assertIn("PARTY_CONTACT_ROLE_CONFLICT", codes)
+
     def test_exact_ban_match_does_not_add_reference_review_reason(self):
         payload = complete_order()
         addresses = payload["business_extractions"]["purchase_order"]["business_addresses"]

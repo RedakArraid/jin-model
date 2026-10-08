@@ -27,8 +27,10 @@ PARTY_ROLES = (
 )
 REFERENCE_FIELDS = (
     "material_number", "article_number", "supplier_material_number",
+    "material_reference_source_prefix",
     "manufacturer_part_number", "customer_material_number", "sku", "ean", "gtin",
-    "customer_order_number",
+    "customer_order_number", "quote_number", "quote_numbers",
+    "derogation_number", "derogation_numbers",
 )
 
 
@@ -1511,6 +1513,15 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
         "customer_reference": _field(header.get("customer_reference")),
         "supplier_reference": _field(header.get("vendor_reference")),
         "quote_number": _field(header.get("quote_number")),
+        "quote_numbers": [
+            field for item in header.get("quote_numbers") or []
+            if (field := _field(item))
+        ],
+        "derogation_number": _field(header.get("derogation_number")),
+        "derogation_numbers": [
+            field for item in header.get("derogation_numbers") or []
+            if (field := _field(item))
+        ],
         "contract_number": _field(header.get("contract_number")),
         "project_number": _field(header.get("project_number")),
         "requested_delivery_date": _field(
@@ -1563,6 +1574,8 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
             "delivery_address_selection": po.get("delivery_address_selection"),
             "line_items": [_line(item) for item in po.get("lines") or []],
             "additional_charges": [_charge(item) for item in po.get("additional_charges") or []],
+            "quote_references": po.get("quote_references"),
+            "derogation_references": po.get("derogation_references"),
             "totals": {key: totals.get(key) for key in (
                 "subtotal", "total_discount", "total_surcharge", "total_freight", "total_shipping",
                 "total_net", "total_before_tax", "total_vat", "total_tax", "total_gross",

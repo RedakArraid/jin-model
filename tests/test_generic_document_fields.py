@@ -5,6 +5,50 @@ from jin_runtime.generic_document_fields import enrich_generic_document_fields
 
 
 class GenericDocumentFieldsTests(unittest.TestCase):
+    def test_valid_siret_derives_vat_with_explicit_provenance(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{"page": 1, "text": "Acheteur ACME - SIRET 775 708 373 00011"}],
+            "business_extractions": {"purchase_order": {
+                "purchase_order": {}, "buyer": {}, "supplier": {}, "lines": [],
+            }},
+        }
+
+        out = enrich_generic_document_fields(payload)
+        identifier = out["document_tax_identifiers"][0]
+        self.assertEqual(identifier["vat_number"], "FR71775708373")
+        self.assertEqual(identifier["siret"], "77570837300011")
+        self.assertEqual(identifier["validation_status"], "DERIVED_FROM_VALID_SIRET")
+        self.assertIn("derived", identifier["warnings"][0])
+        buyer = out["business_extractions"]["purchase_order"]["buyer"]
+        self.assertEqual(buyer["vat_number"], "FR71775708373")
+        self.assertEqual(buyer["company_registration_number"], "77570837300011")
+
+    def test_printed_vat_is_corroborated_by_matching_siren_without_duplication(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{
+                "page": 1,
+                "text": "Fournisseur ACME SIREN 775 708 373 TVA FR 71 775 708 373",
+            }],
+        }
+
+        out = enrich_generic_document_fields(payload)
+        identifiers = out["document_tax_identifiers"]
+        self.assertEqual(len(identifiers), 1)
+        self.assertEqual(identifiers[0]["validation_status"], "CHECKSUM_AND_REGISTRATION_MATCH")
+        self.assertEqual(identifiers[0]["siren"], "775708373")
+
+    def test_invalid_registration_checksum_does_not_create_vat(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{"page": 1, "text": "SIREN 123 456 789"}],
+        }
+
+        out = enrich_generic_document_fields(payload)
+
+        self.assertNotIn("document_tax_identifiers", out)
+
     def test_rotated_native_page_uses_router_ocr_for_vat(self):
         payload = {
             "document": {"primary_document_type": "purchase_order", "page_count": 1},

@@ -31,6 +31,13 @@ REFERENCE_FIELDS = (
     # supplier/material families and must not overrule an explicit customer column.
     ("customer_material_number", 0.62),
 )
+PREFIXED_REFERENCE_RE = re.compile(
+    r"(?P<prefix>[A-Z]{1,6})(?:(?:\s*[+:/-]\s*)|\s+|(?=\d))"
+    r"(?P<reference>\d[A-Z0-9 ]{3,34})"
+)
+RESERVED_SOURCE_PREFIXES = {
+    "CP", "CMD", "FAX", "FR", "PO", "SIREN", "SIRET", "TEL", "TVA", "VAT"
+}
 
 
 @dataclass(frozen=True)
@@ -44,6 +51,16 @@ class MaterialReferenceMatch:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ResolvedMaterialReference:
+    """A scored reference and its optional, explicitly configured source prefix."""
+
+    source_value: str
+    reference_value: str
+    source_prefix: str | None
+    match: MaterialReferenceMatch
 
 
 def normalize_reference(value: object) -> str:
@@ -123,6 +140,7 @@ def score_material_reference(
     profile: dict | None,
     *,
     min_score: float = 0.74,
+    allow_short_numeric: bool = False,
 ) -> MaterialReferenceMatch:
     raw = str(value or "")
     normalized = normalize_reference(raw)
@@ -140,7 +158,11 @@ def score_material_reference(
     # master contains a small minority of them, but their shape alone is not safe
     # enough to influence automatic parser selection.
     minimum_numeric_length = int(profile.get("safety", {}).get("minimum_numeric_length", 7))
-    if normalized.isdigit() and len(normalized) < minimum_numeric_length:
+    if (
+        not allow_short_numeric
+        and normalized.isdigit()
+        and len(normalized) < minimum_numeric_length
+    ):
         return empty
 
     length_key = str(len(normalized))
@@ -178,6 +200,134 @@ def score_material_reference(
     )
 
 
+def _configured_source_prefixes(config: dict | None = None) -> set[str]:
+    configured = (config or {}).get("layout", {}).get(
+        "material_reference_source_prefixes", ["EL"]
+    )
+    if isinstance(configured, str):
+        configured = [configured]
+    return {
+        unicodedata.normalize("NFKC", str(prefix)).upper().strip()
+        for prefix in configured or []
+        if re.fullmatch(r"[A-Za-z]{1,6}", str(prefix).strip())
+    }
+
+
+def _split_prefixed_reference(value: object) -> tuple[str, str] | None:
+    text = unicodedata.normalize("NFKC", str(value or "")).upper().strip()
+    match = PREFIXED_REFERENCE_RE.fullmatch(text)
+    if not match:
+        return None
+    return match.group("prefix"), match.group("reference")
+
+
+def _discover_source_prefixes(
+    lines, profile: dict | None, config: dict | None = None
+) -> set[str]:
+    """Confirm an unknown prefix from repeated, distinct commercial references."""
+    layout = (config or {}).get("layout", {})
+    if not layout.get("material_reference_auto_source_prefixes", True) or not profile:
+        return set()
+    configured = _configured_source_prefixes(config)
+    blocked = RESERVED_SOURCE_PREFIXES | {
+        str(value).upper().strip()
+        for value in layout.get("material_reference_blocked_source_prefixes", [])
+    }
+    threshold = float(layout.get("material_reference_auto_prefix_min_score", 0.88))
+    minimum_distinct = max(
+        2, int(layout.get("material_reference_auto_prefix_min_distinct", 2))
+    )
+    references_by_prefix: dict[str, set[str]] = {}
+    for line in lines or []:
+        if not str(getattr(line, "description", "") or "").strip():
+            continue
+        if not any(
+            getattr(line, field, None) is not None
+            for field in ("quantity", "unit_price", "line_total")
+        ):
+            continue
+        seen_on_line: set[tuple[str, str]] = set()
+        for field, _role_weight in REFERENCE_FIELDS:
+            parts = _split_prefixed_reference(getattr(line, field, None))
+            if not parts:
+                continue
+            prefix, candidate = parts
+            if prefix in configured or prefix in blocked:
+                continue
+            match = score_material_reference(
+                candidate,
+                profile,
+                min_score=threshold,
+                # Short codes need an explicitly configured prefix; repeated shape
+                # evidence alone is insufficient to disambiguate them.
+                allow_short_numeric=False,
+            )
+            key = (prefix, match.normalized)
+            if not match.supported or key in seen_on_line:
+                continue
+            seen_on_line.add(key)
+            references_by_prefix.setdefault(prefix, set()).add(match.normalized)
+    return {
+        prefix
+        for prefix, references in references_by_prefix.items()
+        if len(references) >= minimum_distinct
+    }
+
+
+def resolve_material_reference(
+    value: object,
+    profile: dict | None,
+    config: dict | None = None,
+    *,
+    min_score: float = 0.74,
+    discovered_prefixes: set[str] | None = None,
+) -> ResolvedMaterialReference:
+    """Resolve configured client notation such as ``EL 871...`` safely.
+
+    Prefix removal is deliberately opt-in.  The candidate after the prefix must
+    start with a digit and must itself match the aggregate material profile.  This
+    prevents words such as ``ELECTRODE`` or unconfigured identifiers from being
+    reinterpreted as product references.
+    """
+    raw = str(value or "")
+    configured_prefixes = _configured_source_prefixes(config)
+    allowed_prefixes = configured_prefixes | set(discovered_prefixes or ())
+    prefixed = _split_prefixed_reference(raw)
+    if prefixed and prefixed[0] in allowed_prefixes:
+        prefix, candidate = prefixed
+        layout = (config or {}).get("layout", {})
+        if prefix in configured_prefixes:
+            prefixed_threshold = float(layout.get(
+                "material_reference_prefixed_min_score", 0.82
+            ))
+        else:
+            prefixed_threshold = float(layout.get(
+                "material_reference_auto_prefix_min_score", 0.88
+            ))
+        match = score_material_reference(
+            candidate,
+            profile,
+            min_score=prefixed_threshold,
+            # A configured prefix supplies the missing semantic evidence needed
+            # to distinguish a short material code from a postal code/quantity.
+            allow_short_numeric=prefix in configured_prefixes,
+        )
+        return ResolvedMaterialReference(
+            source_value=raw,
+            reference_value=match.normalized,
+            source_prefix=prefix,
+            match=match,
+        )
+
+    direct = score_material_reference(value, profile, min_score=min_score)
+    return ResolvedMaterialReference(
+        source_value=raw,
+        reference_value=raw,
+        source_prefix=None,
+        match=direct,
+    )
+
+
 def line_material_pattern_summary(lines, config: dict | None = None) -> dict:
     layout = (config or {}).get("layout", {})
     enabled = bool(layout.get("material_reference_pattern_scoring", True))
@@ -192,12 +342,16 @@ def line_material_pattern_summary(lines, config: dict | None = None) -> dict:
         "coverage": 0.0,
         "mean_best_score": 0.0,
         "bonus": 0.0,
+        "prefixed_supported_lines": 0,
+        "source_prefix_counts": {},
     }
     if not profile or not lines:
         return summary
 
+    discovered_prefixes = _discover_source_prefixes(lines, profile, config)
     best_scores: list[float] = []
     supported_scores: list[float] = []
+    prefix_counts: dict[str, int] = {}
     for line in lines:
         description = str(getattr(line, "description", "") or "").strip()
         commercial = any(
@@ -208,21 +362,30 @@ def line_material_pattern_summary(lines, config: dict | None = None) -> dict:
         if len(description) < 2 or not commercial:
             continue
         seen: set[str] = set()
-        matches: list[float] = []
+        matches: list[tuple[float, ResolvedMaterialReference]] = []
         for field, role_weight in REFERENCE_FIELDS:
             value = getattr(line, field, None)
             normalized = normalize_reference(value)
             if not normalized or normalized in seen:
                 continue
             seen.add(normalized)
-            match = score_material_reference(value, profile, min_score=threshold)
-            matches.append(match.score * role_weight)
+            resolved = resolve_material_reference(
+                value,
+                profile,
+                config,
+                min_score=threshold,
+                discovered_prefixes=discovered_prefixes,
+            )
+            matches.append((resolved.match.score * role_weight, resolved))
         if not matches:
             continue
-        best = max(matches)
+        best, best_resolution = max(matches, key=lambda item: item[0])
         best_scores.append(best)
-        if best >= threshold:
+        if best_resolution.match.supported and best >= threshold:
             supported_scores.append(best)
+            if best_resolution.source_prefix:
+                prefix = best_resolution.source_prefix
+                prefix_counts[prefix] = prefix_counts.get(prefix, 0) + 1
 
     eligible = len(best_scores)
     supported = len(supported_scores)
@@ -237,12 +400,14 @@ def line_material_pattern_summary(lines, config: dict | None = None) -> dict:
         "coverage": round(coverage, 4),
         "mean_best_score": round(mean_best, 4),
         "bonus": round(bonus, 4),
+        "prefixed_supported_lines": sum(prefix_counts.values()),
+        "source_prefix_counts": dict(sorted(prefix_counts.items())),
     })
     return summary
 
 
 def enrich_supplier_material_roles(lines, config: dict | None = None) -> int:
-    """Type an existing reference conservatively; never change or invent its value."""
+    """Type existing references and separate configured source prefixes safely."""
     layout = (config or {}).get("layout", {})
     if not layout.get("material_reference_role_enrichment", True):
         return 0
@@ -250,15 +415,34 @@ def enrich_supplier_material_roles(lines, config: dict | None = None) -> int:
     if not profile:
         return 0
     threshold = float(layout.get("material_reference_role_min_score", 0.86))
+    discovered_prefixes = _discover_source_prefixes(lines, profile, config)
     changed = 0
     for line in lines or []:
-        if getattr(line, "supplier_material_number", None):
-            continue
         if not str(getattr(line, "description", "") or "").strip():
             continue
         if not any(getattr(line, field, None) is not None for field in ("quantity", "unit_price", "line_total")):
             continue
-        candidates: list[tuple[float, str]] = []
+        existing_supplier = getattr(line, "supplier_material_number", None)
+        if existing_supplier:
+            resolved = resolve_material_reference(
+                existing_supplier,
+                profile,
+                config,
+                min_score=threshold,
+                discovered_prefixes=discovered_prefixes,
+            )
+            if resolved.source_prefix and resolved.match.supported:
+                # Preserve the complete notation read from the source before
+                # canonicalising the typed supplier reference.
+                if not getattr(line, "material_number", None):
+                    line.material_number = str(existing_supplier)
+                if str(existing_supplier) != resolved.reference_value:
+                    line.supplier_material_number = resolved.reference_value
+                    changed += 1
+                line.material_reference_source_prefix = resolved.source_prefix
+            continue
+
+        candidates: list[tuple[float, ResolvedMaterialReference]] = []
         seen: set[str] = set()
         for field in ("material_number", "article_number", "product_code"):
             value = getattr(line, field, None)
@@ -266,13 +450,23 @@ def enrich_supplier_material_roles(lines, config: dict | None = None) -> int:
             if not value or not normalized or normalized in seen:
                 continue
             seen.add(normalized)
-            match = score_material_reference(value, profile, min_score=threshold)
-            if match.supported:
-                candidates.append((match.score, str(value)))
+            resolved = resolve_material_reference(
+                value,
+                profile,
+                config,
+                min_score=threshold,
+                discovered_prefixes=discovered_prefixes,
+            )
+            if resolved.match.supported:
+                candidates.append((resolved.match.score, resolved))
         if not candidates:
             continue
-        # Copy the exact source value into the more specific role.  The generic
-        # material/article fields remain intact for backward compatibility.
-        line.supplier_material_number = max(candidates, key=lambda item: item[0])[1]
+        # Direct values retain their source typography for backward compatibility;
+        # prefixed values expose the normalized reference while the generic field
+        # continues to hold the complete value printed on the document.
+        resolved = max(candidates, key=lambda item: item[0])[1]
+        line.supplier_material_number = resolved.reference_value
+        if resolved.source_prefix:
+            line.material_reference_source_prefix = resolved.source_prefix
         changed += 1
     return changed

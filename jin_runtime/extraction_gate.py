@@ -75,21 +75,53 @@ def apply_extraction_gate(payload: dict[str, Any]) -> dict[str, Any]:
                 normalized = re.sub(r"[^A-Z0-9]", "", str(name).upper())
                 require(normalized not in {"SAS", "SASU", "SARL", "SA", "EURL", "GMBH", "LTD", "LLC"},
                         "PARTY_NAME_UNINFORMATIVE", role)
-        for contact_field in ("email", "phone"):
-            values = []
-            for role in ("buyer", "supplier"):
-                party = po.get(role) or {}
-                candidates = [party.get(contact_field), (party.get("contact") or {}).get(contact_field)]
-                candidates.extend(address.get(f"contact_{contact_field}")
-                                  for address in po.get("business_addresses") or []
-                                  if address.get("role") == role)
-                normalized = {
-                    re.sub(r"\D", "", str(value)) if contact_field == "phone" else str(value or "").strip().casefold()
-                    for value in candidates if value is not None
-                } - {""}
-                values.append(normalized)
-            require(not values[0].intersection(values[1]),
-                    "PARTY_CONTACT_ROLE_CONFLICT", f"buyer/supplier.{contact_field}")
+        contact_collision = (
+            ((po.get("validation") or {}).get("checks") or {})
+            .get("purchase_order_contact_collision")
+        )
+        if isinstance(contact_collision, dict) and isinstance(
+            contact_collision.get("valid"), bool
+        ):
+            require(
+                contact_collision["valid"],
+                "PARTY_CONTACT_ROLE_CONFLICT",
+                "buyer/supplier.contact",
+            )
+        else:
+            # Compatibility for older core payloads without the dedicated
+            # collision validator. Prefer direct role fields; nested contacts
+            # and address contacts may contain shared supplier/service numbers.
+            for contact_field in ("email", "phone"):
+                values = []
+                for role in ("buyer", "supplier"):
+                    party = po.get(role) or {}
+                    direct = party.get(contact_field)
+                    if direct not in (None, ""):
+                        candidates = [direct]
+                    else:
+                        # Older payloads often expose the only role contact in
+                        # the nested object/address.  Use those solely as a
+                        # fallback so they cannot overrule an explicit direct
+                        # role value.
+                        candidates = [(party.get("contact") or {}).get(contact_field)]
+                        candidates.extend(
+                            address.get(f"contact_{contact_field}")
+                            for address in po.get("business_addresses") or []
+                            if address.get("role") == role
+                        )
+                    normalized = {
+                        re.sub(r"\D", "", str(value))
+                        if contact_field == "phone"
+                        else str(value or "").strip().casefold()
+                        for value in candidates
+                        if value is not None
+                    } - {""}
+                    values.append(normalized)
+                require(
+                    not values[0].intersection(values[1]),
+                    "PARTY_CONTACT_ROLE_CONFLICT",
+                    f"buyer/supplier.{contact_field}",
+                )
         lines = po.get("lines") or []
         require(bool(lines), "ORDER_LINES_MISSING", "lines")
         for index, line in enumerate(lines):

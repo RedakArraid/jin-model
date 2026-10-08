@@ -239,6 +239,7 @@ layout:
   native_line_deduplication: true
   parse_line_level_charges: true
   preserve_charge_parent_link: true
+  separate_additional_charge_lines: true
   native_decimal_max_scale: 6
   labeled_address_table_priority: true
   commercial_metadata_table_priority: true
@@ -278,6 +279,28 @@ layout:
   material_reference_pattern_hypothesis_weight: 0.14
   material_reference_role_enrichment: true
   material_reference_role_min_score: 0.86
+  # Some customers print a stable source qualifier before the real material
+  # reference (for example GARANKA: "EL 871...").  Prefix removal remains
+  # opt-in and the stripped candidate must still match the material profile.
+  material_reference_source_prefixes:
+    - EL
+  material_reference_prefixed_min_score: 0.82
+  # Unknown prefixes can be confirmed inside one document when at least two
+  # distinct commercial lines have strongly supported material-reference suffixes.
+  material_reference_auto_source_prefixes: true
+  material_reference_auto_prefix_min_score: 0.88
+  material_reference_auto_prefix_min_distinct: 2
+  material_reference_blocked_source_prefixes:
+    - FR
+    - TVA
+    - VAT
+    - TEL
+    - FAX
+    - SIREN
+    - SIRET
+    - CP
+    - CMD
+    - PO
   material_anchored_split_row_recovery: true
   material_anchored_numeric_row_recovery: true
   strict_non_product_line_filter: true
