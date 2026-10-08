@@ -53,6 +53,19 @@ const unitPriceLabel = (line, currency) => {
   return basis != null && basis > 0 && basis !== 1 ? `${amount} / ${fmt(basis)} ${line.uom || 'unités'}` : amount;
 };
 
+const lineReferenceLabel = line => {
+  const primary = line.material_number || line.article_number || line.product_code
+    || line.manufacturer_part_number || line.supplier_material_number;
+  const details = [];
+  if (line.supplier_material_number && line.supplier_material_number !== primary) {
+    details.push(`Fourn. ${line.supplier_material_number}`);
+  }
+  if (line.customer_material_number && line.customer_material_number !== primary) {
+    details.push(`Client ${line.customer_material_number}`);
+  }
+  return [primary, ...details].filter(Boolean).join(' · ') || null;
+};
+
 function uiDeliveryAddresses(result) {
   const normalize = value => String(value || '').normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9]+/gi, ' ').trim().toUpperCase();
@@ -706,7 +719,7 @@ function render(r) {
   for (const l of lines) {
     const tr = document.createElement('tr');
     [ l.line_number,
-      l.material_number || l.supplier_material_number || l.manufacturer_part_number || l.article_number || l.product_code,
+      lineReferenceLabel(l),
       l.description,
       l.quantity,
       l.uom,

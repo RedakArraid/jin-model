@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import fitz
 import pytest
 
-from po_ocr.models import PageResult, PurchaseOrderHeader, WordToken, Evidence, ExtractedField, Totals
+from po_ocr.models import PageResult, PurchaseOrderHeader, WordToken, Evidence, ExtractedField, LineItem, Totals
 from po_ocr.pdf_native import _needs_hybrid_ocr, _supplement_native_words, extract_native_page
 from po_ocr.extract import all_rows, extract_totals, compact_transaction_header_candidate, verify_compact_header_number
 from uda.business import (
@@ -12,6 +12,9 @@ from uda.business import (
     _enhance_inline_transaction_header_v46,
     _enhance_strict_order_number_v47,
     _extract_geometry_table_items_v46,
+    _material_anchored_split_table_items_v61,
+    _material_anchored_numeric_row_items_v61,
+    _sanitize_non_product_lines_v61,
     _price_then_quantity_table_items,
     _quantity_first_table_items,
     _summary_table_totals_v48,
@@ -134,6 +137,65 @@ def test_geometry_recognizes_purchase_price_pa_header_and_free_type_error_total(
     assert lines[1].material_number == "H37381"
     assert lines[1].supplier_material_number == "8733501984"
     assert (lines[1].quantity, lines[1].unit_price, lines[1].line_total) == (1, 0, 0)
+
+
+def test_material_pattern_reassembles_split_product_and_environmental_fee_rows():
+    page = _page([
+        (267, [("CODE", 25, 51), ("REF", 387, 405)]),
+        (272, [("DESIGNATION", 180, 243), ("QUANTITE", 445, 491),
+               ("PRIX", 500, 521), ("MONTANT", 533, 578)]),
+        (278, [("INTERNE", 18, 58), ("FOURNISSEUR", 367, 433)]),
+        (309, [("1506621", 20, 55), ("MODULE", 59, 89), ("WIFI", 91, 106),
+               ("HOMECOM", 145, 183), ("EASY", 185, 204), ("2.00p.", 465, 490),
+               ("p.", 528, 535)]),
+        (320, [("7736606771", 59, 98)]),
+        (331, [("ECO", 59, 74), ("PARTICIPATION", 76, 131),
+               ("2.00p.", 465, 490), ("0.14p.", 510, 535), ("0.28", 558, 575)]),
+    ])
+    lines, charges = _material_anchored_split_table_items_v61([page], {})
+    assert len(lines) == 1
+    line = lines[0]
+    assert line.material_number == "1506621"
+    assert line.supplier_material_number == "7736606771"
+    assert line.description == "MODULE WIFI HOMECOM EASY"
+    assert (line.quantity, line.uom) == (2, "PCE")
+    assert line.unit_price is None and line.line_total is None
+    assert len(charges) == 1
+    assert charges[0].charge_type == "environmental_fee"
+    assert (charges[0].quantity, charges[0].unit_price, charges[0].amount) == (2, 0.14, 0.28)
+    assert charges[0].supplier_reference == "7736606771"
+
+
+def test_non_product_filter_removes_date_footer_and_empty_parser_fragments():
+    lines = [
+        LineItem(material_number="23/12/2025", description="Poids : kg TOTAL HORS",
+                 quantity=1183.29, unit_price=1183.29, line_total=1400175.2241),
+        LineItem(material_number="7716780266", description=""),
+        LineItem(material_number="8719999999", description="Produit partiellement lu"),
+        LineItem(material_number="REF-OK", description="Produit complet", quantity=2),
+    ]
+    cleaned, rejected = _sanitize_non_product_lines_v61(lines, {})
+    assert [line.material_number for line in cleaned] == ["8719999999", "REF-OK"]
+    assert rejected == {"date_footer_as_product": 1, "non_commercial_fragment": 1}
+
+
+def test_material_anchor_recovers_degraded_numeric_row_and_wrapped_description():
+    page = _page([
+        (180, [("Article", 10, 45), ("Désignation", 120, 190),
+               ("unit.", 390, 420), ("Net", 455, 480), ("Montant", 525, 570)]),
+        (220, [("7716780266", 20, 85), ("1,000", 310, 340), ("PIEC", 350, 380),
+               ("144,00", 405, 440), ("49,75", 450, 480),
+               ("72,36", 500, 530), ("72,36", 550, 580), ("6", 590, 595)]),
+        (235, [("THERMOSTAT", 20, 90), ("D'AMBIANCE", 95, 160),
+               ("FILAIRE", 165, 215), ("TRL", 220, 245)]),
+    ])
+    lines = _material_anchored_numeric_row_items_v61([page], {})
+    assert len(lines) == 1
+    line = lines[0]
+    assert line.material_number == "7716780266"
+    assert line.supplier_material_number == "7716780266"
+    assert line.description == "THERMOSTAT D'AMBIANCE FILAIRE TRL"
+    assert (line.quantity, line.uom, line.unit_price, line.line_total) == (1, "PCE", 72.36, 72.36)
 
 
 def test_price_then_quantity_layout_calculates_missing_line_amount():

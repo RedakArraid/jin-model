@@ -2409,6 +2409,8 @@ def _enhance_strict_order_number_v47(po, pages, config: dict):
 
     def add(value, score, row, method, words=None):
         val=" ".join(str(value or "").split()).strip(" :-")
+        if re.fullmatch(r"\d{4,14}\s+/\s*\d{2,8}", val):
+            val=re.sub(r"\s*/\s*", " / ", val)
         if _is_invalid_po_number_v47(val) or parse_date(val):
             return
         # Postal codes and tiny standalone numbers are weak unless an explicit order
@@ -3226,6 +3228,412 @@ def _extract_amount_only_geometry_v47(pages, config: dict, default_currency: str
     return _dedupe_line_items(out)
 
 
+def _material_anchored_split_table_items_v61(pages, config: dict, default_currency: str = "EUR"):
+    """Recover product rows whose material reference is printed on a following row.
+
+    Some purchasing systems print the customer code, description and quantity on one
+    visual row, the supplier material reference alone on the next row, then an
+    environmental fee. Generic numeric parsing otherwise joins the reference to the
+    fee values. Activation requires a complete multi-row table header, a commercial
+    parent row and a strongly supported aggregate material shape.
+    """
+    from po_ocr.extract import all_rows
+    from po_ocr.models import AdditionalCharge, Evidence, LineItem
+    from uda.material_references import load_material_reference_profile, normalize_reference, score_material_reference
+    import re
+
+    layout = config.get("layout", {})
+    if not layout.get("material_anchored_split_row_recovery", True):
+        return [], []
+    profile = load_material_reference_profile(config)
+    if not profile:
+        return [], []
+    threshold = float(layout.get("material_reference_pattern_min_score", 0.74))
+    items = []
+    charges = []
+
+    def center(word):
+        return (word.bbox[0] + word.bbox[2]) / 2
+
+    def strict_column_number(words):
+        text = " ".join(word.text for word in words).strip()
+        if not text:
+            return None
+        # A trailing printed unit (``2.00p.``) is not part of the number. The core
+        # French parser otherwise interprets that dot as a thousands separator.
+        compact = re.sub(r"\s+", "", text)
+        match = re.fullmatch(r"([-+]?\d+(?:[.,]\d{1,6})?)(?:[A-Za-z]{1,5}\.?)+", compact)
+        numeric = match.group(1) if match else compact
+        if re.fullmatch(r"[-+]?\d+\.\d{1,6}", numeric):
+            try:
+                return float(numeric)
+            except ValueError:
+                return None
+        return _parse_native_decimal(numeric)
+
+    for page in pages:
+        rows = all_rows([page], y_factor=0.50)
+        header_end = None
+        anchors = None
+        for start in range(len(rows)):
+            for width in range(1, 4):
+                group = rows[start:start + width]
+                if len(group) != width or _row_center_safe(group[-1]) - _row_center_safe(group[0]) > page.height * 0.035:
+                    continue
+                low = _fold(" ".join(row.text for row in group))
+                if not (
+                    re.search(r"\b(?:code|article)\b", low)
+                    and re.search(r"\b(?:designation|description|libelle)\b", low)
+                    and re.search(r"\b(?:quantite|qte|qty)\b", low)
+                    and re.search(r"\b(?:prix|p\.?u\.?)\b", low)
+                    and re.search(r"\b(?:montant|total)\b", low)
+                ):
+                    continue
+                found = {}
+                for row in group:
+                    for word in row.words:
+                        token = _fold(word.text).strip(" .:/")
+                        if token in {"code", "article"}: found.setdefault("code", center(word))
+                        elif token in {"designation", "description", "libelle"}: found.setdefault("description", center(word))
+                        elif token in {"quantite", "qte", "qty"}: found.setdefault("quantity", center(word))
+                        elif token in {"prix", "pu", "p.u"}: found.setdefault("price", center(word))
+                        elif token in {"montant", "total"}: found.setdefault("amount", center(word))
+                if all(key in found for key in ("code", "description", "quantity", "price", "amount")) and (
+                    found["code"] < found["description"] < found["quantity"] < found["price"] < found["amount"]
+                ):
+                    anchors = found
+                    header_end = start + len(group)
+                    break
+            if anchors is not None:
+                break
+        if anchors is None or header_end is None:
+            continue
+
+        description_quantity_boundary = (anchors["description"] + anchors["quantity"]) / 2
+        quantity_price_boundary = (anchors["quantity"] + anchors["price"]) / 2
+        price_amount_boundary = (anchors["price"] + anchors["amount"]) / 2
+        for index in range(header_end + 1, len(rows)):
+            reference_row = rows[index]
+            if _row_center_safe(reference_row) > page.height * 0.88:
+                break
+            distinct = []
+            for word in reference_row.words:
+                normalized = normalize_reference(word.text)
+                if normalized and normalized not in distinct:
+                    distinct.append(normalized)
+            if len(distinct) != 1 or len(reference_row.words) > 3:
+                continue
+            reference = distinct[0]
+            match = score_material_reference(reference, profile, min_score=threshold)
+            if not match.supported:
+                continue
+            parent_row = rows[index - 1]
+            gap = reference_row.bbox[1] - parent_row.bbox[3]
+            if gap < -2 or gap > page.height * 0.025:
+                continue
+            left_words = [word for word in parent_row.words if center(word) < description_quantity_boundary]
+            code_word = next((word for word in left_words if re.fullmatch(
+                r"[A-Za-z0-9._/-]{4,30}", word.text.strip()
+            ) and any(char.isdigit() for char in word.text)), None)
+            if code_word is None:
+                continue
+            description_words = [
+                word for word in left_words
+                if word is not code_word and word.bbox[0] >= code_word.bbox[2] - 1
+            ]
+            description = " ".join(word.text for word in description_words).strip()
+            quantity_words = [
+                word for word in parent_row.words
+                if description_quantity_boundary <= center(word) < quantity_price_boundary
+            ]
+            quantity = strict_column_number(quantity_words)
+            if not description or quantity is None:
+                continue
+            price_words = [
+                word for word in parent_row.words
+                if quantity_price_boundary <= center(word) < price_amount_boundary
+            ]
+            amount_words = [word for word in parent_row.words if center(word) >= price_amount_boundary]
+            price = strict_column_number(price_words)
+            amount = strict_column_number(amount_words)
+            if price is not None and amount is not None:
+                expected = float(quantity) * float(price)
+                if abs(float(amount) - expected) > max(0.04, abs(expected) * 0.006):
+                    price = amount = None
+            uom = "PCE" if any(re.search(r"[A-Za-z]", word.text) for word in quantity_words) else None
+            item = LineItem(
+                line_number=str(len(items) + 1),
+                material_number=code_word.text.strip(),
+                article_number=code_word.text.strip(),
+                supplier_material_number=reference,
+                description=description,
+                quantity=quantity,
+                ordered_quantity=quantity,
+                uom=uom,
+                unit_price=price,
+                net_unit_price=price,
+                line_total=amount,
+                line_net_amount=amount,
+                currency=default_currency,
+                raw_text=f"{parent_row.text} | {reference_row.text}",
+                page=page.page,
+                bbox=_bbox_union(parent_row.words + reference_row.words),
+                confidence=min(float(parent_row.confidence), float(reference_row.confidence)) * 0.985,
+            )
+            items.append(item)
+
+            # A fee immediately following the standalone reference belongs to this
+            # product, not to its price/amount columns.
+            if index + 1 < len(rows):
+                fee_row = rows[index + 1]
+                fee_kind = _fee_kind(_fold(fee_row.text))
+                fee_gap = fee_row.bbox[1] - reference_row.bbox[3]
+                if fee_kind and -2 <= fee_gap <= page.height * 0.025:
+                    fee_description = " ".join(
+                        word.text for word in fee_row.words
+                        if center(word) < description_quantity_boundary
+                    ).strip()
+                    fee_quantity = strict_column_number([
+                        word for word in fee_row.words
+                        if description_quantity_boundary <= center(word) < quantity_price_boundary
+                    ])
+                    fee_price = strict_column_number([
+                        word for word in fee_row.words
+                        if quantity_price_boundary <= center(word) < price_amount_boundary
+                    ])
+                    fee_amount = strict_column_number([
+                        word for word in fee_row.words if center(word) >= price_amount_boundary
+                    ])
+                    if fee_amount is None and fee_quantity is not None and fee_price is not None:
+                        fee_amount = round(float(fee_quantity) * float(fee_price), 6)
+                    if fee_amount is not None:
+                        charges.append(AdditionalCharge(
+                            charge_type=fee_kind,
+                            description=fee_description or fee_row.text,
+                            parent_line_number=item.line_number,
+                            parent_material_number=item.material_number,
+                            supplier_reference=reference,
+                            quantity=fee_quantity,
+                            uom=uom,
+                            unit_price=fee_price,
+                            amount=fee_amount,
+                            currency=default_currency,
+                            page=page.page,
+                            confidence=float(fee_row.confidence) * 0.985,
+                            evidence=Evidence(
+                                page=page.page,
+                                bbox=fee_row.bbox,
+                                source_text=fee_row.text,
+                                extraction_method="material_anchored_split_fee_v61",
+                            ),
+                        ))
+    return _dedupe_line_items(items), charges
+
+
+def _sanitize_non_product_lines_v61(lines, config: dict):
+    """Reject explicit footer/date rows and unsupported non-commercial fragments."""
+    from collections import Counter
+    from uda.material_references import load_material_reference_profile, score_material_reference
+    import re
+
+    if not config.get("layout", {}).get("strict_non_product_line_filter", True):
+        return lines, {}
+    profile = load_material_reference_profile(config)
+    threshold = float(config.get("layout", {}).get("material_reference_pattern_min_score", 0.74))
+    kept = []
+    rejected = Counter()
+    for line in lines or []:
+        material = str(line.material_number or "").strip()
+        description = str(line.description or "").strip()
+        raw = str(line.raw_text or "").strip()
+        low = _fold(f"{description} {raw}")
+        commercial = any(
+            getattr(line, field, None) is not None
+            for field in ("quantity", "unit_price", "line_total")
+        )
+        is_date = bool(re.fullmatch(
+            r"(?:[0-3]?\d)[/.-](?:0?\d|1[0-2])[/.-](?:\d{2}|\d{4})", material
+        ))
+        footer = bool(re.search(
+            r"\b(?:poids|total\s+hors|total\s+ht|total\s+ttc|reglement|conditions?\s+generales?)\b",
+            low,
+        ))
+        if is_date and footer:
+            rejected["date_footer_as_product"] += 1
+            continue
+        if not commercial:
+            # Preserve a useful partial row only when both a learned material family
+            # and a non-empty description corroborate it.
+            candidates = [
+                getattr(line, field, None)
+                for field in ("supplier_material_number", "material_number", "article_number")
+            ]
+            supported = any(
+                score_material_reference(value, profile, min_score=threshold).supported
+                for value in candidates if value
+            )
+            if not supported or len(description) < 3:
+                rejected["non_commercial_fragment"] += 1
+                continue
+        kept.append(line)
+    return kept, dict(sorted(rejected.items()))
+
+
+def _material_anchored_numeric_row_items_v61(pages, config: dict, default_currency: str = "EUR"):
+    """Recover OCR rows from a strong material anchor and arithmetic columns.
+
+    This covers degraded scans where table headers are only partly legible and the
+    description wraps below the numeric row. At least a material-family match, table
+    header context, a quantity/unit cell and an arithmetic price/amount pair are
+    required, so standalone numbers cannot activate the parser.
+    """
+    from po_ocr.extract import all_rows
+    from po_ocr.models import LineItem
+    from uda.material_references import load_material_reference_profile, normalize_reference, score_material_reference
+    import re
+
+    layout = config.get("layout", {})
+    if not layout.get("material_anchored_numeric_row_recovery", True):
+        return []
+    profile = load_material_reference_profile(config)
+    if not profile:
+        return []
+    threshold = float(layout.get("material_reference_pattern_min_score", 0.74))
+    unit_re = re.compile(r"^(?:U|UN|UNIT|PIEC(?:E|ES)?|PCE|PCS|EA|KG|BOX|L|M)$", re.I)
+    number_re = re.compile(r"[-+]?(?:\d{1,3}(?:[ .']\d{3})+|\d+)(?:[,.]\d+)?")
+    out = []
+
+    def center(word):
+        return (word.bbox[0] + word.bbox[2]) / 2
+
+    def parsed_number(text):
+        match = number_re.search(str(text or "").replace("\u00a0", " "))
+        return _parse_native_decimal(match.group(0)) if match else None
+
+    for page in pages:
+        rows = all_rows([page], y_factor=0.50)
+        for index, row in enumerate(rows):
+            if _row_center_safe(row) < page.height * 0.18 or _row_center_safe(row) > page.height * 0.80:
+                continue
+            # Table semantics may be split across several OCR rows.
+            header_rows = [
+                previous for previous in rows[max(0, index - 12):index]
+                if 0 < row.bbox[1] - previous.bbox[3] <= page.height * 0.10
+            ]
+            header_text = _fold(" ".join(previous.text for previous in header_rows))
+            if not (
+                re.search(r"\b(?:article|reference|code)\b", header_text)
+                and re.search(r"\b(?:designation|description|libelle)\b", header_text)
+                and re.search(r"\b(?:montant|net|prix|unit)\b", header_text)
+            ):
+                continue
+
+            reference_candidates = []
+            for word in row.words:
+                normalized = normalize_reference(word.text)
+                if not normalized:
+                    continue
+                match = score_material_reference(normalized, profile, min_score=threshold)
+                if match.supported:
+                    reference_candidates.append((match.score, word, normalized))
+            if not reference_candidates:
+                continue
+            _, reference_word, reference = max(reference_candidates, key=lambda item: item[0])
+
+            ordered = sorted(row.words, key=lambda word: word.bbox[0])
+            numeric = []
+            for position, word in enumerate(ordered):
+                if center(word) <= center(reference_word) + page.width * 0.18:
+                    continue
+                value = parsed_number(word.text)
+                if value is not None:
+                    numeric.append((position, word, float(value)))
+            if len(numeric) < 3:
+                continue
+
+            quantity_entry = None
+            uom = None
+            for entry in numeric:
+                position, word, value = entry
+                local = re.sub(r"[^A-Za-z]", "", word.text)
+                neighbors = ordered[position + 1:position + 3]
+                unit_word = next((candidate for candidate in neighbors if unit_re.fullmatch(
+                    candidate.text.strip(" |[]().")
+                )), None)
+                if unit_re.fullmatch(local) or unit_word is not None or re.search(
+                    r"\d\s*(?:PIEC(?:E|ES)?|PCE|PCS|EA|KG|BOX|UN|U)\b", word.text, re.I
+                ):
+                    quantity_entry = entry
+                    unit_text = unit_word.text if unit_word is not None else local
+                    uom = "PCE" if re.fullmatch(r"(?:PIEC(?:E|ES)?|PCE|PCS)", unit_text.strip(" |[]()."), re.I) else unit_text.strip(" |[]().").upper()
+                    break
+            if quantity_entry is None:
+                continue
+            quantity_position, quantity_word, quantity = quantity_entry
+            after_quantity = [entry for entry in numeric if entry[0] > quantity_position]
+            arithmetic_pairs = []
+            for left in range(len(after_quantity)):
+                price = after_quantity[left][2]
+                for right in range(left + 1, len(after_quantity)):
+                    amount = after_quantity[right][2]
+                    expected = quantity * price
+                    if abs(amount - expected) <= max(0.04, abs(expected) * 0.006):
+                        # Prefer the rightmost coherent pair: preceding columns are
+                        # commonly list price and discount, followed by net and amount.
+                        arithmetic_pairs.append((right, left, price, amount))
+            if not arithmetic_pairs:
+                continue
+            _, _, price, amount = max(arithmetic_pairs)
+
+            same_row_description = [
+                word.text for word in ordered
+                if word is not reference_word
+                and center(reference_word) < center(word) < center(quantity_word) - page.width * 0.02
+                and parsed_number(word.text) is None
+                and not unit_re.fullmatch(word.text.strip(" |[]()."))
+            ]
+            description = " ".join(same_row_description).strip()
+            description_words = []
+            if len(re.findall(r"[A-Za-zÀ-ÿ]{2,}", description)) < 2:
+                for following in rows[index + 1:index + 4]:
+                    gap = following.bbox[1] - row.bbox[3]
+                    if gap > page.height * 0.035:
+                        break
+                    text = " ".join(
+                        word.text for word in following.words
+                        if center(word) < center(quantity_word) - page.width * 0.02
+                    ).strip()
+                    if len(re.findall(r"[A-Za-zÀ-ÿ]{2,}", text)) >= 2 and not re.search(
+                        r"\b(?:commande\s+client|frais\s+de|total|longueur|remise)\b", _fold(text)
+                    ):
+                        description_words.extend(following.words)
+                        description = text
+                        break
+            if len(re.findall(r"[A-Za-zÀ-ÿ]{2,}", description)) < 2:
+                continue
+            bbox_words = row.words + description_words
+            out.append(LineItem(
+                line_number=str(len(out) + 1),
+                material_number=reference,
+                article_number=reference,
+                supplier_material_number=reference,
+                description=description,
+                quantity=quantity,
+                ordered_quantity=quantity,
+                uom=uom or None,
+                unit_price=price,
+                net_unit_price=price,
+                line_total=amount,
+                line_net_amount=amount,
+                currency=default_currency,
+                raw_text=" | ".join(x for x in (row.text, description) if x),
+                page=page.page,
+                bbox=_bbox_union(bbox_words),
+                confidence=min(float(row.confidence), 0.95) * 0.97,
+            ))
+    return _dedupe_line_items(out)
+
+
 def _enhance_strict_totals_v47(po, pages, config: dict):
     """Recover labelled totals conservatively and preserve reconciled totals."""
     from po_ocr.extract import all_rows
@@ -3902,7 +4310,9 @@ def _recover_roles_v48(po,tables,pages,config:dict):
 
 def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict):
     """V4.7 post-processor: strict semantic guards + native/geometry hypothesis fusion."""
+    import re
     from po_ocr.extract import line_item_set_quality
+    from uda.material_references import enrich_supplier_material_roles, line_material_pattern_summary
     default_currency = config.get("normalization", {}).get("default_currency", "EUR")
     po = _extract_native_table_header_fields(po, tables)
     po = _enhance_order_header_from_page_layout(po, pages, config)
@@ -3914,13 +4324,19 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     quantity_first_lines, quantity_first_charges = _quantity_first_table_items(pages, default_currency)
     price_then_quantity_lines = _price_then_quantity_table_items(pages, default_currency)
     two_row_erp_lines = _two_row_erp_table_items(pages, default_currency)
+    material_split_lines, material_split_charges = _material_anchored_split_table_items_v61(
+        pages, config, default_currency
+    )
+    material_numeric_lines = _material_anchored_numeric_row_items_v61(
+        pages, config, default_currency
+    )
 
     # V4.6 hypothesis competition.  Structural quality alone is not enough: a bad
     # parser can be arithmetically self-consistent while misreading the columns.  We
     # therefore also penalize fee/legal pseudo-products and reward clean material rows.
     def hypothesis_score(lines, charges, source_bonus=0.0):
         if not lines:
-            return -1.0
+            return -1.0, line_material_pattern_summary([], config)
         base=float(line_item_set_quality(lines))
         arithmetic=[]; noise=0.0; complete=0.0
         for line in lines:
@@ -3932,26 +4348,63 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
             low=_fold(" ".join(x for x in (line.material_number,line.description,line.raw_text) if x))
             if _fee_kind(low) or any(x in low for x in ("siret","n° tva","no tva","capital de","conditions generales","page ")):
                 noise += 1.0
+        # Dates and summary/footer labels can be arithmetically self-consistent after
+        # a column drift, but they are not product rows. Penalize these explicit
+        # semantic conflicts before comparing the parser hypotheses.
+        for line in lines:
+            material_value=str(line.material_number or "").strip()
+            low=_fold(" ".join(x for x in (line.description,line.raw_text) if x))
+            if re.fullmatch(r"(?:[0-3]?\d)[/.-](?:0?\d|1[0-2])[/.-](?:\d{2}|\d{4})",material_value):
+                noise += 1.0
+            if re.search(r"\b(?:poids|total\s+hors|total\s+ht|reglement)\b",low):
+                noise += 0.75
         arithmetic_score=sum(arithmetic)/len(arithmetic) if arithmetic else 0.55
         completeness=complete/max(1,len(lines))
         fee_bonus=min(0.08,len(charges)*0.02)
         noise_penalty=min(0.40,noise/max(1,len(lines))*0.50)
-        return 0.30*base + 0.34*arithmetic_score + 0.24*completeness + source_bonus + fee_bonus - noise_penalty
+        material_patterns=line_material_pattern_summary(lines, config)
+        return (
+            0.30*base + 0.34*arithmetic_score + 0.24*completeness
+            + source_bonus + fee_bonus + float(material_patterns["bonus"])
+            - noise_penalty,
+            material_patterns,
+        )
 
     hypotheses=[("current",po.lines,po.additional_charges,0.0)]
+    suppressed_hypotheses={}
     if table_lines: hypotheses.append(("native_table",table_lines,table_charges,0.18))
     if geometry_lines: hypotheses.append(("geometry",geometry_lines,geometry_charges,0.08))
     if amount_only_lines: hypotheses.append(("amount_only_geometry",amount_only_lines,[],0.11))
     if quantity_first_lines: hypotheses.append(("quantity_first_table",quantity_first_lines,quantity_first_charges,0.12))
     if price_then_quantity_lines: hypotheses.append(("price_then_quantity_table",price_then_quantity_lines,[],0.14))
     if two_row_erp_lines: hypotheses.append(("two_row_erp_table",two_row_erp_lines,[],0.16))
-    ranked=sorted(((hypothesis_score(ls,ch,sb),name,ls,ch) for name,ls,ch,sb in hypotheses),reverse=True,key=lambda x:x[0])
-    parser_diag={"selected":"current","scores":{name:round(hypothesis_score(ls,ch,sb),4) for name,ls,ch,sb in hypotheses}}
+    if material_split_lines: hypotheses.append(("material_anchored_split",material_split_lines,material_split_charges,0.24))
+    current_pattern_support=int(line_material_pattern_summary(po.lines, config).get("supported_lines",0))
+    if material_numeric_lines and (
+        not current_pattern_support or len(material_numeric_lines) >= current_pattern_support
+    ):
+        hypotheses.append(("material_anchored_numeric",material_numeric_lines,[],0.22))
+    elif material_numeric_lines:
+        suppressed_hypotheses["material_anchored_numeric"]={
+            "reason":"partial_coverage_vs_current_supported_lines",
+            "candidate_lines":len(material_numeric_lines),
+            "current_supported_lines":current_pattern_support,
+        }
+    evaluated=[(hypothesis_score(ls,ch,sb),name,ls,ch) for name,ls,ch,sb in hypotheses]
+    ranked=sorted(((result[0],name,ls,ch) for result,name,ls,ch in evaluated),reverse=True,key=lambda x:x[0])
+    parser_diag={
+        "selected":"current",
+        "scores":{name:round(result[0],4) for result,name,_,_ in evaluated},
+        "material_reference_patterns":{name:result[1] for result,name,_,_ in evaluated},
+        "suppressed_hypotheses":suppressed_hypotheses,
+    }
     if ranked and ranked[0][2]:
         _,chosen_name,chosen_lines,chosen_charges=ranked[0]
         po.lines=chosen_lines; po.additional_charges=chosen_charges
         parser_diag["selected"]=chosen_name
     po.lines = _dedupe_line_items(po.lines)
+    parser_diag["supplier_role_enrichments"] = enrich_supplier_material_roles(po.lines, config)
+    po.lines, parser_diag["semantic_line_rejections"] = _sanitize_non_product_lines_v61(po.lines, config)
     po = _sanitize_legal_footer_lines_v48(po, config)
     # Fill parent line ids after deduplication assigned stable sequence numbers.
     for charge in po.additional_charges:

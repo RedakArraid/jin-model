@@ -270,6 +270,17 @@ layout:
   geometry_table_description_continuation_gap_ratio: 0.022
   geometry_table_min_material_digits: 5
   geometry_table_max_material_chars: 30
+  # Aggregate material-master patterns support table-parser selection without
+  # embedding or requiring an exact, quickly obsolete article list.
+  material_reference_pattern_scoring: true
+  material_reference_profile_path: null
+  material_reference_pattern_min_score: 0.74
+  material_reference_pattern_hypothesis_weight: 0.14
+  material_reference_role_enrichment: true
+  material_reference_role_min_score: 0.86
+  material_anchored_split_row_recovery: true
+  material_anchored_numeric_row_recovery: true
+  strict_non_product_line_filter: true
   geometry_table_min_row_confidence: 0.88
   geometry_table_prefer_printed_amount: true
   geometry_table_validate_quantity_price: true

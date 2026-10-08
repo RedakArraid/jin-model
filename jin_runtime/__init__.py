@@ -1,1 +1,1 @@
-__version__ = "5.10.0-header-reliability"
+__version__ = "5.11.0-line-item-patterns"
