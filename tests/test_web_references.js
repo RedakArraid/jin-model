@@ -13,7 +13,7 @@ assert.ok(start >= 0 && end > start, 'line reference formatter must be present')
 const context = vm.createContext({});
 vm.runInContext(source.slice(start, end) + '\nthis.label = lineReferenceLabel;', context);
 
-test('line references show clean material, source prefix, quotes and derogations', () => {
+test('line references hide repeated source prefixes but show quotes and derogations', () => {
   const label = context.label({
     material_number: 'EL7716780266',
     supplier_material_number: '7716780266',
@@ -25,8 +25,9 @@ test('line references show clean material, source prefix, quotes and derogations
 
   assert.equal(
     label,
-    '7716780266 · Préfixe source EL · Devis DV-100, DV-200 · Dérog. DER-77',
+    '7716780266 · Devis DV-100, DV-200 · Dérog. DER-77',
   );
+  assert.doesNotMatch(label, /Préfixe source/);
 });
 
 test('line references remain compact when no commercial metadata exists', () => {

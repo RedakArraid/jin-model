@@ -60,9 +60,7 @@ const lineReferenceLabel = (line, includeCommercial = true) => {
     || line.material_number || line.article_number || line.product_code
     || line.manufacturer_part_number || line.supplier_material_number;
   const details = [];
-  if (sourcePrefix) {
-    details.push(`Préfixe source ${sourcePrefix}`);
-  } else if (line.supplier_material_number && line.supplier_material_number !== primary) {
+  if (!sourcePrefix && line.supplier_material_number && line.supplier_material_number !== primary) {
     details.push(`Fourn. ${line.supplier_material_number}`);
   }
   if (line.customer_material_number && line.customer_material_number !== primary) {
