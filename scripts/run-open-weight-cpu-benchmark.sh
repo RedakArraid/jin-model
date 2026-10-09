@@ -8,6 +8,7 @@ GROUND_TRUTH="${GROUND_TRUTH:-benchmarks/open_weight_comparison/ground_truth.jso
 MODELS_DIR="${MODELS_DIR:-data/learning}"
 LIMIT="${LIMIT:-20}"
 DEVICE="${DEVICE:-cpu}"
+CPU_THREADS="${CPU_THREADS:-8}"
 JIN_MODELS_BUNDLE="${JIN_MODELS_BUNDLE:-JIN_MODELS_AVAILABLE.zip}"
 JIN_CORE_ENGINE="${JIN_CORE_ENGINE:-}"
 
@@ -32,6 +33,7 @@ run_pair() {
     --models "jin,${candidate}" \
     --models-dir "$MODELS_DIR" \
     --device "$DEVICE" \
+    --cpu-threads "$CPU_THREADS" \
     --limit "$LIMIT" \
     --output-dir "$output"
 }
