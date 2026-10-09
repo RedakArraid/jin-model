@@ -1,7 +1,7 @@
 SOURCE ?= JIN_MODELS_AVAILABLE.zip
 PYTHON_BIN ?= python
 
-.PHONY: models verify standalone full test benchmark-env benchmark-preflight benchmark-smoke benchmark-open-weight benchmark-qwen2b benchmark-qwen4b benchmark-embedding
+.PHONY: models verify standalone full test benchmark-env benchmark-models benchmark-preflight benchmark-smoke benchmark-open-weight benchmark-qwen2b benchmark-qwen4b benchmark-embedding
 
 models:
 	"$(PYTHON_BIN)" scripts/install_models.py --source "$(SOURCE)"
@@ -28,6 +28,7 @@ CPU_THREADS ?= 4
 SMOKE_MODEL ?= qwen3_vl_2b
 JIN_MODELS_BUNDLE ?= JIN_MODELS_AVAILABLE.zip
 JIN_CORE_ENGINE ?=
+OPEN_WEIGHT_MODEL_ROOT ?= data/open_weight_models
 
 benchmark-preflight:
 	"$(PYTHON_BIN)" -m benchmarks.open_weight_comparison.preflight --pdf-dir "$(PDF_DIR)" --ground-truth "$(GROUND_TRUTH)" --models-dir "$(MODELS_DIR)" --models jin,qwen3_vl_2b,qwen3_vl_4b,embeddinggemma2_zone --output artifacts/open_weight_preflight.json
@@ -50,3 +51,7 @@ benchmark-open-weight:
 
 benchmark-env:
 	sh scripts/setup-open-weight-benchmark-env.sh
+
+
+benchmark-models:
+	PYTHON_BIN="$(PYTHON_BIN)" TARGET_ROOT="$(OPEN_WEIGHT_MODEL_ROOT)" sh scripts/download-qwen-benchmark-models.sh
