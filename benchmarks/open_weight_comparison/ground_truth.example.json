@@ -1,0 +1,47 @@
+{
+  "documents": {
+    "example.pdf": {
+      "document_type": "purchase_order",
+      "order_number": "PO-001234",
+      "order_date": "2026-01-31",
+      "parties": {
+        "supplier": {
+          "name": "Example Supplier",
+          "address": {
+            "house_number": "124-126",
+            "street_type": "RUE",
+            "street_name": "DE STALINGRAD",
+            "postal_code": "93711",
+            "city": "DRANCY",
+            "cedex": "CEDEX"
+          }
+        }
+      },
+      "lines": [
+        {
+          "line_index": 0,
+          "reference": "ABC123",
+          "description": "Example product",
+          "quantity": 2,
+          "unit": "PC",
+          "unit_price": "100.00",
+          "line_total": "200.00"
+        }
+      ],
+      "totals": {
+        "net": "200.00",
+        "vat": "40.00",
+        "gross": "240.00"
+      },
+      "spatial": {
+        "fields": [
+          {"path": "order_number", "page": 1, "bbox": [640, 80, 820, 110]}
+        ],
+        "zones": [
+          {"zone_type": "SUPPLIER", "page": 1, "bbox": [500, 120, 950, 320]},
+          {"zone_type": "LINE_ITEMS", "page": 1, "bbox": [50, 350, 950, 760]}
+        ]
+      }
+    }
+  }
+}

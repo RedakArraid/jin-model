@@ -1,0 +1,7 @@
+# Install on top of runtime-requirements.txt only when running open-weight baselines.
+torch>=2.5
+transformers>=5.2,<6
+accelerate>=1.2,<2
+sentencepiece>=0.2,<1
+safetensors>=0.5,<1
+huggingface-hub>=0.35,<2

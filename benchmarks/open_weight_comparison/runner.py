@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+import argparse
+import csv
+import gc
+import json
+import platform
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .adapters import DEFAULT_MODELS, available_model_names, create_adapter
+from .common import load_ground_truth
+from .metrics import aggregate_model, evaluate_extraction
+from .resources import measured
+
+
+def _json_default(value: Any):
+    if hasattr(value, "item"):
+        return value.item()
+    return str(value)
+
+
+def _selected_pdfs(
+    root: Path,
+    truth: dict[str, Any],
+    filenames: list[str] | None,
+    limit: int | None,
+) -> list[Path]:
+    if filenames:
+        paths = [root / name for name in filenames]
+    elif truth:
+        paths = [root / name for name in truth]
+    else:
+        paths = sorted(
+            path for path in root.rglob("*")
+            if path.is_file() and path.suffix.lower() == ".pdf"
+        )
+    paths = [path for path in paths if path.exists()]
+    return paths[:limit] if limit else paths
+
+
+def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    keys = []
+    seen = set()
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                keys.append(key)
+                seen.add(key)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=keys)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _document_csv_row(row: dict[str, Any]) -> dict[str, Any]:
+    metrics = row.get("metrics") or {}
+    resources = row.get("resources") or {}
+    return {
+        "model": row.get("model"),
+        "track": row.get("track"),
+        "filename": row.get("filename"),
+        "error": row.get("error"),
+        "json_valid": row.get("json_valid"),
+        "field_exact_match": metrics.get("field_exact_match"),
+        "field_token_f1": metrics.get("field_token_f1"),
+        "missing_field_rate": metrics.get("missing_field_rate"),
+        "hallucination_rate": metrics.get("hallucination_rate"),
+        "line_item_reference_recall": metrics.get("line_item_reference_recall"),
+        "mean_field_bbox_iou": metrics.get("mean_field_bbox_iou"),
+        "zone_type_accuracy": metrics.get("zone_type_accuracy"),
+        "mean_zone_bbox_iou": metrics.get("mean_zone_bbox_iou"),
+        "latency_seconds": resources.get("latency_seconds"),
+        "peak_rss_mb": resources.get("peak_rss_mb"),
+    }
+
+
+def _summary_csv_row(name: str, track: str, summary: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "model": name,
+        "track": track,
+        "model_id": metadata.get("model_id"),
+        "device": metadata.get("device"),
+        **summary,
+    }
+
+
+def run(args: argparse.Namespace) -> dict[str, Any]:
+    pdf_root = args.pdf_dir.resolve()
+    output_dir = args.output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    truth = load_ground_truth(args.ground_truth)
+    filenames = None
+    if args.file_list:
+        filenames = json.loads(args.file_list.read_text(encoding="utf-8-sig"))
+    pdfs = _selected_pdfs(pdf_root, truth, filenames, args.limit)
+    model_names = [item.strip() for item in args.models.split(",") if item.strip()]
+
+    report: dict[str, Any] = {
+        "schema_version": "jin-open-weight-ie-benchmark-v1",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "environment": {
+            "python": sys.version.split()[0],
+            "platform": platform.platform(),
+            "device": args.device,
+        },
+        "qualification": (
+            "Accuracy metrics are reported only where reviewed ground truth is supplied. "
+            "EmbeddingGemma2 is a separate zone-semantics track, not a standalone generative extractor."
+        ),
+        "selection": {
+            "pdf_root": str(pdf_root),
+            "documents": [path.relative_to(pdf_root).as_posix() for path in pdfs],
+            "ground_truth_documents": len(truth),
+        },
+        "models": {},
+    }
+    document_rows: list[dict[str, Any]] = []
+    summary_rows: list[dict[str, Any]] = []
+
+    for model_name in model_names:
+        adapter = create_adapter(
+            model_name,
+            device=args.device,
+            models_dir=args.models_dir,
+            max_pages=args.max_pages,
+            max_new_tokens=args.max_new_tokens,
+        )
+        model_report: dict[str, Any] = {
+            "track": adapter.track,
+            "documents": [],
+        }
+        print(f"[{model_name}] loading...", file=sys.stderr, flush=True)
+        try:
+            with measured() as load_resources:
+                adapter.load()
+            model_report["load_resources"] = load_resources
+            model_report["metadata"] = adapter.metadata()
+        except Exception as exc:
+            model_report["load_error"] = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+            report["models"][model_name] = model_report
+            summary = {
+                "documents": len(pdfs),
+                "completed": 0,
+                "errors": len(pdfs),
+            }
+            model_report["summary"] = summary
+            summary_rows.append(_summary_csv_row(model_name, adapter.track, summary, adapter.metadata()))
+            continue
+
+        raw_dir = output_dir / "raw" / model_name
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        for pdf_path in pdfs:
+            relative = pdf_path.relative_to(pdf_root).as_posix()
+            print(f"[{model_name}] {relative}", file=sys.stderr, flush=True)
+            row: dict[str, Any] = {
+                "model": model_name,
+                "track": adapter.track,
+                "filename": relative,
+            }
+            try:
+                with measured() as resources:
+                    result = adapter.extract(pdf_path)
+                row["resources"] = resources
+                row["json_valid"] = bool(result.get("json_valid", True))
+                prediction = result.get("prediction") or {}
+                row["prediction"] = prediction
+                if relative in truth:
+                    row["metrics"] = evaluate_extraction(prediction, truth[relative])
+                raw_path = raw_dir / (pdf_path.stem + ".json")
+                raw_path.write_text(
+                    json.dumps(result, ensure_ascii=False, indent=2, default=_json_default) + "\n",
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                row["error"] = {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }
+            model_report["documents"].append(row)
+            document_rows.append(_document_csv_row(row))
+
+        summary = aggregate_model(model_report["documents"])
+        model_report["summary"] = summary
+        summary_rows.append(
+            _summary_csv_row(
+                model_name,
+                adapter.track,
+                summary,
+                model_report.get("metadata") or {},
+            )
+        )
+        report["models"][model_name] = model_report
+
+        del adapter
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    (output_dir / "comparison.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, default=_json_default) + "\n",
+        encoding="utf-8",
+    )
+    _write_csv(output_dir / "documents.csv", document_rows)
+    _write_csv(output_dir / "summary.csv", summary_rows)
+    return report
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Compare JIN with open-weight document information-extraction models."
+    )
+    parser.add_argument("--pdf-dir", type=Path)
+    parser.add_argument("--ground-truth", type=Path)
+    parser.add_argument("--file-list", type=Path)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument(
+        "--models",
+        default=",".join(DEFAULT_MODELS),
+        help="Comma-separated model adapter names.",
+    )
+    parser.add_argument("--models-dir", type=Path, default=Path("data/learning"))
+    parser.add_argument("--device", default="cpu", choices=("cpu", "cuda", "auto"))
+    parser.add_argument("--max-pages", type=int, default=3)
+    parser.add_argument("--max-new-tokens", type=int, default=2048)
+    parser.add_argument("--limit", type=int)
+    parser.add_argument("--list-models", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.list_models:
+        print("\n".join(available_model_names()))
+        return 0
+    if args.pdf_dir is None or args.output_dir is None:
+        parser.error("--pdf-dir and --output-dir are required unless --list-models is used")
+    report = run(args)
+    completed = sum(
+        model.get("summary", {}).get("completed", 0)
+        for model in report["models"].values()
+    )
+    return 0 if completed else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

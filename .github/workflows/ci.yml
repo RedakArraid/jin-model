@@ -8,6 +8,8 @@ on:
 jobs:
   runtime-learning:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}/tests/support:${{ github.workspace }}/core_overrides:${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -16,13 +18,15 @@ jobs:
       - name: Install runtime dependencies
         run: pip install -r runtime-requirements.txt
       - name: Compile Python sources
-        run: python -m compileall -q jin_runtime training scripts core_overrides
+        run: python -m compileall -q jin_runtime training scripts core_overrides benchmarks
       - name: Validate model tooling
         run: |
           python scripts/install_models.py --help
           python scripts/verify_models.py --help
           python scripts/preflight.py --help
           python scripts/build_ban_index.py --help
+      - name: Validate open-weight benchmark registry
+        run: python -m benchmarks.open_weight_comparison.runner --list-models
       - name: Run statistical learning tests
         run: python -m unittest discover -s tests -v
       - name: Test local viewer display, coordinates and price precision
