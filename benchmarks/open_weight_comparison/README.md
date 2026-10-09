@@ -115,6 +115,32 @@ A Hugging Face account/token may be needed if a model repository requires authen
 python -m benchmarks.open_weight_comparison.runner --list-models
 ```
 
+## Preflight
+
+Before a full campaign, validate the corpus, reviewed truth, full JIN core, local JIN model bundle, Hugging Face cache/offline mode, RAM and free disk:
+
+```bash
+python -m benchmarks.open_weight_comparison.preflight \\
+  --pdf-dir corpus/validation \\
+  --ground-truth benchmarks/open_weight_comparison/ground_truth.json \\
+  --models-dir data/learning \\
+  --models jin,qwen3_vl_2b,qwen3_vl_4b,embeddinggemma2_zone \\
+  --output artifacts/open_weight_preflight.json
+```
+
+A full benchmark must not start while a blocking preflight check is red. In particular, GitHub does not contain the private PDF corpus, the prepared full JIN core under `model/`, or the `JIN_MODELS_AVAILABLE.zip` runtime bundle; these inputs must be present on the execution machine.
+
+## Synthetic smoke test
+
+A deterministic one-page purchase order can validate the VLM plumbing independently of Bosch data:
+
+```bash
+MODEL=qwen3_vl_2b sh scripts/run-open-weight-smoke.sh
+MODEL=qwen3_vl_4b sh scripts/run-open-weight-smoke.sh
+```
+
+Synthetic smoke truth is explicitly marked `_review.synthetic=true`, and `decision_report.md` prints a warning that these results are plumbing-only and must never be published as Bosch/JIN business accuracy.
+
 ## CPU-first smoke benchmark
 
 JIN is the baseline and should be present in every direct-extraction campaign. Start with JIN and Granite-Docling:
@@ -142,7 +168,7 @@ python -m benchmarks.open_weight_comparison.runner \
   --output-dir artifacts/open_weight_comparison
 ```
 
-For a CPU-only machine, the runner automatically executes each requested model in an isolated subprocess before merging the results, so peak RSS is not inherited from the previous model. `qwen3_vl_4b` is intentionally not part of the default list because it is much heavier.
+For a CPU-only machine, the runner automatically executes each requested model in an isolated subprocess before merging the results, so peak RSS is not inherited from the previous model. `qwen3_vl_4b` is intentionally not part of the default list because it is much heavier. The full three-campaign panel is available as `sh scripts/run-open-weight-cpu-benchmark.sh`; it runs the preflight first and stops immediately if the private corpus, reviewed truth, JIN core or local models are missing.
 
 Recommended JIN-vs-Qwen CPU campaigns:
 
