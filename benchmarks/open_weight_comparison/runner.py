@@ -5,7 +5,10 @@ import csv
 import gc
 import json
 import platform
+import shutil
+import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -169,24 +172,22 @@ def _attach_jin_comparison(report: dict[str, Any], summary_rows: list[dict[str, 
             row[f"delta_vs_jin_{metric}"] = float(candidate) - float(baseline)
 
 
-def run(args: argparse.Namespace) -> dict[str, Any]:
-    pdf_root = args.pdf_dir.resolve()
-    output_dir = args.output_dir.resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    truth = load_ground_truth(args.ground_truth)
-    filenames = None
-    if args.file_list:
-        filenames = json.loads(args.file_list.read_text(encoding="utf-8-sig"))
-    pdfs = _selected_pdfs(pdf_root, truth, filenames, args.limit)
-    model_names = [item.strip() for item in args.models.split(",") if item.strip()]
-
-    report: dict[str, Any] = {
+def _new_report(
+    args: argparse.Namespace,
+    pdf_root: Path,
+    truth: dict[str, Any],
+    pdfs: list[Path],
+    *,
+    model_process_isolation: bool,
+) -> dict[str, Any]:
+    return {
         "schema_version": "jin-open-weight-ie-benchmark-v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "environment": {
             "python": sys.version.split()[0],
             "platform": platform.platform(),
             "device": args.device,
+            "model_process_isolation": model_process_isolation,
         },
         "baseline_model": BASELINE_MODEL,
         "qualification": (
@@ -200,8 +201,140 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
         "models": {},
     }
+
+
+def _finalize_report(report: dict[str, Any], output_dir: Path) -> dict[str, Any]:
     document_rows: list[dict[str, Any]] = []
     summary_rows: list[dict[str, Any]] = []
+    for model_name, model_report in report.get("models", {}).items():
+        for row in model_report.get("documents") or []:
+        summary = model_report.get("summary") or {}
+        metadata = model_report.get("metadata") or {}
+        summary_rows.append(
+            _summary_csv_row(model_name, model_report.get("track") or "", summary, metadata)
+        )
+
+    return _finalize_report(report, output_dir)
+
+
+def _worker_command(args: argparse.Namespace, model_name: str, output_dir: Path) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "benchmarks.open_weight_comparison.runner",
+        "--pdf-dir", str(args.pdf_dir),
+        "--output-dir", str(output_dir),
+        "--models", model_name,
+        "--models-dir", str(args.models_dir),
+        "--device", args.device,
+        "--max-pages", str(args.max_pages),
+        "--max-new-tokens", str(args.max_new_tokens),
+    ]
+    if args.ground_truth is not None:
+        command.extend(["--ground-truth", str(args.ground_truth)])
+    if args.file_list is not None:
+        command.extend(["--file-list", str(args.file_list)])
+    if args.limit is not None:
+        command.extend(["--limit", str(args.limit)])
+    return command
+
+
+def run_isolated(args: argparse.Namespace) -> dict[str, Any]:
+    pdf_root = args.pdf_dir.resolve()
+    output_dir = args.output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    truth = load_ground_truth(args.ground_truth)
+    filenames = None
+    if args.file_list:
+        filenames = json.loads(args.file_list.read_text(encoding="utf-8-sig"))
+    pdfs = _selected_pdfs(pdf_root, truth, filenames, args.limit)
+    model_names = [item.strip() for item in args.models.split(",") if item.strip()]
+    report = _new_report(
+        args,
+        pdf_root,
+        truth,
+        pdfs,
+        model_process_isolation=True,
+    )
+
+    raw_root = output_dir / "raw"
+    raw_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="jin-open-weight-") as temp_root:
+        for model_name in model_names:
+            worker_dir = Path(temp_root) / model_name
+            print(
+                f"[{model_name}] isolated worker process...",
+                file=sys.stderr,
+                flush=True,
+            )
+            completed = subprocess.run(_worker_command(args, model_name, worker_dir), check=False)
+            comparison_path = worker_dir / "comparison.json"
+            if comparison_path.exists():
+                worker_report = json.loads(comparison_path.read_text(encoding="utf-8"))
+                model_report = (worker_report.get("models") or {}).get(model_name)
+                if model_report is None:
+                    model_report = {
+                        "track": "unknown",
+                        "documents": [],
+                        "summary": {
+                            "documents": len(pdfs),
+                            "completed": 0,
+                            "errors": len(pdfs),
+                        },
+                        "load_error": {
+                            "type": "WorkerMissingModelReport",
+                            "message": f"Worker report did not contain model {model_name}.",
+                        },
+                    }
+            else:
+                model_report = {
+                    "track": "unknown",
+                    "documents": [],
+                    "summary": {
+                        "documents": len(pdfs),
+                        "completed": 0,
+                        "errors": len(pdfs),
+                    },
+                    "load_error": {
+                        "type": "WorkerProcessError",
+                        "message": (
+                            f"Isolated worker exited with return code {completed.returncode} "
+                            "without producing comparison.json."
+                        ),
+                    },
+                }
+            model_report["worker_returncode"] = int(completed.returncode)
+            report["models"][model_name] = model_report
+
+            source_raw = worker_dir / "raw" / model_name
+            if source_raw.exists():
+                shutil.copytree(
+                    source_raw,
+                    raw_root / model_name,
+                    dirs_exist_ok=True,
+                )
+
+    return _finalize_report(report, output_dir)
+
+
+def run(args: argparse.Namespace) -> dict[str, Any]:
+    pdf_root = args.pdf_dir.resolve()
+    output_dir = args.output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    truth = load_ground_truth(args.ground_truth)
+    filenames = None
+    if args.file_list:
+        filenames = json.loads(args.file_list.read_text(encoding="utf-8-sig"))
+    pdfs = _selected_pdfs(pdf_root, truth, filenames, args.limit)
+    model_names = [item.strip() for item in args.models.split(",") if item.strip()]
+
+    report = _new_report(
+        args,
+        pdf_root,
+        truth,
+        pdfs,
+        model_process_isolation=False,
+    )
 
     for model_name in model_names:
         adapter = create_adapter(
@@ -233,7 +366,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "errors": len(pdfs),
             }
             model_report["summary"] = summary
-            summary_rows.append(_summary_csv_row(model_name, adapter.track, summary, adapter.metadata()))
             continue
 
         raw_dir = output_dir / "raw" / model_name
@@ -270,14 +402,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
         summary = aggregate_model(model_report["documents"])
         model_report["summary"] = summary
-        summary_rows.append(
-            _summary_csv_row(
-                model_name,
-                adapter.track,
-                summary,
-                model_report.get("metadata") or {},
-            )
-        )
         report["models"][model_name] = model_report
 
         del adapter
@@ -348,7 +472,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.pdf_dir is None or args.output_dir is None:
         parser.error("--pdf-dir and --output-dir are required unless --list-models is used")
-    report = run(args)
+    model_names = [item.strip() for item in args.models.split(",") if item.strip()]
+    if args.device == "cpu" and len(model_names) > 1:
+        report = run_isolated(args)
+    else:
+        report = run(args)
     completed = sum(
         model.get("summary", {}).get("completed", 0)
         for model in report["models"].values()
