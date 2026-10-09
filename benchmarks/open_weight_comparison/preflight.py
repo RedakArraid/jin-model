@@ -301,7 +301,7 @@ def _ground_truth_checks(
         if ground_truth_is_reviewed(document)
     }
     missing_pdfs = sorted(
-        name for name in truth if not (pdf_root / name).is_file()
+        name for name in reviewed if not (pdf_root / name).is_file()
     )
     checks.append({
         "name": "ground_truth",
