@@ -1,4 +1,7 @@
+import argparse
+import tempfile
 import unittest
+from pathlib import Path
 
 from benchmarks.open_weight_comparison.adapters import available_model_names
 from benchmarks.open_weight_comparison.common import (
@@ -13,10 +16,12 @@ from benchmarks.open_weight_comparison.decision import (
     head_to_head_summary,
     render_decision_report,
 )
+from benchmarks.open_weight_comparison.make_smoke_fixture import build_fixture
 from benchmarks.open_weight_comparison.metrics import (
     box_iou,
     evaluate_extraction,
 )
+from benchmarks.open_weight_comparison.preflight import preflight
 from benchmarks.open_weight_comparison.prompts import extraction_prompt
 
 
@@ -174,6 +179,32 @@ class OpenWeightComparisonTests(unittest.TestCase):
         markdown = render_decision_report(report, head, fields)
         self.assertIn("qwen3_vl_2b vs JIN", markdown)
         self.assertIn("order_number", markdown)
+
+    def test_synthetic_smoke_fixture_is_explicitly_marked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = build_fixture(root)
+            self.assertTrue(Path(result["pdf"]).is_file())
+            payload = __import__("json").loads(Path(result["ground_truth"]).read_text(encoding="utf-8"))
+            document = payload["documents"]["synthetic_purchase_order.pdf"]
+            self.assertTrue(document["_review"]["synthetic"])
+            self.assertEqual(document["_review"]["status"], "validated")
+
+    def test_preflight_can_validate_reviewed_non_jin_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture = build_fixture(root / "fixture")
+            args = argparse.Namespace(
+                repo_root=Path("."),
+                pdf_dir=root / "fixture",
+                ground_truth=Path(fixture["ground_truth"]),
+                models_dir=root / "models",
+                models="",
+                output=None,
+            )
+            report = preflight(args)
+            self.assertTrue(report["ready"])
+            self.assertEqual(report["ground_truth_summary"]["reviewed_documents"], 1)
 
     def test_jin_clean_normalization(self):
         clean = {
