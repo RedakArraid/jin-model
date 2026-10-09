@@ -119,24 +119,41 @@ def _dependency_checks(model_names: list[str]) -> list[dict[str, Any]]:
         })
 
         torch_version = _package_version("torch")
+        torch_ok = (
+            torch_version is not None
+            and _version_tuple(torch_version) >= (2, 5)
+        )
         checks.append({
             "name": "dependency:torch",
-            "ok": torch_version is not None,
+            "ok": torch_ok,
             "severity": "error",
             "version": torch_version,
             "required": ">=2.5",
-            "detail": "ready" if torch_version else "torch missing",
+            "detail": (
+                "ready"
+                if torch_ok
+                else "torch>=2.5 required; install benchmark requirements"
+            ),
         })
 
     if "embeddinggemma2_zone" in model_names:
         st_version = _package_version("sentence-transformers")
+        st_ok = (
+            st_version is not None
+            and _version_tuple(st_version) >= (5, 1)
+            and _version_tuple(st_version) < (6,)
+        )
         checks.append({
             "name": "dependency:sentence-transformers",
-            "ok": st_version is not None,
+            "ok": st_ok,
             "severity": "error",
             "version": st_version,
             "required": ">=5.1,<6",
-            "detail": "ready" if st_version else "sentence-transformers missing",
+            "detail": (
+                "ready"
+                if st_ok
+                else "sentence-transformers>=5.1,<6 required"
+            ),
         })
 
     if model_names:
