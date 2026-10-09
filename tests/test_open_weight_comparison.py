@@ -23,6 +23,7 @@ from benchmarks.open_weight_comparison.metrics import (
 )
 from benchmarks.open_weight_comparison.preflight import preflight
 from benchmarks.open_weight_comparison.prompts import extraction_prompt
+from benchmarks.open_weight_comparison.runner import _selected_pdfs
 
 
 class OpenWeightComparisonTests(unittest.TestCase):
@@ -179,6 +180,18 @@ class OpenWeightComparisonTests(unittest.TestCase):
         markdown = render_decision_report(report, head, fields)
         self.assertIn("qwen3_vl_2b vs JIN", markdown)
         self.assertIn("order_number", markdown)
+
+    def test_default_selection_skips_unreviewed_truth(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "reviewed.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+            (root / "draft.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+            truth = {
+                "reviewed.pdf": {"_review": {"status": "reviewed"}, "order_number": "A"},
+                "draft.pdf": {"_review": {"status": "needs_review"}, "order_number": "B"},
+            }
+            selected = _selected_pdfs(root, truth, None, None)
+            self.assertEqual([path.name for path in selected], ["reviewed.pdf"])
 
     def test_synthetic_smoke_fixture_is_explicitly_marked(self):
         with tempfile.TemporaryDirectory() as tmp:
