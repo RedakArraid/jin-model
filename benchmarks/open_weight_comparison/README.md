@@ -17,7 +17,7 @@ These models receive the same rendered document image and the same JSON extracti
 
 ### Zone semantics
 
-`embeddinggemma2_zone` uses `google/embeddinggemma-2` to rerank text from JIN-localized semantic zones. It is intentionally reported in a **separate track** because an embedding model is not a generative field extractor.
+`embeddinggemma2_zone` uses `google/embeddinggemma-2` to rerank text from JIN-localized semantic zones. It uses the Sentence Transformers retrieval interface: semantic labels are encoded as queries with `encode_query()`, while localized zone text is encoded as documents with `encode_document()`. It is intentionally reported in a **separate track** because an embedding model is not a generative field extractor.
 
 Do not compare its zone score directly with field exact-match scores from the direct extraction track.
 
