@@ -40,11 +40,31 @@ When reviewed ground truth is provided, the runner reports:
 - Hugging Face cache size when available;
 - JIN local model-artifact size.
 
-No factual accuracy is claimed when reviewed ground truth is absent.
+No factual accuracy is claimed when reviewed ground truth is absent. Draft entries marked `needs_review` are processed for raw inference but excluded from accuracy metrics.
 
 ## Ground truth
 
-Copy `ground_truth.example.json` and replace the example with reviewed values.
+Do not use JIN or competitor predictions as ground truth automatically. Create a review scaffold from real validation PDFs, then fill and approve it manually:
+
+```bash
+python -m benchmarks.open_weight_comparison.prepare_ground_truth \\
+  --pdf-dir corpus/validation \\
+  --limit 100 \\
+  --output benchmarks/open_weight_comparison/ground_truth.json
+```
+
+The scaffold marks every new document as `needs_review` and also creates `ground_truth_review.csv`. The runner scores a document only when `_review.status` is `reviewed`, `approved` or `validated`. Existing ground-truth files without `_review` remain backward-compatible and are treated as implicitly reviewed.
+
+Example review metadata:
+
+```json
+"_review": {
+  "status": "reviewed",
+  "reviewer": "initials-or-team",
+  "reviewed_at": "2026-10-09",
+  "notes": null
+}
+```
 
 Coordinates are normalized to `[0,1000]` for each page.
 
@@ -127,35 +147,35 @@ For a CPU-only machine, the runner automatically executes each requested model i
 Recommended JIN-vs-Qwen CPU campaigns:
 
 ```bash
-python -m benchmarks.open_weight_comparison.runner \\
-  --pdf-dir corpus/validation \\
-  --ground-truth benchmarks/open_weight_comparison/ground_truth.json \\
-  --models jin,qwen3_vl_2b \\
-  --models-dir data/learning \\
-  --device cpu \\
-  --limit 20 \\
+python -m benchmarks.open_weight_comparison.runner \
+  --pdf-dir corpus/validation \
+  --ground-truth benchmarks/open_weight_comparison/ground_truth.json \
+  --models jin,qwen3_vl_2b \
+  --models-dir data/learning \
+  --device cpu \
+  --limit 20 \
   --output-dir artifacts/jin_vs_qwen3_vl_2b
 
-python -m benchmarks.open_weight_comparison.runner \\
-  --pdf-dir corpus/validation \\
-  --ground-truth benchmarks/open_weight_comparison/ground_truth.json \\
-  --models jin,qwen3_vl_4b \\
-  --models-dir data/learning \\
-  --device cpu \\
-  --limit 20 \\
+python -m benchmarks.open_weight_comparison.runner \
+  --pdf-dir corpus/validation \
+  --ground-truth benchmarks/open_weight_comparison/ground_truth.json \
+  --models jin,qwen3_vl_4b \
+  --models-dir data/learning \
+  --device cpu \
+  --limit 20 \
   --output-dir artifacts/jin_vs_qwen3_vl_4b
 ```
 
 EmbeddingGemma2 stays in its separate zone-semantics track:
 
 ```bash
-python -m benchmarks.open_weight_comparison.runner \\
-  --pdf-dir corpus/validation \\
-  --ground-truth benchmarks/open_weight_comparison/ground_truth.json \\
-  --models jin,embeddinggemma2_zone \\
-  --models-dir data/learning \\
-  --device cpu \\
-  --limit 20 \\
+python -m benchmarks.open_weight_comparison.runner \
+  --pdf-dir corpus/validation \
+  --ground-truth benchmarks/open_weight_comparison/ground_truth.json \
+  --models jin,embeddinggemma2_zone \
+  --models-dir data/learning \
+  --device cpu \
+  --limit 20 \
   --output-dir artifacts/jin_vs_embeddinggemma2
 ```
 
