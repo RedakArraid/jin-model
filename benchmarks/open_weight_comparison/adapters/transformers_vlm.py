@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,13 @@ from ..common import compact_common, parse_json_object
 from ..prompts import extraction_prompt
 from ..render import contact_sheet
 from .base import BenchmarkAdapter
+
+
+LOCAL_MODEL_ENV = {
+    "qwen3_vl_2b": "JIN_BENCH_QWEN3_VL_2B_PATH",
+    "qwen3_vl_4b": "JIN_BENCH_QWEN3_VL_4B_PATH",
+    "embeddinggemma2_zone": "JIN_BENCH_EMBEDDINGGEMMA2_PATH",
+}
 
 
 MODEL_SPECS = {
@@ -54,6 +62,9 @@ class TransformersVLMAdapter(BenchmarkAdapter):
         self.spec = MODEL_SPECS[spec_name]
         self.name = spec_name
         self.model_id = self.spec["model_id"]
+        override_env = LOCAL_MODEL_ENV.get(spec_name)
+        override = os.getenv(override_env, "").strip() if override_env else ""
+        self.model_source = str(Path(override).expanduser().resolve()) if override else self.model_id
 
     def load(self) -> None:
         import torch
@@ -74,7 +85,7 @@ class TransformersVLMAdapter(BenchmarkAdapter):
             trust_remote_code = False
 
         self.processor = AutoProcessor.from_pretrained(
-            self.model_id,
+            self.model_source,
             trust_remote_code=trust_remote_code,
         )
         requested_dtype: Any = "auto" if self.device == "cpu" else torch.bfloat16
@@ -85,12 +96,12 @@ class TransformersVLMAdapter(BenchmarkAdapter):
         if self.device == "auto":
             kwargs["device_map"] = "auto"
         try:
-            self.model = model_cls.from_pretrained(self.model_id, **kwargs)
+            self.model = model_cls.from_pretrained(self.model_source, **kwargs)
         except TypeError:
             # Compatibility with older Transformers releases that still use torch_dtype.
             requested_dtype = kwargs.pop("dtype", requested_dtype)
             kwargs["torch_dtype"] = requested_dtype
-            self.model = model_cls.from_pretrained(self.model_id, **kwargs)
+            self.model = model_cls.from_pretrained(self.model_source, **kwargs)
         if self.device != "auto":
             self.model = self.model.to(self.device)
         self.model.eval()
@@ -113,6 +124,8 @@ class TransformersVLMAdapter(BenchmarkAdapter):
             "loader": loader,
             "max_new_tokens": self.max_new_tokens,
             "requested_dtype": str(requested_dtype),
+            "model_source": self.model_source,
+            "local_model_override": self.model_source != self.model_id,
             "parameter_count": parameter_count,
             "parameter_memory_bytes": parameter_bytes,
             "hf_cache_bytes": cache_bytes,
