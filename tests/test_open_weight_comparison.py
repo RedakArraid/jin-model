@@ -84,6 +84,26 @@ class OpenWeightComparisonTests(unittest.TestCase):
         self.assertEqual(metrics["missing_field_count"], 1)
         self.assertGreater(metrics["hallucinated_field_count"], 0)
 
+    def test_partial_scope_ignores_unannotated_predictions(self):
+        truth = {
+            "_scope": {"paths": ["order_number", "order_date"]},
+            "order_number": "PO-001",
+            "order_date": "2026-01-02",
+            "totals": {"net": "100.00"},
+        }
+        prediction = {
+            "order_number": "PO-001",
+            "order_date": "2026-01-02",
+            "totals": {"net": "999.00", "gross": "120.00"},
+            "parties": {"supplier": {"name": "Supplier"}},
+        }
+        metrics = evaluate_extraction(prediction, truth)
+        self.assertEqual(metrics["truth_field_count"], 2)
+        self.assertEqual(metrics["predicted_field_count"], 2)
+        self.assertEqual(metrics["exact_match_count"], 2)
+        self.assertEqual(metrics["hallucinated_field_count"], 0)
+        self.assertEqual(metrics["scope_paths"], ["order_number", "order_date"])
+
     def test_zone_metrics_match_by_geometry(self):
         truth = {
             "spatial": {
