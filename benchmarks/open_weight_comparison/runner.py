@@ -56,7 +56,11 @@ def _selected_pdfs(
     if filenames:
         paths = [root / name for name in filenames]
     elif truth:
-        paths = [root / name for name in truth]
+        paths = [
+            root / name
+            for name, document in truth.items()
+            if ground_truth_is_reviewed(document)
+        ]
     else:
         paths = sorted(
             path for path in root.rglob("*")
