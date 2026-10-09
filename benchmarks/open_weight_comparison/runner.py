@@ -16,6 +16,18 @@ from .metrics import aggregate_model, evaluate_extraction
 from .resources import measured
 
 
+BASELINE_MODEL = "jin"
+JIN_DELTA_METRICS = (
+    "field_exact_match",
+    "field_token_f1",
+    "missing_field_rate",
+    "hallucination_rate",
+    "line_item_reference_recall",
+    "latency_seconds_mean",
+    "peak_rss_mb_max",
+)
+
+
 def _json_default(value: Any):
     if hasattr(value, "item"):
         return value.item()
@@ -90,6 +102,67 @@ def _summary_csv_row(name: str, track: str, summary: dict[str, Any], metadata: d
     }
 
 
+def _attach_jin_comparison(report: dict[str, Any], summary_rows: list[dict[str, Any]]) -> None:
+    """Attach explicit deltas against JIN for direct-IE models."""
+    jin_report = report.get("models", {}).get(BASELINE_MODEL) or {}
+    jin_summary = jin_report.get("summary") or {}
+    if not jin_summary:
+        report["baseline"] = {
+            "model": BASELINE_MODEL,
+            "available": False,
+            "qualification": "JIN was not executed in this campaign, so no delta-vs-JIN metrics are reported.",
+        }
+        return
+
+    report["baseline"] = {
+        "model": BASELINE_MODEL,
+        "available": True,
+        "track": jin_report.get("track"),
+        "summary": jin_summary,
+    }
+
+    for model_name, model_report in report.get("models", {}).items():
+        if model_name == BASELINE_MODEL:
+            model_report["comparison_vs_jin"] = {"is_baseline": True}
+            continue
+        if model_report.get("track") != "direct_ie":
+            model_report["comparison_vs_jin"] = {
+                "comparable": False,
+                "reason": "Different benchmark track; zone-semantics scores must not be compared with JIN direct-IE field scores.",
+            }
+            continue
+        summary = model_report.get("summary") or {}
+        deltas = {}
+        for metric in JIN_DELTA_METRICS:
+            candidate = summary.get(metric)
+            baseline = jin_summary.get(metric)
+            if candidate is None or baseline is None:
+                continue
+            deltas[metric] = float(candidate) - float(baseline)
+        model_report["comparison_vs_jin"] = {
+            "comparable": True,
+            "baseline_model": BASELINE_MODEL,
+            "delta": deltas,
+        }
+
+    for row in summary_rows:
+        row["baseline_model"] = BASELINE_MODEL
+        if row.get("model") == BASELINE_MODEL:
+            row["is_jin_baseline"] = True
+            continue
+        row["is_jin_baseline"] = False
+        if row.get("track") != "direct_ie":
+            row["comparison_vs_jin"] = "NOT_COMPARABLE_DIFFERENT_TRACK"
+            continue
+        row["comparison_vs_jin"] = "DIRECT_IE"
+        for metric in JIN_DELTA_METRICS:
+            candidate = row.get(metric)
+            baseline = jin_summary.get(metric)
+            if candidate is None or baseline is None:
+                continue
+            row[f"delta_vs_jin_{metric}"] = float(candidate) - float(baseline)
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     pdf_root = args.pdf_dir.resolve()
     output_dir = args.output_dir.resolve()
@@ -109,8 +182,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "platform": platform.platform(),
             "device": args.device,
         },
+        "baseline_model": BASELINE_MODEL,
         "qualification": (
-            "Accuracy metrics are reported only where reviewed ground truth is supplied. "
+            "JIN is the benchmark baseline. Accuracy metrics are reported only where reviewed ground truth is supplied. "
             "EmbeddingGemma2 is a separate zone-semantics track, not a standalone generative extractor."
         ),
         "selection": {
@@ -208,6 +282,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 torch.cuda.empty_cache()
         except Exception:
             pass
+
+    _attach_jin_comparison(report, summary_rows)
 
     (output_dir / "comparison.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2, default=_json_default) + "\n",
