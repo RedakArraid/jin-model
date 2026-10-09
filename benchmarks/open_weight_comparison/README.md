@@ -95,7 +95,7 @@ python -m benchmarks.open_weight_comparison.runner --list-models
 
 ## CPU-first smoke benchmark
 
-Start with JIN and Granite-Docling:
+JIN is the baseline and should be present in every direct-extraction campaign. Start with JIN and Granite-Docling:
 
 ```bash
 python -m benchmarks.open_weight_comparison.runner \
@@ -122,6 +122,41 @@ python -m benchmarks.open_weight_comparison.runner \
 
 For a CPU-only machine, run the VLMs one at a time. `qwen3_vl_4b` is intentionally not part of the default list because it is much heavier.
 
+Recommended JIN-vs-Qwen CPU campaigns:
+
+```bash
+python -m benchmarks.open_weight_comparison.runner \\
+  --pdf-dir corpus/validation \\
+  --ground-truth benchmarks/open_weight_comparison/ground_truth.json \\
+  --models jin,qwen3_vl_2b \\
+  --models-dir data/learning \\
+  --device cpu \\
+  --limit 20 \\
+  --output-dir artifacts/jin_vs_qwen3_vl_2b
+
+python -m benchmarks.open_weight_comparison.runner \\
+  --pdf-dir corpus/validation \\
+  --ground-truth benchmarks/open_weight_comparison/ground_truth.json \\
+  --models jin,qwen3_vl_4b \\
+  --models-dir data/learning \\
+  --device cpu \\
+  --limit 20 \\
+  --output-dir artifacts/jin_vs_qwen3_vl_4b
+```
+
+EmbeddingGemma2 stays in its separate zone-semantics track:
+
+```bash
+python -m benchmarks.open_weight_comparison.runner \\
+  --pdf-dir corpus/validation \\
+  --ground-truth benchmarks/open_weight_comparison/ground_truth.json \\
+  --models jin,embeddinggemma2_zone \\
+  --models-dir data/learning \\
+  --device cpu \\
+  --limit 20 \\
+  --output-dir artifacts/jin_vs_embeddinggemma2
+```
+
 ## Output
 
 The output directory contains:
@@ -130,20 +165,26 @@ The output directory contains:
 comparison.json
 summary.csv
 documents.csv
+head_to_head.csv
+field_comparison.csv
+decision_report.md
 raw/
   jin/
   granite_docling_258m/
+  qwen3_vl_2b/
+  qwen3_vl_4b/
   ...
 ```
 
-`summary.csv` is the decision table. `documents.csv` exposes per-document metrics. `raw/` preserves each model's raw response for auditability.
+`summary.csv` contains aggregate model metrics plus explicit deltas against JIN for direct-extraction models. `head_to_head.csv` compares every competitor against JIN PDF by PDF. `field_comparison.csv` records whether JIN or the competitor wins for each reviewed field. `decision_report.md` summarizes the strongest gains/losses and the most discriminating business fields. `documents.csv` keeps the original per-document metrics and `raw/` preserves raw responses for auditability.
 
 ## Fairness rules
 
-1. Same PDF set and reviewed truth for every model.
-2. Same common business schema for direct extractors.
-3. Same page limit and rendered contact-sheet resolution.
-4. Deterministic generation (`do_sample=False`).
-5. No JIN post-processing is applied to competitor outputs.
-6. EmbeddingGemma2 is kept in a separate zone-semantics track.
-7. Public benchmark scores from model cards are **not** mixed with these Bosch/JIN field metrics.
+1. JIN is the explicit baseline for the direct information-extraction track.
+2. Same PDF set and reviewed truth for every model.
+3. Same common business schema for direct extractors.
+4. Same page limit and rendered contact-sheet resolution.
+5. Deterministic generation (`do_sample=False`).
+6. No JIN post-processing is applied to competitor outputs.
+7. EmbeddingGemma2 is kept in a separate zone-semantics track.
+8. Public benchmark scores from model cards are **not** mixed with these Bosch/JIN field metrics.
