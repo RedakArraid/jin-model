@@ -2,6 +2,8 @@ import unittest
 
 from benchmarks.open_weight_comparison.adapters import available_model_names
 from benchmarks.open_weight_comparison.common import (
+    ground_truth_is_reviewed,
+    ground_truth_review_status,
     jin_clean_to_common,
     parse_json_object,
 )
@@ -42,6 +44,24 @@ class OpenWeightComparisonTests(unittest.TestCase):
         payload, error = parse_json_object('```json\n{"order_number":"A1"}\n```')
         self.assertIsNone(error)
         self.assertEqual(payload["order_number"], "A1")
+
+    def test_ground_truth_review_metadata_is_not_scored(self):
+        truth = {
+            "_review": {
+                "status": "reviewed",
+                "reviewer": "human",
+                "reviewed_at": "2026-10-09",
+            },
+            "order_number": "PO-001",
+        }
+        metrics = evaluate_extraction({"order_number": "PO-001"}, truth)
+        self.assertEqual(metrics["truth_field_count"], 1)
+        self.assertEqual(metrics["exact_match_count"], 1)
+        self.assertTrue(ground_truth_is_reviewed(truth))
+        self.assertEqual(ground_truth_review_status(truth), "reviewed")
+        self.assertFalse(
+            ground_truth_is_reviewed({"_review": {"status": "needs_review"}})
+        )
 
     def test_metrics_count_missing_and_hallucination(self):
         truth = {
