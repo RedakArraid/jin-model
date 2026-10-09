@@ -42,6 +42,21 @@ When reviewed ground truth is provided, the runner reports:
 
 No factual accuracy is claimed when reviewed ground truth is absent. Draft entries marked `needs_review` are processed for raw inference but excluded from accuracy metrics.
 
+## Partial annotation scopes
+
+A reviewed document may intentionally annotate only a subset of business fields. Add an explicit scope so unannotated predictions are ignored rather than counted as hallucinations:
+
+```json
+{
+  "_review": {"status": "validated"},
+  "_scope": {"paths": ["order_number", "order_date"]},
+  "order_number": "PO-001",
+  "order_date": "2026-10-09"
+}
+```
+
+Without `_scope`, the benchmark keeps the original full-document behavior. With `_scope`, exact match, token F1, missing-field and hallucination metrics are limited to the listed paths. Common date formats such as `DD/MM/YY`, `DD/MM/YYYY` and ISO `YYYY-MM-DD` are compared semantically.
+
 ## Ground truth
 
 Do not use JIN or competitor predictions as ground truth automatically. Create a review scaffold from real validation PDFs, then fill and approve it manually:
