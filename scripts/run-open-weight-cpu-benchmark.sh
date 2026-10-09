@@ -22,12 +22,12 @@ run_pair() {
     --output-dir "$output"
 }
 
-if [ ! -f "$GROUND_TRUTH" ]; then
-  echo "Ground truth not found: $GROUND_TRUTH" >&2
-  echo "Create it first with:" >&2
-  echo "python -m benchmarks.open_weight_comparison.prepare_ground_truth --pdf-dir $PDF_DIR --limit 100 --output $GROUND_TRUTH" >&2
-  exit 4
-fi
+python -m benchmarks.open_weight_comparison.preflight \
+  --pdf-dir "$PDF_DIR" \
+  --ground-truth "$GROUND_TRUTH" \
+  --models-dir "$MODELS_DIR" \
+  --models "jin,qwen3_vl_2b,qwen3_vl_4b,embeddinggemma2_zone" \
+  --output artifacts/open_weight_preflight.json
 
 run_pair qwen3_vl_2b artifacts/jin_vs_qwen3_vl_2b
 run_pair qwen3_vl_4b artifacts/jin_vs_qwen3_vl_4b
