@@ -4,11 +4,27 @@
 
 ## Benchmark open-weight d'extraction
 
-Le dépôt inclut maintenant un benchmark reproductible qui compare JIN aux modèles open-weight **Granite-Docling-258M**, **GLM-OCR**, **PaddleOCR-VL-1.6** et **Qwen3-VL-2B**, sur les mêmes PDF et la même vérité terrain. **EmbeddingGemma 2** est évalué séparément comme reranker sémantique de zones, car c'est un modèle d'embeddings et non un extracteur génératif.
+Le dépôt inclut un benchmark reproductible où **JIN est la baseline explicite**. Les extracteurs directs sont évalués sur les mêmes PDF, le même schéma métier et la même vérité terrain revue : **Granite-Docling-258M**, **GLM-OCR**, **PaddleOCR-VL-1.6**, **Qwen3-VL-2B** et **Qwen3-VL-4B**. **EmbeddingGemma 2** reste dans un track séparé de sémantique de zones et utilise les prompts retrieval `encode_query()` / `encode_document()`.
 
 ```bash
 python -m benchmarks.open_weight_comparison.runner --list-models
+make benchmark-preflight
+make benchmark-qwen2b
+make benchmark-qwen4b
+make benchmark-embedding
+# ou le panel complet :
+make benchmark-open-weight
 ```
+
+Le benchmark complet nécessite des entrées volontairement absentes du Git public : le corpus PDF privé, une vérité terrain revue, le moteur JIN complet préparé sous `model/` et les modèles locaux installés sous `data/learning/`. Le préflight bloque proprement si l'une de ces entrées manque et propose des chemins détectés localement.
+
+Pour vérifier uniquement la plomberie Qwen sans données Bosch :
+
+```bash
+make benchmark-smoke
+```
+
+Les résultats synthétiques sont explicitement marqués comme non publiables en accuracy métier.
 
 Guide et commandes : [Open-weight information-extraction benchmark](benchmarks/open_weight_comparison/README.md).
 
