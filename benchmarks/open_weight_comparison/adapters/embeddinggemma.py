@@ -35,7 +35,16 @@ class EmbeddingGemma2ZoneAdapter(BenchmarkAdapter):
         self.field_router = WeakFieldRouter(field_model)
         if not self.field_router.loaded:
             raise RuntimeError(f"JIN field router not loaded: {field_model}")
-        device_index = -1 if self.device == "cpu" else 0
+        if self.device == "cpu":
+            device_index = -1
+        elif self.device == "auto":
+            try:
+                import torch
+                device_index = 0 if torch.cuda.is_available() else -1
+            except Exception:
+                device_index = -1
+        else:
+            device_index = 0
         self.embedder = pipeline(
             "feature-extraction",
             model=self.model_id,
