@@ -8,6 +8,18 @@ GROUND_TRUTH="${GROUND_TRUTH:-benchmarks/open_weight_comparison/ground_truth.jso
 MODELS_DIR="${MODELS_DIR:-data/learning}"
 LIMIT="${LIMIT:-20}"
 DEVICE="${DEVICE:-cpu}"
+JIN_MODELS_BUNDLE="${JIN_MODELS_BUNDLE:-JIN_MODELS_AVAILABLE.zip}"
+JIN_CORE_ENGINE="${JIN_CORE_ENGINE:-}"
+
+if [ ! -f "$MODELS_DIR/jin-field-weak-router-v2-cpu.joblib" ] && [ -f "$JIN_MODELS_BUNDLE" ]; then
+  echo "Installing JIN runtime models from $JIN_MODELS_BUNDLE"
+  "$PYTHON_BIN" scripts/install_models.py --source "$JIN_MODELS_BUNDLE" --target "$MODELS_DIR"
+fi
+
+if [ ! -f model/uda/engine.py ] && [ -n "$JIN_CORE_ENGINE" ] && [ -f "$JIN_CORE_ENGINE" ]; then
+  echo "Preparing full JIN core from $JIN_CORE_ENGINE"
+  ./prepare-model.sh "$JIN_CORE_ENGINE"
+fi
 
 run_pair() {
   candidate="$1"
