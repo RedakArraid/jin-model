@@ -7,6 +7,7 @@ WORK_ROOT="${WORK_ROOT:-artifacts/uploaded_jin_qwen_benchmark}"
 CPU_THREADS="${CPU_THREADS:-4}"
 DEVICE="${DEVICE:-cpu}"
 LIMIT="${LIMIT:-100}"
+BENCH_MODELS="${BENCH_MODELS:-qwen3_vl_2b,qwen3_vl_4b}"
 PYTHON_BIN="${PYTHON_BIN:-.venv-open-weight/bin/python}"
 
 if [ -z "$BENCHMARK_INPUT_ZIP" ] || [ ! -f "$BENCHMARK_INPUT_ZIP" ]; then
@@ -57,17 +58,21 @@ if [ ! -d "$PDF_DIR" ] || [ ! -f "$GROUND_TRUTH" ]; then
   exit 4
 fi
 
-PYTHON_BIN="$PYTHON_BIN" TARGET_ROOT="data/open_weight_models" \
+PYTHON_BIN="$PYTHON_BIN" TARGET_ROOT="data/open_weight_models" MODELS="$BENCH_MODELS" \
   sh scripts/download-qwen-benchmark-models.sh
 
-export JIN_BENCH_QWEN3_VL_2B_PATH="$(pwd)/data/open_weight_models/qwen3_vl_2b"
-export JIN_BENCH_QWEN3_VL_4B_PATH="$(pwd)/data/open_weight_models/qwen3_vl_4b"
+if [ -d data/open_weight_models/qwen3_vl_2b ]; then
+  export JIN_BENCH_QWEN3_VL_2B_PATH="$(pwd)/data/open_weight_models/qwen3_vl_2b"
+fi
+if [ -d data/open_weight_models/qwen3_vl_4b ]; then
+  export JIN_BENCH_QWEN3_VL_4B_PATH="$(pwd)/data/open_weight_models/qwen3_vl_4b"
+fi
 
 "$PYTHON_BIN" -m benchmarks.open_weight_comparison.preflight \
   --pdf-dir "$PDF_DIR" \
   --ground-truth "$GROUND_TRUTH" \
   --models-dir data/learning \
-  --models jin,qwen3_vl_2b,qwen3_vl_4b \
+  --models "jin,$BENCH_MODELS" \
   --output "$WORK_ROOT/preflight.json"
 
 run_pair() {
@@ -84,16 +89,19 @@ run_pair() {
     --output-dir "$output"
 }
 
-run_pair qwen3_vl_2b
-run_pair qwen3_vl_4b
+old_ifs="$IFS"
+IFS=','
+for candidate in $BENCH_MODELS; do
+  IFS="$old_ifs"
+  run_pair "$candidate"
+  IFS=','
+done
+IFS="$old_ifs"
 
 (
   cd "$WORK_ROOT"
   rm -f JIN_QWEN_FINAL_RESULTS.zip
-  zip -qr JIN_QWEN_FINAL_RESULTS.zip \
-    preflight.json \
-    jin_vs_qwen3_vl_2b \
-    jin_vs_qwen3_vl_4b
+  zip -qr JIN_QWEN_FINAL_RESULTS.zip preflight.json jin_vs_qwen3_vl_* 2>/dev/null || true
 )
 
 echo
