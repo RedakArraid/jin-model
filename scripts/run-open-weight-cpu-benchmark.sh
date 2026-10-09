@@ -11,6 +11,20 @@ DEVICE="${DEVICE:-cpu}"
 CPU_THREADS="${CPU_THREADS:-4}"
 JIN_MODELS_BUNDLE="${JIN_MODELS_BUNDLE:-JIN_MODELS_AVAILABLE.zip}"
 JIN_CORE_ENGINE="${JIN_CORE_ENGINE:-}"
+OPEN_WEIGHT_MODEL_ROOT="${OPEN_WEIGHT_MODEL_ROOT:-data/open_weight_models}"
+AUTO_DOWNLOAD_QWEN="${AUTO_DOWNLOAD_QWEN:-1}"
+
+if [ "$AUTO_DOWNLOAD_QWEN" = "1" ]; then
+  PYTHON_BIN="$PYTHON_BIN" TARGET_ROOT="$OPEN_WEIGHT_MODEL_ROOT" \
+    sh scripts/download-qwen-benchmark-models.sh
+fi
+
+if [ -d "$OPEN_WEIGHT_MODEL_ROOT/qwen3_vl_2b" ]; then
+  export JIN_BENCH_QWEN3_VL_2B_PATH="$OPEN_WEIGHT_MODEL_ROOT/qwen3_vl_2b"
+fi
+if [ -d "$OPEN_WEIGHT_MODEL_ROOT/qwen3_vl_4b" ]; then
+  export JIN_BENCH_QWEN3_VL_4B_PATH="$OPEN_WEIGHT_MODEL_ROOT/qwen3_vl_4b"
+fi
 
 if [ ! -f "$MODELS_DIR/jin-field-weak-router-v2-cpu.joblib" ] && [ -f "$JIN_MODELS_BUNDLE" ]; then
   echo "Installing JIN runtime models from $JIN_MODELS_BUNDLE"
