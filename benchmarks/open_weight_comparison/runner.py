@@ -224,6 +224,13 @@ def _new_report(
             "unreviewed_ground_truth_documents": sum(
                 1 for document in truth.values() if not ground_truth_is_reviewed(document)
             ),
+            "synthetic_ground_truth_documents": sum(
+                1
+                for document in truth.values()
+                if isinstance(document, dict)
+                and isinstance(document.get("_review"), dict)
+                and bool(document["_review"].get("synthetic"))
+            ),
         },
         "models": {},
     }
