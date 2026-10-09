@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+PYTHON_BIN="${PYTHON_BIN:-python}"
+
 PDF_DIR="${PDF_DIR:-corpus/validation}"
 GROUND_TRUTH="${GROUND_TRUTH:-benchmarks/open_weight_comparison/ground_truth.json}"
 MODELS_DIR="${MODELS_DIR:-data/learning}"
@@ -12,7 +14,7 @@ run_pair() {
   output="$2"
 
   echo "=== JIN vs ${candidate} ==="
-  python -m benchmarks.open_weight_comparison.runner \
+  "$PYTHON_BIN" -m benchmarks.open_weight_comparison.runner \
     --pdf-dir "$PDF_DIR" \
     --ground-truth "$GROUND_TRUTH" \
     --models "jin,${candidate}" \
@@ -22,7 +24,7 @@ run_pair() {
     --output-dir "$output"
 }
 
-python -m benchmarks.open_weight_comparison.preflight \
+"$PYTHON_BIN" -m benchmarks.open_weight_comparison.preflight \
   --pdf-dir "$PDF_DIR" \
   --ground-truth "$GROUND_TRUTH" \
   --models-dir "$MODELS_DIR" \
