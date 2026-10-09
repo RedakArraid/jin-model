@@ -13,6 +13,22 @@ ADDRESS_KEYS = (
     "postal_code", "city", "cedex", "country",
 )
 PARTY_ROLES = ("buyer", "supplier", "ship_to", "bill_to")
+REVIEWED_STATUSES = {"reviewed", "approved", "validated"}
+
+
+
+
+def ground_truth_review_status(document: dict[str, Any]) -> str:
+    review = document.get("_review") if isinstance(document, dict) else None
+    if not isinstance(review, dict):
+        return "implicit_reviewed"
+    status = str(review.get("status") or "needs_review").strip().casefold()
+    return status or "needs_review"
+
+
+def ground_truth_is_reviewed(document: dict[str, Any]) -> bool:
+    status = ground_truth_review_status(document)
+    return status == "implicit_reviewed" or status in REVIEWED_STATUSES
 
 
 def empty_common_document() -> dict[str, Any]:
