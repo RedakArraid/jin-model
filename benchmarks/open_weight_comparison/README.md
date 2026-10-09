@@ -98,14 +98,15 @@ Coordinates are normalized to `[0,1000]` for each page.
 
 JIN itself uses the normal repository dependencies and model bundle.
 
-Install the optional open-weight benchmark dependencies in a separate environment:
+Install the optional open-weight benchmark dependencies in the dedicated environment:
 
 ```bash
-pip install -r runtime-requirements.txt
-pip install -r benchmarks/open_weight_comparison/requirements.txt
-
-# Transformers >= 5.19 is required for the current Qwen3-VL / EmbeddingGemma2 adapters.
+make benchmark-env
+export PYTHON_BIN=.venv-open-weight/bin/python
+$PYTHON_BIN -m benchmarks.open_weight_comparison.runner --list-models
 ```
+
+The setup script installs `runtime-requirements.txt` plus `benchmarks/open_weight_comparison/requirements.txt` without adding the heavy competitors to the normal JIN runtime. Transformers >= 5.19 is required for the current Qwen3-VL / EmbeddingGemma2 adapters.
 
 A Hugging Face account/token may be needed if a model repository requires authentication. The benchmark does not store tokens in its outputs.
 
@@ -128,7 +129,16 @@ python -m benchmarks.open_weight_comparison.preflight \\
   --output artifacts/open_weight_preflight.json
 ```
 
-A full benchmark must not start while a blocking preflight check is red. In particular, GitHub does not contain the private PDF corpus, the prepared full JIN core under `model/`, or the `JIN_MODELS_AVAILABLE.zip` runtime bundle; these inputs must be present on the execution machine.
+A full benchmark must not start while a blocking preflight check is red. In particular, GitHub does not contain the private PDF corpus, the prepared full JIN core under `model/`, or the `JIN_MODELS_AVAILABLE.zip` runtime bundle; these inputs must be present on the execution machine. The full launcher can install the model bundle automatically and can prepare the core when `JIN_CORE_ENGINE` points to the engine ZIP:
+
+```bash
+PYTHON_BIN=.venv-open-weight/bin/python \
+PDF_DIR=/path/to/validation \
+GROUND_TRUTH=/path/to/ground_truth.json \
+JIN_MODELS_BUNDLE=/path/to/JIN_MODELS_AVAILABLE.zip \
+JIN_CORE_ENGINE=/path/to/jin-core-engine.zip \
+make benchmark-open-weight
+```
 
 ## Synthetic smoke test
 
