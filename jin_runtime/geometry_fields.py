@@ -723,6 +723,78 @@ def _nearest_numeric_below_v3(rows, header_row, x, max_rows=3):
     return best
 
 
+def _adjacent_order_date_v3(rows, explicit_order_number):
+    """Promote a date printed on the same visual row as a strong order ID."""
+    if not isinstance(explicit_order_number, dict):
+        return None
+    if explicit_order_number.get("source") != "geometry_explicit_order_label_v3":
+        return None
+    source_text = str(
+        explicit_order_number.get("source_text")
+        or explicit_order_number.get("value")
+        or ""
+    ).strip()
+    compact = _norm(source_text)
+    if len(compact) < 5:
+        return None
+    upper_limit = max(1, int(len(rows) * 0.35))
+    for row in rows[:upper_limit]:
+        dates = [
+            token for token in row["tokens"]
+            if DATE_RE.fullmatch(token["text"].strip())
+        ]
+        if len(dates) != 1:
+            continue
+        row_without_date = "".join(
+            _norm(token["text"]) for token in row["tokens"]
+            if token is not dates[0]
+        )
+        compact_value = _norm(str(explicit_order_number.get("value") or ""))
+        if compact not in row_without_date and compact_value not in row_without_date:
+            continue
+        date = dates[0]
+        candidate = _field(date["text"].strip(), date["bbox"], date, 0.997)
+        candidate["source"] = "geometry_adjacent_order_date_v3"
+        candidate["source_text"] = row["text"]
+        return candidate
+    return None
+
+
+def _top_location_date_v3(rows, explicit_order_number):
+    """Recover a unique top-header date such as TOULON LE 25/03/26."""
+    if not isinstance(explicit_order_number, dict):
+        return None
+    if explicit_order_number.get("source") != "geometry_explicit_order_label_v3":
+        return None
+    upper_limit = max(1, int(len(rows) * 0.25))
+    candidates = []
+    for row in rows[:upper_limit]:
+        norms = row["norms"]
+        tokens = row["tokens"]
+        for index, token in enumerate(tokens):
+            raw = token["text"].strip()
+            if not DATE_RE.fullmatch(raw):
+                continue
+            previous = norms[index - 1] if index > 0 else ""
+            if previous != "LE":
+                continue
+            meaningful_before = [value for value in norms[: index - 1] if value]
+            if not meaningful_before or len(meaningful_before) > 4:
+                continue
+            blocked = {
+                "LIVRER", "LIVRAISON", "ECHEANCE", "DELAI", "EXPEDITION",
+            }
+            if any(value in blocked for value in meaningful_before):
+                continue
+            candidates.append((row, token))
+    if len(candidates) != 1:
+        return None
+    row, token = candidates[0]
+    candidate = _field(token["text"].strip(), token["bbox"], token, 0.997)
+    candidate["source"] = "geometry_top_location_order_date_v3"
+    candidate["source_text"] = row["text"]
+    return candidate
+
 def _anchored_fields_v3(rows):
     out = anchored_fields(rows)
 
