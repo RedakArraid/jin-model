@@ -135,6 +135,7 @@ def create_local_extractor(models_dir: Path | None = None):
     from jin_runtime.generic_document_fields import enrich_generic_document_fields
     from jin_runtime.commercial_references import enrich_commercial_references
     from jin_runtime.grouped_order_fields import enrich_grouped_order_fields
+    from jin_runtime.header_fields import reconcile_header_fields
     from jin_runtime.learning import StatisticalAddressLearner
     from jin_runtime.offline import configure_core_offline
     from jin_runtime.output_quality import audit_and_repair_output
@@ -177,6 +178,7 @@ def create_local_extractor(models_dir: Path | None = None):
                     {"component": name, "detail": "MODEL_NOT_LOADED"}
                 )
         payload = reconcile_weak_fields(payload)
+        payload = reconcile_header_fields(payload)
         payload = audit_and_repair_output(payload, repair=True)
         payload = ban_reference.enrich(payload)
         payload = enrich_customer_agency_codes(payload)
