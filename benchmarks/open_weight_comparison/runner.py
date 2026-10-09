@@ -12,6 +12,12 @@ from typing import Any
 
 from .adapters import DEFAULT_MODELS, available_model_names, create_adapter
 from .common import load_ground_truth
+from .decision import (
+    build_field_comparison_rows,
+    build_head_to_head_rows,
+    head_to_head_summary,
+    render_decision_report,
+)
 from .metrics import aggregate_model, evaluate_extraction
 from .resources import measured
 
@@ -106,7 +112,7 @@ def _attach_jin_comparison(report: dict[str, Any], summary_rows: list[dict[str, 
     """Attach explicit deltas against JIN for direct-IE models."""
     jin_report = report.get("models", {}).get(BASELINE_MODEL) or {}
     jin_summary = jin_report.get("summary") or {}
-    if not jin_summary:
+    if not jin_summary or int(jin_summary.get("completed") or 0) == 0:
         report["baseline"] = {
             "model": BASELINE_MODEL,
             "available": False,
@@ -284,6 +290,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             pass
 
     _attach_jin_comparison(report, summary_rows)
+    field_comparison_rows = build_field_comparison_rows(report, baseline_model=BASELINE_MODEL)
+    head_to_head_rows = build_head_to_head_rows(
+        report,
+        field_comparison_rows,
+        baseline_model=BASELINE_MODEL,
+    )
+    report["head_to_head"] = head_to_head_summary(head_to_head_rows)
 
     (output_dir / "comparison.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2, default=_json_default) + "\n",
@@ -291,6 +304,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     _write_csv(output_dir / "documents.csv", document_rows)
     _write_csv(output_dir / "summary.csv", summary_rows)
+    _write_csv(output_dir / "head_to_head.csv", head_to_head_rows)
+    _write_csv(output_dir / "field_comparison.csv", field_comparison_rows)
+    (output_dir / "decision_report.md").write_text(
+        render_decision_report(
+            report,
+            head_to_head_rows,
+            field_comparison_rows,
+            baseline_model=BASELINE_MODEL,
+        ),
+        encoding="utf-8",
+    )
     return report
 
 
