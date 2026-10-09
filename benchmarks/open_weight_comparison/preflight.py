@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import platform
 import shutil
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +66,88 @@ def _hf_cache_has(model_id: str) -> bool | None:
         return any(repo.repo_id == model_id for repo in scan_cache_dir().repos)
     except Exception:
         return None
+
+
+
+
+def _package_version(distribution: str) -> str | None:
+    try:
+        return version(distribution)
+    except PackageNotFoundError:
+        return None
+
+
+def _version_tuple(value: str | None) -> tuple[int, ...]:
+    if not value:
+        return ()
+    parts = []
+    for raw in value.split("."):
+        digits = "".join(char for char in raw if char.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def _dependency_checks(model_names: list[str]) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    needs_transformers = any(
+        name in {
+            "qwen3_vl_2b",
+            "qwen3_vl_4b",
+            "embeddinggemma2_zone",
+            "granite_docling_258m",
+            "glm_ocr",
+            "paddleocr_vl_1_6",
+        }
+        for name in model_names
+    )
+    if needs_transformers:
+        transformers_version = _package_version("transformers")
+        ok = (
+            transformers_version is not None
+            and _version_tuple(transformers_version) >= (5, 19)
+            and _version_tuple(transformers_version) < (6,)
+        )
+        checks.append({
+            "name": "dependency:transformers",
+            "ok": ok,
+            "severity": "error",
+            "version": transformers_version,
+            "required": ">=5.19,<6",
+            "detail": "ready" if ok else "install benchmarks/open_weight_comparison/requirements.txt",
+        })
+
+        torch_version = _package_version("torch")
+        checks.append({
+            "name": "dependency:torch",
+            "ok": torch_version is not None,
+            "severity": "error",
+            "version": torch_version,
+            "required": ">=2.5",
+            "detail": "ready" if torch_version else "torch missing",
+        })
+
+    if "embeddinggemma2_zone" in model_names:
+        st_version = _package_version("sentence-transformers")
+        checks.append({
+            "name": "dependency:sentence-transformers",
+            "ok": st_version is not None,
+            "severity": "error",
+            "version": st_version,
+            "required": ">=5.1,<6",
+            "detail": "ready" if st_version else "sentence-transformers missing",
+        })
+
+    if model_names:
+        fitz_available = importlib.util.find_spec("fitz") is not None
+        checks.append({
+            "name": "dependency:pymupdf",
+            "ok": fitz_available,
+            "severity": "error",
+            "detail": "ready" if fitz_available else "pymupdf/fitz missing",
+        })
+    return checks
 
 
 def _validate_jin_manifest(root: Path, models_dir: Path) -> list[dict[str, Any]]:
@@ -183,6 +267,7 @@ def preflight(args: argparse.Namespace) -> dict[str, Any]:
     ]
 
     checks: list[dict[str, Any]] = []
+    checks.extend(_dependency_checks(model_names))
     pdfs = sorted(
         path for path in pdf_root.rglob("*")
         if path.is_file() and path.suffix.lower() == ".pdf"
