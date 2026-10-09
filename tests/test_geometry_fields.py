@@ -446,10 +446,7 @@ class GeometryFieldTests(unittest.TestCase):
     def test_cf_header_date_adjacent_to_explicit_order_number_is_recovered(self):
         doc = fitz.open()
         page = doc.new_page(width=595, height=842)
-        page.insert_text((40, 50), "COMMANDE FOURNISSEUR")
-        page.insert_text((40, 100), "CF")
-        page.insert_text((70, 100), "001968062")
-        page.insert_text((180, 100), "9/04/26")
+        page.insert_text((40, 80), "COMMANDE N CF001968062 9/04/26")
         data = doc.tobytes()
         doc.close()
 
