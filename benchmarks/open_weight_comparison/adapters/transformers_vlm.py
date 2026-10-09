@@ -88,7 +88,7 @@ class TransformersVLMAdapter(BenchmarkAdapter):
         except TypeError:
             kwargs.pop("torch_dtype", None)
             self.model = model_cls.from_pretrained(self.model_id, **kwargs)
-        if self.device not in {"auto", "cuda"}:
+        if self.device != "auto":
             self.model = self.model.to(self.device)
         self.model.eval()
         parameter_count = sum(int(parameter.numel()) for parameter in self.model.parameters())
@@ -163,8 +163,18 @@ class TransformersVLMAdapter(BenchmarkAdapter):
                 max_new_tokens=self.max_new_tokens,
                 do_sample=False,
             )
-        generated = output[0][input_length:] if input_length else output[0]
-        text = self.processor.decode(generated, skip_special_tokens=True)
+        is_encoder_decoder = bool(
+            getattr(getattr(self.model, "config", None), "is_encoder_decoder", False)
+        )
+        generated = (
+            output[0]
+            if is_encoder_decoder
+            else output[0][input_length:] if input_length else output[0]
+        )
+        decoder = getattr(self.processor, "decode", None)
+        if decoder is None:
+            decoder = self.processor.tokenizer.decode
+        text = decoder(generated, skip_special_tokens=True)
         parsed, error = parse_json_object(text)
         return {
             "prediction": compact_common(parsed or {}),
