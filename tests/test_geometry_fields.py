@@ -443,6 +443,41 @@ class GeometryFieldTests(unittest.TestCase):
         self.assertEqual(number["value"], "CF000572686")
         self.assertIn("CF 15 4 000572686", number["source_text"])
 
+    def test_cf_header_date_adjacent_to_explicit_order_number_is_recovered(self):
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((40, 50), "COMMANDE FOURNISSEUR")
+        page.insert_text((40, 100), "CF")
+        page.insert_text((70, 100), "001968062")
+        page.insert_text((180, 100), "9/04/26")
+        data = doc.tobytes()
+        doc.close()
+
+        lines, _ = _extract_first_page_lines(data, "fra+eng+deu")
+        fields = extract_geometry_suggestions(lines)["anchored_fields"]
+        self.assertEqual(fields["order_number"]["value"], "CF001968062")
+        self.assertEqual(fields["order_date"]["value"], "9/04/26")
+        self.assertEqual(
+            fields["order_date"]["source"],
+            "geometry_adjacent_order_date_v3",
+        )
+
+    def test_top_location_date_is_recovered_with_strong_order_number(self):
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((40, 55), "TOULON LE 25/03/26")
+        page.insert_text((40, 120), "COMMANDE N STTQU244876")
+        data = doc.tobytes()
+        doc.close()
+
+        lines, _ = _extract_first_page_lines(data, "fra+eng+deu")
+        fields = extract_geometry_suggestions(lines)["anchored_fields"]
+        self.assertEqual(fields["order_number"]["value"], "STTQU244876")
+        self.assertEqual(fields["order_date"]["value"], "25/03/26")
+        self.assertEqual(
+            fields["order_date"]["source"],
+            "geometry_top_location_order_date_v3",
+        )
     def test_delivery_site_without_street_is_kept(self):
         doc = fitz.open()
         page = doc.new_page(width=595, height=842)
