@@ -1,14 +1,16 @@
 #!/bin/sh
 set -eu
 
+PYTHON_BIN="${PYTHON_BIN:-python}"
+
 MODEL="${MODEL:-qwen3_vl_2b}"
 DEVICE="${DEVICE:-cpu}"
 OUT_ROOT="${OUT_ROOT:-artifacts/open_weight_smoke}"
 
-python -m benchmarks.open_weight_comparison.make_smoke_fixture \
+"$PYTHON_BIN" -m benchmarks.open_weight_comparison.make_smoke_fixture \
   --output-dir "$OUT_ROOT/fixture"
 
-python -m benchmarks.open_weight_comparison.runner \
+"$PYTHON_BIN" -m benchmarks.open_weight_comparison.runner \
   --pdf-dir "$OUT_ROOT/fixture" \
   --ground-truth "$OUT_ROOT/fixture/ground_truth.json" \
   --models "$MODEL" \
