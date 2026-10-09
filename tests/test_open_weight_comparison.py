@@ -104,6 +104,12 @@ class OpenWeightComparisonTests(unittest.TestCase):
         self.assertEqual(metrics["hallucinated_field_count"], 0)
         self.assertEqual(metrics["scope_paths"], ["order_number", "order_date"])
 
+    def test_date_formats_compare_semantically(self):
+        truth = {"_scope": {"paths": ["order_date"]}, "order_date": "16/02/26"}
+        metrics = evaluate_extraction({"order_date": "2026-02-16"}, truth)
+        self.assertEqual(metrics["field_exact_match"], 1.0)
+        self.assertEqual(metrics["field_token_f1"], 1.0)
+
     def test_zone_metrics_match_by_geometry(self):
         truth = {
             "spatial": {
