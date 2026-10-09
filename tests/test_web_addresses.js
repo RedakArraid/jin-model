@@ -31,6 +31,32 @@ test('UI displays delivery normalized_value verbatim before value', () => {
   assert.equal(addresses[0].direct_value, true);
 });
 
+test('UI keeps the clean order delivery address ahead of the raw source field', () => {
+  const explicitValue = '1ERE AVENUE, ZAC SYNERGIE VAL DE LOIRE, 45130 MEUNG-SUR-LOIRE, France';
+  const cleanValue = 'REXEL-CENTRE LOGISTIQUE MEUNG/LOIRE\n1ERE AVENUE\nZAC SYNERGIE VAL DE LOIRE\n45130 MEUNG-SUR-LOIRE\nFRANCE';
+  const payload = {
+    key_values: [{
+      key: 'address.ship_to',
+      value: explicitValue,
+      normalized_value: explicitValue,
+      confidence: 0.9682,
+      source: { page: 1 },
+    }],
+    normalized_output: { order: { delivery_address: {
+      role: 'ship_to',
+      normalized_value: cleanValue,
+      address_confidence: 0.995,
+      evidence: { page: 1 },
+    } } },
+  };
+
+  const addresses = plain(context.uiDeliveryAddresses(payload));
+
+  assert.deepEqual(addresses[0].lines, [cleanValue]);
+  assert.equal(addresses[0].address_confidence, 0.995);
+  assert.equal(addresses[0].evidence.page, 1);
+});
+
 test('UI falls back to delivery value when normalized_value is absent', () => {
   const payload = {
     business_extractions: { purchase_order: { ship_to: {

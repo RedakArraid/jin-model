@@ -1403,12 +1403,34 @@ def _addresses_v3(rows):
         inline_site_tail = _site_tail_v3(row["tokens"])
         inline_site_norm = _norm(inline_site_tail.split()[0]) if inline_site_tail else ""
         zone = inline_site_tail if inline_site_norm in ZONE_PREFIXES else None
+        inline_zone_token = next(
+            (token for token in row["tokens"] if _norm(token["text"]) in ZONE_PREFIXES),
+            None,
+        )
+        zone_origin = (
+            (row["cy"], inline_zone_token["bbox"][0])
+            if zone and inline_zone_token else None
+        )
         business_park = (
             inline_site_tail if inline_site_norm in BUSINESS_PARK_PREFIXES else None
         )
+        inline_park_token = next(
+            (
+                token for token in row["tokens"]
+                if _norm(token["text"]) in BUSINESS_PARK_PREFIXES
+            ),
+            None,
+        )
+        business_park_origin = (
+            (row["cy"], inline_park_token["bbox"][0])
+            if business_park and inline_park_token else None
+        )
         address_complement = None
+        address_complement_origin = None
         building = None
+        building_origin = None
         extras = []
+        routing_origins = {}
         for index, norm in enumerate(row["norms"][:-1]):
             if (
                 norm in {"BP", "CS", "TSA"}
@@ -1418,6 +1440,9 @@ def _addresses_v3(rows):
                     norm.lower(),
                     f"{row['tokens'][index]['text']} {row['tokens'][index + 1]['text']}",
                 ))
+                routing_origins[norm.lower()] = (
+                    row["cy"], row["tokens"][index]["bbox"][0]
+                )
         upper = max(0, row["index"] - 2)
         lower = locality_index + 1 if locality_index is not None else row["index"] + 5
         band_low, band_high = (best[3], best[4]) if best else (max(0, x - 90), min(page_width, x + 240))
@@ -1436,15 +1461,34 @@ def _addresses_v3(rows):
             site_tail = _site_tail_v3(column)
             if site_tail and any(norm in ZONE_PREFIXES for norm in norms):
                 zone = site_tail
+                zone_token = next(
+                    token for token in column
+                    if _norm(token["text"]) in ZONE_PREFIXES
+                )
+                zone_origin = (candidate_row["cy"], zone_token["bbox"][0])
             elif site_tail and any(norm in BUSINESS_PARK_PREFIXES for norm in norms):
                 business_park = site_tail
+                park_token = next(
+                    token for token in column
+                    if _norm(token["text"]) in BUSINESS_PARK_PREFIXES
+                )
+                business_park_origin = (
+                    candidate_row["cy"], park_token["bbox"][0]
+                )
             elif text.strip().startswith("(") and text.strip().endswith(")"):
                 address_complement = text
+                address_complement_origin = (
+                    candidate_row["cy"], column[0]["bbox"][0]
+                )
             if any(norm in BUILDING_WORDS for norm in norms):
                 building = text
+                building_origin = (candidate_row["cy"], column[0]["bbox"][0])
             for index, norm in enumerate(norms[:-1]):
                 if norm in {"BP", "CS", "TSA"} and re.fullmatch(r"\d{1,6}", column[index + 1]["text"].strip()):
                     extras.append((norm.lower(), f"{column[index]['text']} {column[index + 1]['text']}"))
+                    routing_origins[norm.lower()] = (
+                        candidate_row["cy"], column[index]["bbox"][0]
+                    )
 
         components = {
             "house_number": street["house_value"],
@@ -1508,12 +1552,35 @@ def _addresses_v3(rows):
         if locality_text:
             parts.append(locality_text)
 
+        source_items = [(row["cy"], street["bbox"][0], street_text)]
+        for value, origin in (
+            (components.get("industrial_zone"), zone_origin),
+            (components.get("business_park"), business_park_origin),
+            (components.get("address_complement"), address_complement_origin),
+            (components.get("building"), building_origin),
+        ):
+            if value and origin:
+                source_items.append((origin[0], origin[1], value))
+        for key in ("bp", "cs", "tsa"):
+            if components.get(key) and routing_origins.get(key):
+                origin = routing_origins[key]
+                source_items.append((origin[0], origin[1], components[key]))
+        if locality_text and locality:
+            source_items.append((
+                locality["row"]["cy"], locality["postal"]["bbox"][0], locality_text
+            ))
+        source_lines = []
+        for _, _, value in sorted(source_items, key=lambda item: (item[0], item[1])):
+            if value and _norm(value) not in {_norm(existing) for existing in source_lines}:
+                source_lines.append(value)
+
         out.append(
             {
                 "role": role,
                 "party_name": party_name,
                 "department": department,
                 "components": components,
+                "source_lines": source_lines,
                 "formatted_address_suggestion": ", ".join(parts),
                 "confidence": 0.995 if locality else 0.97,
                 "source": "geometry_address_v3",

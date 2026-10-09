@@ -672,10 +672,16 @@ def _explicit_source_delivery_candidates(payload: dict[str, Any]) -> list[dict[s
             if components.get(key):
                 parts.append(str(components[key]))
         parts.append(f"{components['postal_code']} {components['city']}")
+        source_lines = [
+            value.strip()
+            for value in source.split("|")
+            if value.strip()
+        ] if "|" in source else []
         return {
             "role": "ship_to",
             "party_name": party,
             "components": components,
+            "source_lines": source_lines,
             "formatted_address_suggestion": ", ".join(value for value in parts if value),
             "confidence": 0.995,
             "page": 1,
@@ -910,6 +916,14 @@ def _explicit_source_delivery_candidates(payload: dict[str, Any]) -> list[dict[s
 
 def _address_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     components = copy.deepcopy(candidate.get("components") or {})
+    source_lines = [
+        str(value).strip()
+        for value in candidate.get("source_lines") or []
+        if str(value).strip()
+    ]
+    if source_lines:
+        components["raw_lines"] = source_lines
+        components["raw"] = " | ".join(source_lines)
     if components.get("street_name") and not components.get("street"):
         components["street"] = " ".join(
             str(value)

@@ -61,6 +61,10 @@ class GeometryFieldTests(unittest.TestCase):
             by_role["ship_to"]["components"]["industrial_zone"],
             "ZA DE ROGERVILLE",
         )
+        self.assertEqual(
+            by_role["ship_to"]["source_lines"],
+            ["ZA DE ROGERVILLE", "1 CHEMIN DES PLANS D'EAU", "76430 OUDALLE"],
+        )
         self.assertEqual(by_role["bill_to"]["components"]["postal_code"], "01704")
         self.assertEqual(by_role["bill_to"]["components"]["city"], "BEYNOST")
         self.assertTrue(by_role["bill_to"]["components"]["cedex"])

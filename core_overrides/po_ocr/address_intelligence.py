@@ -282,6 +282,7 @@ def parse_address(addr: Address, *, infer_country: bool = True) -> tuple[Address
     # Street: prefer line-level parsing, excluding postal/routing/complement lines.
     best_street = None
     street_source_line = None
+    street_type_is_suffix = False
     for line in lines:
         low = _fold(line)
         if any(p.search(line) for p in ROUTING_PATTERNS.values()):
@@ -316,6 +317,7 @@ def parse_address(addr: Address, *, infer_country: bool = True) -> tuple[Address
                         if name == "type": return sm2.group("type")
                         if name == "name": return sm2.group("name")
                 m = _SuffixStreetMatch()
+                street_type_is_suffix = True
         if not m:
             # ERP documents often print compound ranges as "124 126 RUE ...".
             m2 = re.match(r"^\s*(\d{1,5}[A-Za-z]?)\s+(\d{1,5}[A-Za-z]?)\s+(.+)$", candidate)
@@ -341,7 +343,9 @@ def parse_address(addr: Address, *, infer_country: bool = True) -> tuple[Address
         out.house_number = num or out.house_number
         out.street_type = stype
         out.street_name = name or out.street_name
-        out.street = " ".join(x for x in (stype, name) if x)
+        out.street = " ".join(
+            x for x in ((name, stype) if street_type_is_suffix else (stype, name)) if x
+        )
         if num:
             conf["house_number"] = 0.99
         conf["street_type"] = 0.985

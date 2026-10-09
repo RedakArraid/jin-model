@@ -1332,6 +1332,12 @@ def _align_primary_delivery_party(
         components.pop("department", None)
     delivery["components"] = components
 
+    if zone_recipient:
+        # The former "recipient" was actually a postal zone. Rebuild from
+        # the corrected components and the source sequence instead of keeping
+        # that zone artificially pinned to the first line.
+        return _refresh_delivery_label(delivery)
+
     raw_lines = list(delivery.get("formatted_lines") or [])
     if missing_recipient or zone_recipient:
         raw_lines.insert(0, ship_to_name.upper())
@@ -1382,12 +1388,21 @@ def _refresh_delivery_label(delivery: dict[str, Any]) -> dict[str, Any]:
     components = dict(delivery.get("components") or {})
     if not components:
         return delivery
+    source_formatted = delivery.get("source_formatted")
+    source_lines = (
+        [part.strip() for part in str(source_formatted).split(",") if part.strip()]
+        if source_formatted
+        else list(delivery.get("formatted_lines") or [])
+    )
     refreshed = clean_delivery_address({
         "role": delivery.get("role"),
         "party_name": components.get("recipient") or delivery.get("party_name"),
         "department": components.get("department") or delivery.get("department"),
-        "address": components,
-        "formatted_address": delivery.get("source_formatted"),
+        "address": {
+            **components,
+            "raw_lines": source_lines,
+        },
+        "formatted_address": source_formatted,
         "address_verification": delivery.get("verification") or {},
         "customer_agency_code": delivery.get("customer_agency_code"),
     })
@@ -1427,7 +1442,10 @@ def _business_address(source: dict[str, Any]) -> dict[str, Any]:
             "role": role,
             "party_name": party_name,
             "department": department,
-            "address": clean_components,
+            "address": {
+                **clean_components,
+                "raw_lines": list(clean_address.get("lines") or []),
+            },
             "formatted_address": (
                 clean_address.get("source_formatted")
                 or source.get("formatted_address")

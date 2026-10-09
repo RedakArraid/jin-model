@@ -123,6 +123,42 @@ class CleanOutputTests(unittest.TestCase):
         self.assertEqual(delivery["value"], "2 rue Diderot 06003 Nice CEDEX 1 Nice")
         self.assertFalse({"formatted", "formatted_lines", "source_formatted"} & delivery.keys())
 
+    def test_clean_output_keeps_the_proven_source_component_order(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "business_extractions": {"purchase_order": {"business_addresses": [{
+                "address_id": "delivery",
+                "role": "ship_to",
+                "party_name": "DEPOT TEST",
+                "formatted_address": (
+                    "ZAC DES PORTES, 12 RUE DU TEST, 75001 PARIS, France"
+                ),
+                "address": {
+                    "raw_lines": [
+                        "ZAC DES PORTES", "12 RUE DU TEST",
+                        "75001 PARIS", "FRANCE",
+                    ],
+                    "house_number": "12",
+                    "street": "RUE DU TEST",
+                    "industrial_zone": "ZAC DES PORTES",
+                    "postal_code": "75001",
+                    "city": "PARIS",
+                    "country": "France",
+                },
+            }]}}
+        }
+
+        enrich_delivery_addresses(payload)
+        delivery = build_clean_output(payload)["order"]["delivery_address"]
+
+        self.assertEqual(
+            delivery["normalized_value"].splitlines(),
+            [
+                "DEPOT TEST", "ZAC DES PORTES", "12 RUE DU TEST",
+                "75001 PARIS", "FRANCE",
+            ],
+        )
+
     def test_non_order_has_no_empty_order_shell(self):
         out = build_clean_output({"document": {"primary_document_type": "quotation"},
                                   "extraction_decision": {"status": "REVIEW_REQUIRED"}})
@@ -960,6 +996,10 @@ class CleanOutputTests(unittest.TestCase):
                             "Z.A. HENRI SPRIET, 1 RUE PHILIPPE LEBON, "
                             "14120 MONDEVILLE"
                         ),
+                        "source_formatted": (
+                            "1 Rue Philippe Lebon, Z.A. HENRI SPRIET, "
+                            "14120 MONDEVILLE"
+                        ),
                         "lines": [
                             "Z.A. HENRI SPRIET", "1 RUE PHILIPPE LEBON",
                             "14120 MONDEVILLE",
@@ -979,8 +1019,11 @@ class CleanOutputTests(unittest.TestCase):
         self.assertEqual(order["delivery_address"]["party_name"], "PIECES EXPRESS")
         self.assertEqual(order["delivery_address"]["components"]["recipient"], "PIECES EXPRESS")
         self.assertEqual(
-            order["delivery_address"]["normalized_value"].splitlines()[:2],
-            ["PIECES EXPRESS", "Z.A. HENRI SPRIET"],
+            order["delivery_address"]["normalized_value"].splitlines()[:3],
+            [
+                "PIECES EXPRESS", "1 RUE PHILIPPE LEBON",
+                "Z.A. HENRI SPRIET",
+            ],
         )
 
     def test_dotted_ocr_buyer_field_becomes_contact_and_header_company_wins(self):

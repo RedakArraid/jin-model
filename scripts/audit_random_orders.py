@@ -177,6 +177,17 @@ def _extract_model(payload: dict[str, Any]) -> dict[str, Any]:
     clean = payload.get("normalized_output") or {}
     clean_order = clean.get("order") or payload.get("order") or {}
     delivery = clean_order.get("delivery_address") or {}
+    delivery_value = (
+        delivery.get("normalized_value")
+        or delivery.get("formatted")
+        or delivery.get("value")
+    )
+    delivery_source_value = delivery.get("value") or delivery.get("source_formatted")
+    delivery_lines = delivery.get("formatted_lines") or (
+        [line.strip() for line in str(delivery_value).splitlines() if line.strip()]
+        if delivery_value
+        else []
+    )
     verification = delivery.get("verification") or {}
     order_date = clean_order.get("order_date") or header.get("order_date") or header.get("date") or {}
     agency = (
@@ -245,8 +256,9 @@ def _extract_model(payload: dict[str, Any]) -> dict[str, Any]:
         "ship_to_contact_name": ship_to_contact.get("name"),
         "ship_to_contact_email": ship_to_contact.get("email"),
         "ship_to_contact_phone": ship_to_contact.get("phone"),
-        "delivery_address": delivery.get("formatted"),
-        "delivery_lines": delivery.get("formatted_lines") or [],
+        "delivery_address": delivery_value,
+        "delivery_source_value": delivery_source_value,
+        "delivery_lines": delivery_lines,
         "delivery_components": delivery.get("components") or {},
         "delivery_role_score": delivery.get("role_confidence"),
         "delivery_address_score": delivery.get("address_confidence"),

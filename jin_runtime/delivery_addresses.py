@@ -76,6 +76,30 @@ def _source_street(address: dict[str, Any]) -> str | None:
     explicit = _text(address.get("street"))
     street_type = _text(address.get("street_type"))
     street_name = _text(address.get("street_name"))
+    if street_name and street_type and re.fullmatch(
+        r"(?:\d+(?:ER|E|ERE|EME)|PREMIER|PREMIERE)",
+        _norm(street_name),
+    ):
+        target_type = STREET_TYPE_ALIASES.get(_norm(street_type), _norm(street_type))
+        target_name = _norm(street_name)
+        source_candidates = [
+            address.get("line1"),
+            *(address.get("raw_lines") or []),
+            explicit,
+        ]
+        for candidate in source_candidates:
+            candidate_text = _text(candidate)
+            tokens = _norm(candidate_text).split()
+            if (
+                candidate_text
+                and len(tokens) >= 2
+                and " ".join(tokens[:-1]) == target_name
+                and STREET_TYPE_ALIASES.get(tokens[-1], tokens[-1]) == target_type
+            ):
+                # ``1ERE AVENUE`` is a valid source form. Rebuilding it from
+                # the structured type/name pair as ``AVENUE 1ERE`` changes
+                # the address and is therefore forbidden.
+                return _clean_street_ocr(candidate_text)
     if street_name and street_type and not _norm(street_name).startswith(_norm(street_type) + " "):
         return f"{street_type} {street_name}"
     return street_name or explicit
@@ -174,6 +198,85 @@ def _append(lines: list[str], value: Any) -> None:
     lines.append(text)
 
 
+def _source_ordered_postal_lines(
+    lines: list[str],
+    address: dict[str, Any],
+    source_formatted: Any = None,
+) -> list[str]:
+    """Keep clean components in their printed order when every line is traceable."""
+    raw_lines = [
+        _text(value) for value in (address.get("raw_lines") or []) if _text(value)
+    ]
+    if not raw_lines and address.get("raw"):
+        raw_lines = [
+            _text(value) for value in str(address["raw"]).split("|") if _text(value)
+        ]
+    if not raw_lines and source_formatted:
+        raw_lines = [
+            _text(value) for value in str(source_formatted).split(",") if _text(value)
+        ]
+    normalized_source = [_norm(value) for value in raw_lines]
+    source_positions: list[tuple[int, int] | None] = []
+    for line in lines:
+        normalized_line = _norm(line)
+        try:
+            source_positions.append((normalized_source.index(normalized_line), 0))
+            continue
+        except ValueError:
+            pass
+        # One visual row can contain several structured components, for
+        # example ``CS 63009 - ZI LE CAPISCOL`` or ``Z.A.E. ROUTE ...``.
+        # Preserve their horizontal order without re-emitting the joined row.
+        contained = next(
+            (
+                (index, source_line.index(normalized_line))
+                for index, source_line in enumerate(normalized_source)
+                if len(normalized_line.replace(" ", "")) >= 3
+                and normalized_line in source_line
+            ),
+            None,
+        )
+        if contained is None:
+            # Table columns can cut the end of a postal component onto the
+            # next visual row.  In ``ZI LA PALUDS - 430 AV DE LA`` the clean
+            # street is completed later as ``430 AV DE LA PALUDS``.  A long
+            # token prefix is enough to recover the position on the combined
+            # source row and therefore keep ZI before the street.
+            tokens = normalized_line.split()
+            contained = next(
+                (
+                    (index, source_line.index(prefix))
+                    for index, source_line in enumerate(normalized_source)
+                    for size in range(len(tokens) - 1, 2, -1)
+                    for prefix in (" ".join(tokens[:size]),)
+                    if len(prefix.replace(" ", "")) >= 8
+                    and prefix in source_line
+                ),
+                None,
+            )
+        source_positions.append(contained)
+    matched_positions = [position for position in source_positions if position is not None]
+    if len(set(matched_positions)) < 2:
+        return lines
+    unmatched_indexes = [
+        index for index, position in enumerate(source_positions) if position is None
+    ]
+    if unmatched_indexes and unmatched_indexes != list(
+        range(unmatched_indexes[0], len(lines))
+    ):
+        # Partial matching inside the address can mix adjacent PDF columns.
+        # A trailing inferred country is safe; an internal gap is not.
+        return lines
+    matched_lines = [
+        line for _, _, line in sorted(
+            (source_positions[index], index, line)
+            for index, line in enumerate(lines)
+            if source_positions[index] is not None
+        )
+    ]
+    return matched_lines + [lines[index] for index in unmatched_indexes]
+
+
 def _clean_address_complement(value: Any) -> str | None:
     text = _text(value)
     if not text:
@@ -186,6 +289,7 @@ def _clean_address_complement(value: Any) -> str | None:
     if re.search(
         r"\b(?:contact|correspondant|a l'attention|en express|merci de|code d.?ouverture|"
         r"code porte|code cadenas|digicode|horaires?|reception|adherent|portable|conditions? liv|"
+        r"lieu de livraison|date de livraison|"
         r"livraison de preference|"
         r"livrer de preference|livraison le matin|pas de livraison|instruction de livraison)\b",
         folded,
@@ -241,6 +345,15 @@ def _clean_site_component(value: Any) -> str | None:
     text = re.sub(r"\b[Zz][|1]\s*", "ZI ", text)
     text = re.split(r"\s*\|\s*(?:U|QTE|QUANTIT[ÉE])\b", text, maxsplit=1, flags=re.I)[0]
     text = re.sub(r"\s*\|\s*(?:FR|FRANCE)\s*$", "", text, flags=re.I)
+    # Payment methods can occupy a distant column on the same visual row as a
+    # delivery zone.  They are sometimes concatenated by plain-text extraction
+    # even though geometry exposes a wide gap (``ZI ... BP 195 VIREMENT``).
+    text = re.sub(
+        r"\s+(?:VIREMENTS?|CHEQUE|PAIEMENT|REGLEMENT)\s*$",
+        "",
+        text,
+        flags=re.I,
+    )
     text = re.sub(r"\s*[-/]+\s*$", "", text)
     return _text(text)
 
@@ -276,7 +389,18 @@ def _deduplicate_concatenated_company_site(value: Any) -> str | None:
     if not repeated:
         return text
     first, second = text[:repeated.start()].strip(), text[repeated.end():].strip()
-    if _company_site_norm(first) == _company_site_norm(second):
+    first_key = _company_site_norm(first)
+    second_key = _company_site_norm(second)
+    first_without_code = " ".join(
+        token for token in first_key.split() if not token.isdigit()
+    )
+    second_without_code = " ".join(
+        token for token in second_key.split() if not token.isdigit()
+    )
+    if first_key == second_key or (
+        first_without_code
+        and first_without_code == second_without_code
+    ):
         return first
     return text
 
@@ -403,6 +527,12 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
         )
         if site_match:
             embedded_site = _clean_site_component(site_match.group("site"))
+            company_prefix = raw_party_name[:site_match.start()].strip(" ,;|:-")
+            if company_prefix and any(char.isalpha() for char in company_prefix):
+                # Geometry can concatenate the last address line to the
+                # recipient.  The site is already published as its own postal
+                # component, so keeping it in the company name duplicates it.
+                raw_party_name = company_prefix
         # An adjacent VAT row may be fused between the recipient and its site.
         # Preserve the proven company prefix and recover the postal zone
         # separately instead of publishing the complete noisy OCR sentence.
@@ -449,6 +579,16 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
         recipient = None
 
     department = _clean_delivery_party(block.get("department"))
+    delivery_point = re.match(
+        r"^(?P<recipient>.+?)\s+(?P<department>POINT\s+DE\s+LIVRAISON\s+\d+)\s*$",
+        recipient or "",
+        flags=re.I,
+    )
+    if delivery_point and not department:
+        # Geometry may join two consecutive recipient lines.  Keep the actual
+        # company and the numbered delivery point as separate label lines.
+        recipient = _text(delivery_point.group("recipient"))
+        department = _text(delivery_point.group("department"))
     if department and re.match(r"^2\s*\.\s*A\s*\.\s*D\b", department, flags=re.I):
         department = _clean_site_component(department)
     if recipient and department and _norm(recipient).startswith("CHEZ "):
@@ -500,6 +640,20 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
         "country_code": country_code,
     }
     components = {key: value for key, value in components.items() if value not in (None, "", False)}
+    routing_components = (
+        ("BP", components.get("po_box")),
+        ("TSA", components.get("tsa")),
+        ("CS", components.get("cs")),
+    )
+    for key in ("industrial_zone", "business_park", "lieu_dit"):
+        if components.get(key):
+            cleaned_site = _without_duplicate_routing(
+                components[key], routing_components
+            )
+            if cleaned_site:
+                components[key] = cleaned_site
+            else:
+                components.pop(key, None)
     excluded_components: list[dict[str, str]] = []
     if agency_code:
         removed = False
@@ -603,6 +757,15 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
             components["address_complement"] = cleaned_complement
         else:
             components.pop("address_complement", None)
+        if components.get("address_complement") and components.get("industrial_zone"):
+            zone_key = _site_norm(components["industrial_zone"])
+            complement_key = _site_norm(components["address_complement"])
+            trailing_instruction = complement_key[len(zone_key):].strip() \
+                if complement_key.startswith(zone_key) else ""
+            if trailing_instruction in {
+                "VIREMENT", "CHEQUE", "PAGE", "REGLEMENT", "PAIEMENT",
+            }:
+                components.pop("address_complement", None)
     if (
         components.get("department")
         and components.get("city")
@@ -674,29 +837,35 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
 
     lines: list[str] = []
     _append(lines, components.get("recipient"))
-    for key in ("department", "building", "residence"):
+    _append(lines, components.get("department"))
+    postal_lines: list[str] = []
+    for key in ("building", "residence"):
         value = components.get(key)
         # A parser may expose ``DYNAMIKUM - BATIMENT B5`` as the department
         # and ``BATIMENT B5`` as a structured building component.  Both are
         # useful in JSON, but printing the contained fragment twice makes the
         # postal label noisy.
         if key in {"building", "residence"} and value and any(
-            _norm(value) in _norm(existing) for existing in lines
+            _norm(value) in _norm(existing) for existing in lines + postal_lines
         ):
             continue
-        _append(lines, value)
-    _append(lines, source_street_line)
+        _append(postal_lines, value)
+    _append(postal_lines, source_street_line)
     for key in ("industrial_zone", "business_park", "lieu_dit", "address_complement"):
-        _append(lines, components.get(key))
+        _append(postal_lines, components.get(key))
     for key in ("po_box", "tsa", "cs", "postal_routing_code"):
-        _append(lines, components.get(key))
+        _append(postal_lines, components.get(key))
     locality = " ".join(item for item in (postal_code, city) if item)
     if cedex:
         locality = f"{locality} CEDEX".strip()
         if cedex_number:
             locality = f"{locality} {cedex_number}"
-    _append(lines, locality)
-    _append(lines, components.get("country"))
+    _append(postal_lines, locality)
+    _append(postal_lines, components.get("country"))
+    for line in _source_ordered_postal_lines(
+        postal_lines, address, block.get("formatted_address")
+    ):
+        _append(lines, line)
 
     # Upper-case label lines are deterministic and comply with common French
     # postal-label practice; structured components retain their readable form.

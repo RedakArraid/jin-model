@@ -26,6 +26,6 @@ test('commercial metadata, tax provenance and both JSON exports are visible', ()
   }
   assert.match(html, /Valeur imprimée ou calculée à partir d’un SIREN\/SIRET valide/);
   assert.match(html, /Les ports, taxes et contributions sont exclus de cette liste/);
-  assert.match(html, /styles\.css\?v=5\.13\.0/);
-  assert.match(html, /app\.js\?v=5\.13\.0/);
+  assert.match(html, /styles\.css\?v=5\.13\.3/);
+  assert.match(html, /app\.js\?v=5\.13\.3/);
 });

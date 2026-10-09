@@ -19,6 +19,82 @@ class DeliveryAddressTests(unittest.TestCase):
         self.assertEqual(clean["one_line"].count("NICE"), 1)
         self.assertEqual(clean["source_formatted"], block["formatted_address"])
 
+    def test_ordinal_before_street_type_keeps_the_printed_order(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "REXEL-CENTRE LOGISTIQUE MEUNG/LOIRE",
+            "address": {
+                "raw": (
+                    "1ERE AVENUE | ZAC SYNERGIE VAL DE LOIRE | "
+                    "45130 MEUNG-SUR-LOIRE | FRANCE"
+                ),
+                "raw_lines": [
+                    "1ERE AVENUE", "ZAC SYNERGIE VAL DE LOIRE",
+                    "45130 MEUNG-SUR-LOIRE", "FRANCE",
+                ],
+                "line1": "1ERE AVENUE",
+                "street_type": "AVENUE",
+                "street_name": "1ERE",
+                "street": "AVENUE 1ERE",
+                "industrial_zone": "ZAC SYNERGIE VAL DE LOIRE",
+                "postal_code": "45130",
+                "city": "MEUNG-SUR-LOIRE",
+                "country": "France",
+            },
+        })
+
+        self.assertEqual(clean["components"]["street"], "1ERE AVENUE")
+        self.assertEqual(clean["lines"][1], "1ERE AVENUE")
+        self.assertNotIn("AVENUE 1ERE", clean["one_line"])
+
+    def test_clean_postal_components_follow_reliable_source_line_order(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "DEPOT TEST",
+            "address": {
+                "raw_lines": [
+                    "ZAC DES PORTES", "12 RUE DU TEST",
+                    "75001 PARIS", "FRANCE",
+                ],
+                "house_number": "12",
+                "street": "RUE DU TEST",
+                "industrial_zone": "ZAC DES PORTES",
+                "postal_code": "75001",
+                "city": "PARIS",
+                "country": "France",
+            },
+        })
+
+        self.assertEqual(
+            clean["lines"],
+            [
+                "DEPOT TEST", "ZAC DES PORTES", "12 RUE DU TEST",
+                "75001 PARIS", "FRANCE",
+            ],
+        )
+
+    def test_components_on_same_source_row_keep_their_horizontal_order(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "PROLIANS BA BEZIERS",
+            "address": {
+                "raw_lines": [
+                    "PROLIANS BA BEZIERS", "24 RUE MARTIN LUTHER KING",
+                    "CS 63009 - ZI LE CAPISCOL VIREMENT", "34536 BEZIERS",
+                ],
+                "house_number": "24", "street": "RUE MARTIN LUTHER KING",
+                "industrial_zone": "ZI LE CAPISCOL", "cs": "CS 63009",
+                "address_complement": "CS 63009 - ZI LE CAPISCOL VIREMENT",
+                "postal_code": "34536", "city": "BEZIERS", "country": "France",
+            },
+        })
+
+        self.assertEqual(clean["lines"], [
+            "PROLIANS BA BEZIERS", "24 RUE MARTIN LUTHER KING", "CS 63009",
+            "ZI LE CAPISCOL", "34536 BEZIERS", "FRANCE",
+        ])
+        self.assertNotIn("address_complement", clean["components"])
+
     def test_building_already_contained_in_department_is_not_printed_twice(self):
         clean = clean_delivery_address({
             "role": "ship_to",
@@ -42,6 +118,12 @@ class DeliveryAddressTests(unittest.TestCase):
             "party_name": "AU FORUM DU BATIMENT",
             "department": "ZI LA PALUDS",
             "address": {
+                "raw_lines": [
+                    "AU FORUM DU BATIMENT",
+                    "ZI LA PALUDS - 430 AV DE LA",
+                    "430 AV DE LA",
+                    "13400 AUBAGNE",
+                ],
                 "building": "AU FORUM DU BATIMENT",
                 "house_number": "430",
                 "street": "AV DE LA PALUDS",
@@ -55,6 +137,10 @@ class DeliveryAddressTests(unittest.TestCase):
         self.assertNotIn("building", clean["components"])
         self.assertEqual(clean["one_line"].count("430 AV DE LA PALUDS"), 1)
         self.assertNotIn("ZI LA PALUDS - 430 AV DE LA", clean["one_line"])
+        self.assertEqual(clean["lines"], [
+            "AU FORUM DU BATIMENT", "ZI LA PALUDS", "430 AV DE LA PALUDS",
+            "13400 AUBAGNE", "FRANCE",
+        ])
 
     def test_longer_recipient_replaces_redundant_short_site_name(self):
         clean = clean_delivery_address({
@@ -222,6 +308,34 @@ class DeliveryAddressTests(unittest.TestCase):
         self.assertEqual(clean["one_line"].count("ZI LE CAPISCOL"), 1)
         self.assertNotIn("VIREMENT", clean["one_line"])
 
+    def test_payment_column_and_po_box_are_removed_from_zone(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "PROLIANS MR CHATEAUROUX POINT DE LIVRAISON 03",
+            "address": {
+                "house_number": "21", "street": "ALLEE DE LA GARENNE",
+                "industrial_zone": "ZI LE BUXERIOUX - BP 195 VIREMENT",
+                "po_box": "BP 195", "postal_code": "36004",
+                "city": "CHATEAUROUX", "country": "France",
+            },
+        })
+
+        self.assertEqual(clean["components"]["recipient"], "PROLIANS MR CHATEAUROUX")
+        self.assertEqual(clean["components"]["department"], "POINT DE LIVRAISON 03")
+        self.assertEqual(clean["components"]["industrial_zone"], "ZI LE BUXERIOUX")
+        self.assertEqual(clean["components"]["po_box"], "BP 195")
+        self.assertNotIn("VIREMENT", clean["one_line"])
+        self.assertEqual(clean["one_line"].count("BP 195"), 1)
+        self.assertEqual(clean["lines"], [
+            "PROLIANS MR CHATEAUROUX",
+            "POINT DE LIVRAISON 03",
+            "21 ALLEE DE LA GARENNE",
+            "ZI LE BUXERIOUX",
+            "BP 195",
+            "36004 CHATEAUROUX",
+            "FRANCE",
+        ])
+
     def test_vat_and_zone_fused_into_recipient_are_separated(self):
         clean = clean_delivery_address({
             "role": "ship_to",
@@ -334,6 +448,35 @@ class DeliveryAddressTests(unittest.TestCase):
         })
         self.assertEqual(clean["components"]["industrial_zone"], "ZI DUMES")
         self.assertNotIn("QTE", clean["one_line"])
+
+    def test_zone_suffix_is_not_duplicated_inside_delivery_recipient(self):
+        prolians = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "PROLIANS DP SIX FOURS CPS Z.A DES PLAYES",
+            "address": {
+                "street": "RUE DES ENTREPRISES",
+                "industrial_zone": "Z.A DES PLAYES",
+                "postal_code": "83140",
+                "city": "SIX FOURS",
+                "country": "France",
+            },
+        })
+        self.assertEqual(prolians["components"]["recipient"], "PROLIANS DP SIX FOURS CPS")
+        self.assertEqual(prolians["one_line"].count("Z.A DES PLAYES"), 1)
+
+        bossu = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "BOSSU CUVELIER 070 BOSSU CUVELIER Z.I. DE LESQUIN",
+            "address": {
+                "street": "RUE DE BERZIN",
+                "industrial_zone": "Z.I. DE LESQUIN",
+                "postal_code": "59813",
+                "city": "LESQUIN",
+                "country": "France",
+            },
+        })
+        self.assertEqual(bossu["components"]["recipient"], "BOSSU CUVELIER 070")
+        self.assertEqual(bossu["one_line"].count("Z.I. DE LESQUIN"), 1)
 
     def test_zone_ocr_in_complement_is_cleaned_too(self):
         clean = clean_delivery_address({
@@ -474,6 +617,37 @@ class DeliveryAddressTests(unittest.TestCase):
             clean["one_line"],
             "PPC, 28 BOULEVARD LENINE, 76800 ST ETIENNE DU ROUVRAY, FRANCE",
         )
+
+    def test_delivery_date_table_heading_is_not_an_address_complement(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "THERM'ENERGIE - LEZENNES",
+            "address": {
+                "house_number": "24",
+                "street": "RUE PAUL LANGEVIN",
+                "industrial_zone": "Z.I DU HELLU",
+                "address_complement": "Référence Date de livraison souhaitée",
+                "postal_code": "59260",
+                "city": "LEZENNES",
+                "country": "France",
+                "raw_lines": [
+                    "THERM'ENERGIE - LEZENNES",
+                    "24 RUE PAUL LANGEVIN",
+                    "Z.I DU HELLU",
+                    "Référence Date de livraison souhaitée",
+                    "59260 LEZENNES",
+                    "FRANCE",
+                ],
+            },
+        })
+
+        self.assertNotIn("address_complement", clean["components"])
+        self.assertNotIn("DATE DE LIVRAISON", clean["one_line"])
+        self.assertEqual(clean["lines"][1:4], [
+            "24 RUE PAUL LANGEVIN",
+            "Z.I DU HELLU",
+            "59260 LEZENNES",
+        ])
 
     def test_shipping_instruction_is_not_exposed_as_delivery_department(self):
         clean = clean_delivery_address({

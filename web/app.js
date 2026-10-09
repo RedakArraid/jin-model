@@ -204,10 +204,10 @@ function uiDeliveryAddresses(result) {
       customer_agency_code: source.customer_agency_code || order.ship_to?.customer_agency_code || '',
       lines: [directDisplay],
       role_confidence: source.role_confidence,
-      address_confidence: source.address_confidence,
+      address_confidence: source.address_confidence ?? source.confidence,
       clean_status: source.normalization?.status || source.clean_address?.status,
       verification: source.verification || source.ban_verification || {},
-      evidence: source.evidence || {},
+      evidence: source.evidence || source.source || {},
       selected: true,
       direct_value: true,
     }];

@@ -41,3 +41,15 @@ def test_address_parser_excludes_decorative_adherent_line() -> None:
         "14120 MONDEVILLE",
     ]))
     assert address.address_complement is None
+
+
+def test_address_parser_preserves_an_ordinal_before_the_street_type() -> None:
+    address, _, _ = parse_address(Address(raw_lines=[
+        "1ERE AVENUE",
+        "ZAC SYNERGIE VAL DE LOIRE",
+        "45130 MEUNG-SUR-LOIRE",
+        "FRANCE",
+    ]))
+    assert address.street_type == "AVENUE"
+    assert address.street_name == "1ERE"
+    assert address.street == "1ERE AVENUE"

@@ -715,6 +715,29 @@ class WeakFieldReconciliationTests(unittest.TestCase):
         self.assertEqual(selected[0]["address"]["industrial_zone"], "ZI CHAMP ROMAN")
         self.assertEqual(selected[0]["address"]["postal_code"], "38400")
 
+    def test_multiline_delivery_block_keeps_zone_before_street_source_order(self):
+        payload = base_payload()
+        payload["raw_text"] = (
+            "A livrer a l'adresse ci-dessous :\n"
+            "CHAUFFAGE SANITAIRE\n"
+            "Z.I. St Serge\n"
+            "9 Rue Vaucanson\n"
+            "49100 ANGERS\n"
+            "FRANCE\n"
+            "Reglement : VIR 30 jours"
+        )
+
+        out = reconcile_weak_fields(payload)
+        selected = [
+            item for item in out["business_extractions"]["purchase_order"]["business_addresses"]
+            if item["role"] == "ship_to"
+        ]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["address"]["raw_lines"], [
+            "CHAUFFAGE SANITAIRE", "Z.I. St Serge", "9 Rue Vaucanson",
+            "49100 ANGERS",
+        ])
+
     def test_delivery_block_is_recovered_from_public_page_text(self):
         payload = base_payload()
         payload["pages"] = [{
