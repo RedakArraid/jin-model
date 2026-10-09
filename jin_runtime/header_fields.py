@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime
 import re
 import unicodedata
 from typing import Any
@@ -238,6 +239,83 @@ def _repeated_inline_order_candidate(
     return None
 
 
+
+def _normalize_explicit_date(value: str) -> str | None:
+    raw = " ".join(str(value or "").split())
+    for fmt in (
+        "%d/%m/%Y",
+        "%d/%m/%y",
+        "%d.%m.%Y",
+        "%d.%m.%y",
+        "%d-%m-%Y",
+        "%d-%m-%y",
+    ):
+        try:
+            return datetime.strptime(raw, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _explicit_order_du_date(
+    payload: dict[str, Any],
+    current_number: Any,
+) -> tuple[str, str, int] | None:
+    number = " ".join(str(current_number or "").split())
+    if not number:
+        return None
+    number_pattern = re.escape(number).replace(r"\ ", r"\s+")
+    date_pattern = r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"
+    pattern = re.compile(
+        rf"COMMANDE\s*N\s*[°ºO]?\s*[:#.-]?\s*{number_pattern}"
+        rf"[^\n]{{0,80}}(?:\r?\n\s*)?DU\s+{date_pattern}",
+        flags=re.I,
+    )
+    sources: list[tuple[int, str]] = []
+    raw = str(payload.get("raw_text") or "")
+    if raw:
+        sources.append((1, raw))
+    for index, page in enumerate(payload.get("pages") or [], 1):
+        if isinstance(page, dict) and str(page.get("text") or "").strip():
+            sources.append(
+                (int(page.get("page") or index), str(page.get("text")))
+            )
+    for page, source in sources:
+        match = pattern.search(source)
+        if not match:
+            continue
+        raw_date = match.group(1)
+        normalized = _normalize_explicit_date(raw_date)
+        if normalized:
+            return normalized, match.group(0).strip(), page
+    return None
+
+
+def _date_field(
+    value: str,
+    raw_value: str,
+    source_text: str,
+    page: int,
+    method: str,
+) -> dict[str, Any]:
+    return {
+        "value": value,
+        "raw_value": raw_value,
+        "normalized_value": value,
+        "ocr_confidence": 0.995,
+        "semantic_confidence": 0.999,
+        "validation_confidence": 1.0,
+        "final_confidence": 0.997,
+        "validation_status": "SOURCE_SUPPORTED",
+        "warnings": [],
+        "evidence": {
+            "page": page,
+            "source_text": source_text,
+            "extraction_method": method,
+        },
+    }
+
+
 def reconcile_header_fields(payload: dict[str, Any]) -> dict[str, Any]:
     """Prefer explicit header cells over a neighboring reference or clipped OCR cell."""
     po = _find_purchase_order(payload)
@@ -248,6 +326,40 @@ def reconcile_header_fields(payload: dict[str, Any]) -> dict[str, Any]:
         header = po
     current = header.get("number") or header.get("order_number")
     current_value = current.get("value") if isinstance(current, dict) else current
+    explicit_date = _explicit_order_du_date(payload, current_value)
+    if explicit_date:
+        normalized_date, source_text, date_page = explicit_date
+        current_date = header.get("order_date")
+        current_date_value = (
+            current_date.get("value")
+            if isinstance(current_date, dict)
+            else current_date
+        )
+        if str(current_date_value or "") != normalized_date:
+            if current_date not in (None, ""):
+                header["order_date_original"] = copy.deepcopy(current_date)
+                if isinstance(header["order_date_original"], dict):
+                    header["order_date_original"]["disqualified_reason"] = (
+                        "EXPLICIT_ORDER_DU_DATE_OVERRIDES_OTHER_DATE"
+                    )
+            raw_match = re.search(
+                r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+                source_text,
+            )
+            raw_date = raw_match.group(1) if raw_match else normalized_date
+            header["order_date"] = _date_field(
+                normalized_date,
+                raw_date,
+                source_text,
+                date_page,
+                "explicit_order_du_date_v63",
+            )
+            payload.setdefault("reconciliation_actions", []).append({
+                "action": "promote_order_date",
+                "from": current_date_value,
+                "to": normalized_date,
+                "reason": "explicit_commande_number_du_date",
+            })
     suffix_candidate = _explicit_suffix_candidate(payload, current_value)
     if suffix_candidate:
         number, source_text, page, repeated = suffix_candidate
