@@ -2,6 +2,16 @@
 
 `RedakArraid/jin-model` contient la couche Docker/UI autour du moteur JIN empaqueté et une nouvelle couche d'apprentissage statistique versionnée.
 
+## Benchmark open-weight d'extraction
+
+Le dépôt inclut maintenant un benchmark reproductible qui compare JIN aux modèles open-weight **Granite-Docling-258M**, **GLM-OCR**, **PaddleOCR-VL-1.6** et **Qwen3-VL-2B**, sur les mêmes PDF et la même vérité terrain. **EmbeddingGemma 2** est évalué séparément comme reranker sémantique de zones, car c'est un modèle d'embeddings et non un extracteur génératif.
+
+```bash
+python -m benchmarks.open_weight_comparison.runner --list-models
+```
+
+Guide et commandes : [Open-weight information-extraction benchmark](benchmarks/open_weight_comparison/README.md).
+
 ## Démarrage immédiat
 
 Le dépôt supporte maintenant un mode **standalone CPU** qui n'a pas besoin du package `uda` pour utiliser les routeurs document/PDF/champs/zones/cellules.
