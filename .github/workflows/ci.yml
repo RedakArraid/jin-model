@@ -32,7 +32,7 @@ jobs:
       - name: Test local viewer display, coordinates and price precision
         run: node --test tests/test_web_addresses.js tests/test_web_bbox.js tests/test_web_prices.js
       - name: Validate shell scripts
-        run: sh -n prepare-model.sh scripts/materialize-lfs-corpus.sh scripts/install-models.sh scripts/run-standalone.sh scripts/run-open-weight-cpu-benchmark.sh scripts/run-open-weight-smoke.sh scripts/setup-open-weight-benchmark-env.sh scripts/download-qwen-benchmark-models.sh
+        run: sh -n prepare-model.sh scripts/materialize-lfs-corpus.sh scripts/install-models.sh scripts/run-standalone.sh scripts/run-open-weight-cpu-benchmark.sh scripts/run-open-weight-smoke.sh scripts/setup-open-weight-benchmark-env.sh scripts/download-qwen-benchmark-models.sh scripts/run-uploaded-jin-qwen-benchmark.sh
       - name: Validate benchmark Makefile targets
         run: |
           make -n benchmark-models
