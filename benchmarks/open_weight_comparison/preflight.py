@@ -150,6 +150,59 @@ def _dependency_checks(model_names: list[str]) -> list[dict[str, Any]]:
     return checks
 
 
+
+
+def _discover_private_inputs(root: Path) -> dict[str, list[str]]:
+    parent = root.parent
+    pdf_candidates: list[str] = []
+    for candidate in [
+        root / "corpus" / "validation",
+        parent / "corpus" / "validation",
+        *sorted(parent.glob("ARCHIVES_CDES_ESKER_PDF_*")),
+    ]:
+        try:
+            if candidate.is_dir() and any(
+                path.is_file() and path.suffix.lower() == ".pdf"
+                for path in candidate.rglob("*")
+            ):
+                value = str(candidate.resolve())
+                if value not in pdf_candidates:
+                    pdf_candidates.append(value)
+        except Exception:
+            continue
+
+    bundle_candidates = []
+    for candidate in [
+        root / "JIN_MODELS_AVAILABLE.zip",
+        parent / "JIN_MODELS_AVAILABLE.zip",
+    ]:
+        if candidate.is_file():
+            bundle_candidates.append(str(candidate.resolve()))
+
+    core_candidates = []
+    for candidate in [
+        root / "model" / "uda" / "engine.py",
+        parent / "model" / "uda" / "engine.py",
+    ]:
+        if candidate.is_file():
+            core_candidates.append(str(candidate.resolve()))
+
+    model_dir_candidates = []
+    for candidate in [
+        root / "data" / "learning",
+        parent / "data" / "learning",
+    ]:
+        if candidate.is_dir():
+            model_dir_candidates.append(str(candidate.resolve()))
+
+    return {
+        "pdf_dirs": pdf_candidates[:20],
+        "jin_model_bundles": bundle_candidates,
+        "jin_core_engines": core_candidates,
+        "jin_model_dirs": model_dir_candidates,
+    }
+
+
 def _validate_jin_manifest(root: Path, models_dir: Path) -> list[dict[str, Any]]:
     manifest_path = root / "models" / "JIN_MODELS_MANIFEST.json"
     checks: list[dict[str, Any]] = []
@@ -392,6 +445,7 @@ def preflight(args: argparse.Namespace) -> dict[str, Any]:
         "warning_count": len(warnings),
         "blocking": blocking,
         "warnings": warnings,
+        "discovery_hints": _discover_private_inputs(root),
     }
 
 
