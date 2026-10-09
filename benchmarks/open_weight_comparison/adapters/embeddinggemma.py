@@ -27,61 +27,86 @@ class EmbeddingGemma2ZoneAdapter(BenchmarkAdapter):
     model_id = "google/embeddinggemma-2"
 
     def load(self) -> None:
-        from transformers import pipeline
+        from sentence_transformers import SentenceTransformer
 
         if self.models_dir is None:
-            raise RuntimeError("EmbeddingGemma2 zone benchmark needs --models-dir for the JIN field router.")
+            raise RuntimeError(
+                "EmbeddingGemma2 zone benchmark needs --models-dir for the JIN field router."
+            )
         field_model = self.models_dir / "jin-field-weak-router-v2-cpu.joblib"
         self.field_router = WeakFieldRouter(field_model)
         if not self.field_router.loaded:
             raise RuntimeError(f"JIN field router not loaded: {field_model}")
-        if self.device == "cpu":
-            device_index = -1
-        elif self.device == "auto":
+
+        if self.device == "auto":
             try:
                 import torch
-                device_index = 0 if torch.cuda.is_available() else -1
+
+                sentence_device = "cuda" if torch.cuda.is_available() else "cpu"
             except Exception:
-                device_index = -1
+                sentence_device = "cpu"
         else:
-            device_index = 0
-        self.embedder = pipeline(
-            "feature-extraction",
-            model=self.model_id,
-            device=device_index,
-            trust_remote_code=True,
+            sentence_device = self.device
+
+        self.embedder = SentenceTransformer(
+            self.model_id,
+            device=sentence_device,
         )
         self.query_embeddings = {
-            label: self._embed(text)
+            label: self._encode_query(text)
             for label, text in ZONE_QUERIES.items()
         }
+
         cache_bytes = None
         try:
             from huggingface_hub import scan_cache_dir
+
             for repo in scan_cache_dir().repos:
                 if repo.repo_id == self.model_id:
                     cache_bytes = int(repo.size_on_disk)
                     break
         except Exception:
             cache_bytes = None
+
         self.load_metadata = {
             "license": "apache-2.0",
             "mode": "hybrid_zone_text_reranker",
+            "embedding_backend": "sentence_transformers",
+            "query_prompt": "SearchQuery/query prompt via encode_query",
+            "document_prompt": "Document prompt via encode_document",
+            "embedding_dimension": 768,
             "hf_cache_bytes": cache_bytes,
-            "qualification": "Not a standalone extractor: EmbeddingGemma2 reranks JIN-localized zone text.",
+            "qualification": (
+                "Not a standalone extractor: EmbeddingGemma2 reranks "
+                "JIN-localized zone text."
+            ),
         }
 
-    def _embed(self, text: str) -> np.ndarray:
-        value = self.embedder(text)
-        if isinstance(value, dict):
-            value = next(iter(value.values()))
-        if isinstance(value, list) and value and isinstance(value[0], dict):
-            value = next(iter(value[0].values()))
+    @staticmethod
+    def _normalize(value: Any) -> np.ndarray:
         array = np.asarray(value, dtype=np.float32)
         while array.ndim > 1:
-            array = array.mean(axis=0)
+            array = array[0]
         norm = float(np.linalg.norm(array)) or 1.0
         return array / norm
+
+    def _encode_query(self, text: str) -> np.ndarray:
+        return self._normalize(
+            self.embedder.encode_query(
+                text,
+                convert_to_numpy=True,
+                show_progress_bar=False,
+            )
+        )
+
+    def _encode_document(self, text: str) -> np.ndarray:
+        return self._normalize(
+            self.embedder.encode_document(
+                text,
+                convert_to_numpy=True,
+                show_progress_bar=False,
+            )
+        )
 
     def extract(self, pdf_path: Path) -> dict[str, Any]:
         result = self.field_router.predict_bytes(pdf_path.read_bytes())
@@ -94,7 +119,7 @@ class EmbeddingGemma2ZoneAdapter(BenchmarkAdapter):
             ]
             if not texts:
                 continue
-            embedding = self._embed(" | ".join(texts))
+            embedding = self._encode_document(" | ".join(texts))
             scores = {
                 label: float(np.dot(embedding, query))
                 for label, query in self.query_embeddings.items()
