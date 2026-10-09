@@ -1,0 +1,52 @@
+name: open-weight-benchmark-ci
+
+on:
+  push:
+    paths:
+      - "benchmarks/open_weight_comparison/**"
+      - "scripts/*open-weight*.sh"
+      - "scripts/download-qwen-benchmark-models.sh"
+      - "scripts/run-uploaded-jin-qwen-benchmark.sh"
+      - "tests/test_open_weight_comparison.py"
+      - ".github/workflows/open-weight-benchmark-ci.yml"
+  pull_request:
+    paths:
+      - "benchmarks/open_weight_comparison/**"
+      - "scripts/*open-weight*.sh"
+      - "scripts/download-qwen-benchmark-models.sh"
+      - "scripts/run-uploaded-jin-qwen-benchmark.sh"
+      - "tests/test_open_weight_comparison.py"
+      - ".github/workflows/open-weight-benchmark-ci.yml"
+
+jobs:
+  benchmark-tooling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install lightweight test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r runtime-requirements.txt
+      - name: Compile benchmark sources
+        run: python -m compileall -q benchmarks/open_weight_comparison
+      - name: Run benchmark unit tests
+        run: python -m unittest tests.test_open_weight_comparison -v
+      - name: Validate benchmark shell launchers
+        run: |
+          sh -n scripts/run-open-weight-cpu-benchmark.sh
+          sh -n scripts/run-open-weight-smoke.sh
+          sh -n scripts/setup-open-weight-benchmark-env.sh
+          sh -n scripts/download-qwen-benchmark-models.sh
+          sh -n scripts/run-uploaded-jin-qwen-benchmark.sh
+      - name: Validate benchmark Make targets
+        run: |
+          make -n benchmark-models
+          make -n benchmark-preflight
+          make -n benchmark-smoke
+          make -n benchmark-qwen2b
+          make -n benchmark-qwen4b
+          make -n benchmark-embedding
+          make -n benchmark-open-weight
