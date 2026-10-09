@@ -176,13 +176,28 @@ class WeakFieldReconciliationTests(unittest.TestCase):
             for action in out["weak_field_reconciliation"]["actions"]
         ))
 
-    def test_date_without_same_explicit_order_table_is_not_promoted(self):
+    def test_date_paired_with_strong_explicit_order_label_is_promoted(self):
         payload = base_payload()
         payload["weak_field_suggestions"]["anchored_fields"].update({
             "order_number": order_candidate("FBC22025806"),
             "order_date": {
                 "value": "04/02/26", "confidence": 0.995,
                 "source": "geometry_anchor_v2", "page": 1,
+            },
+        })
+
+        out = reconcile_weak_fields(payload)
+        header = out["business_extractions"]["purchase_order"]["purchase_order"]
+
+        self.assertEqual(header["order_date"]["value"], "2026-02-04")
+
+    def test_date_on_different_page_from_order_label_is_not_promoted(self):
+        payload = base_payload()
+        payload["weak_field_suggestions"]["anchored_fields"].update({
+            "order_number": order_candidate("FBC22025806"),
+            "order_date": {
+                "value": "04/02/26", "confidence": 0.995,
+                "source": "geometry_anchor_v2", "page": 2,
             },
         })
 
