@@ -77,16 +77,19 @@ class TransformersVLMAdapter(BenchmarkAdapter):
             self.model_id,
             trust_remote_code=trust_remote_code,
         )
-        dtype = torch.float32 if self.device == "cpu" else torch.bfloat16
-        kwargs: dict[str, Any] = {"trust_remote_code": trust_remote_code}
+        requested_dtype: Any = "auto" if self.device == "cpu" else torch.bfloat16
+        kwargs: dict[str, Any] = {
+            "trust_remote_code": trust_remote_code,
+            "dtype": requested_dtype,
+        }
         if self.device == "auto":
             kwargs["device_map"] = "auto"
-        else:
-            kwargs["torch_dtype"] = dtype
         try:
             self.model = model_cls.from_pretrained(self.model_id, **kwargs)
         except TypeError:
-            kwargs.pop("torch_dtype", None)
+            # Compatibility with older Transformers releases that still use torch_dtype.
+            requested_dtype = kwargs.pop("dtype", requested_dtype)
+            kwargs["torch_dtype"] = requested_dtype
             self.model = model_cls.from_pretrained(self.model_id, **kwargs)
         if self.device != "auto":
             self.model = self.model.to(self.device)
@@ -109,6 +112,7 @@ class TransformersVLMAdapter(BenchmarkAdapter):
             "license": self.spec["license"],
             "loader": loader,
             "max_new_tokens": self.max_new_tokens,
+            "requested_dtype": str(requested_dtype),
             "parameter_count": parameter_count,
             "parameter_memory_bytes": parameter_bytes,
             "hf_cache_bytes": cache_bytes,
