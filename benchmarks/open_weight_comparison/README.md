@@ -83,6 +83,8 @@ Install the optional open-weight benchmark dependencies in a separate environmen
 ```bash
 pip install -r runtime-requirements.txt
 pip install -r benchmarks/open_weight_comparison/requirements.txt
+
+# Transformers >= 5.19 is required for the current Qwen3-VL / EmbeddingGemma2 adapters.
 ```
 
 A Hugging Face account/token may be needed if a model repository requires authentication. The benchmark does not store tokens in its outputs.
@@ -120,7 +122,7 @@ python -m benchmarks.open_weight_comparison.runner \
   --output-dir artifacts/open_weight_comparison
 ```
 
-For a CPU-only machine, run the VLMs one at a time. `qwen3_vl_4b` is intentionally not part of the default list because it is much heavier.
+For a CPU-only machine, the runner automatically executes each requested model in an isolated subprocess before merging the results, so peak RSS is not inherited from the previous model. `qwen3_vl_4b` is intentionally not part of the default list because it is much heavier.
 
 Recommended JIN-vs-Qwen CPU campaigns:
 
