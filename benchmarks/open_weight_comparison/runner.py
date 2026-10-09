@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from .adapters import DEFAULT_MODELS, available_model_names, create_adapter
-from .common import load_ground_truth
+from .common import (
+    ground_truth_is_reviewed,
+    ground_truth_review_status,
+    load_ground_truth,
+)
 from .decision import (
     build_field_comparison_rows,
     build_head_to_head_rows,
@@ -88,6 +92,7 @@ def _document_csv_row(row: dict[str, Any]) -> dict[str, Any]:
         "filename": row.get("filename"),
         "error": row.get("error"),
         "json_valid": row.get("json_valid"),
+        "ground_truth_review_status": row.get("ground_truth_review_status"),
         "field_exact_match": metrics.get("field_exact_match"),
         "field_token_f1": metrics.get("field_token_f1"),
         "missing_field_rate": metrics.get("missing_field_rate"),
@@ -213,6 +218,12 @@ def _new_report(
             "pdf_root": str(pdf_root),
             "documents": [path.relative_to(pdf_root).as_posix() for path in pdfs],
             "ground_truth_documents": len(truth),
+            "reviewed_ground_truth_documents": sum(
+                1 for document in truth.values() if ground_truth_is_reviewed(document)
+            ),
+            "unreviewed_ground_truth_documents": sum(
+                1 for document in truth.values() if not ground_truth_is_reviewed(document)
+            ),
         },
         "models": {},
     }
@@ -446,10 +457,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 prediction = result.get("prediction") or {}
                 row["prediction"] = prediction
                 if relative in truth:
-                    row["metrics"] = evaluate_extraction(
-                        prediction,
-                        truth[relative],
+                    truth_document = truth[relative]
+                    row["ground_truth_review_status"] = ground_truth_review_status(
+                        truth_document
                     )
+                    if ground_truth_is_reviewed(truth_document):
+                        row["metrics"] = evaluate_extraction(
+                            prediction,
+                            truth_document,
+                        )
                 raw_path = raw_dir / (pdf_path.stem + ".json")
                 raw_path.write_text(
                     json.dumps(
