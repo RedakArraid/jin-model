@@ -178,7 +178,7 @@ python -m benchmarks.open_weight_comparison.runner \
   --output-dir artifacts/open_weight_comparison
 ```
 
-For a CPU-only machine, the runner automatically executes each requested model in an isolated subprocess before merging the results, so peak RSS is not inherited from the previous model. `qwen3_vl_4b` is intentionally not part of the default list because it is much heavier. The full three-campaign panel is available as `sh scripts/run-open-weight-cpu-benchmark.sh`; it runs the preflight first and stops immediately if the private corpus, reviewed truth, JIN core or local models are missing.
+For a CPU-only machine, the runner automatically executes each requested model in an isolated subprocess before merging the results, so peak RSS is not inherited from the previous model. The Makefile panel uses a fixed `CPU_THREADS=4` budget by default so latency comparisons use the same CPU parallelism; override it explicitly when needed (for example `CPU_THREADS=8 make benchmark-open-weight`). `qwen3_vl_4b` is intentionally not part of the default list because it is much heavier. The full three-campaign panel is available as `sh scripts/run-open-weight-cpu-benchmark.sh`; it runs the preflight first and stops immediately if the private corpus, reviewed truth, JIN core or local models are missing.
 
 Recommended JIN-vs-Qwen CPU campaigns:
 
