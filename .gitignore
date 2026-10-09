@@ -13,3 +13,6 @@ __pycache__/
 # Local evaluation corpus and editor-specific permissions.
 ARCHIVES_CDES_ESKER_PDF_*/
 .claude/
+
+# Isolated optional open-weight benchmark environment.
+.venv-open-weight/
