@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from decimal import Decimal
 from typing import Any
+import re
 
 from .common import normalize_identifier, normalize_number, normalize_text
 
@@ -13,6 +14,29 @@ NUMERIC_PATH_SUFFIXES = {
 IDENTIFIER_PATH_SUFFIXES = {
     "order_number", "customer_reference", "supplier_reference", "postal_code", "reference"
 }
+
+def _evaluation_scope(truth: dict[str, Any]) -> list[str]:
+    scope = truth.get("_scope") if isinstance(truth, dict) else None
+    if isinstance(scope, dict):
+        scope = scope.get("paths")
+    if not isinstance(scope, list):
+        return []
+    return [str(item).strip() for item in scope if str(item).strip()]
+
+
+def _path_in_scope(path: str, scope: list[str]) -> bool:
+    if not scope:
+        return True
+    for rule in scope:
+        if rule == path:
+            return True
+        if rule.endswith(".*") and path.startswith(rule[:-1]):
+            return True
+        if "[*]" in rule:
+            pattern = re.escape(rule).replace(r"\[\*\]", r"\[\d+\]")
+            if re.fullmatch(pattern, path):
+                return True
+    return False
 
 
 def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:
@@ -134,8 +158,17 @@ def _zone_metrics(prediction: dict[str, Any], truth: dict[str, Any]) -> dict[str
 def evaluate_extraction(prediction: dict[str, Any], truth: dict[str, Any]) -> dict[str, Any]:
     expected = _flatten(truth)
     actual = _flatten(prediction)
-    truth_paths = [path for path, value in expected.items() if value not in (None, "")]
-    prediction_paths = [path for path, value in actual.items() if value not in (None, "")]
+    scope = _evaluation_scope(truth)
+    truth_paths = [
+        path
+        for path, value in expected.items()
+        if value not in (None, "") and _path_in_scope(path, scope)
+    ]
+    prediction_paths = [
+        path
+        for path, value in actual.items()
+        if value not in (None, "") and _path_in_scope(path, scope)
+    ]
 
     matches = 0
     f1_values = []
@@ -176,7 +209,13 @@ def evaluate_extraction(prediction: dict[str, Any], truth: dict[str, Any]) -> di
         for item in actual_lines
         if isinstance(item, dict) and item.get("reference")
     }
-    if expected_refs:
+    lines_in_scope = (not scope) or any(
+        rule == "lines" or rule.startswith("lines[")
+        for rule in scope
+    )
+    if not lines_in_scope:
+        line_recall = None
+    elif expected_refs:
         line_recall = len(expected_refs & actual_refs) / len(expected_refs)
     else:
         line_recall = min(len(actual_lines), len(expected_lines)) / len(expected_lines) if expected_lines else None
@@ -191,6 +230,7 @@ def evaluate_extraction(prediction: dict[str, Any], truth: dict[str, Any]) -> di
 
     zone_metrics = _zone_metrics(prediction, truth)
     return {
+        "scope_paths": scope,
         "truth_field_count": len(truth_paths),
         "predicted_field_count": len(prediction_paths),
         "exact_match_count": matches,
