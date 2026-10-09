@@ -25,6 +25,31 @@ JIN_MODEL_FILES = (
     "jin-field-weak-router-v2-cpu.joblib",
 )
 
+LOCAL_MODEL_ENV = {
+    "qwen3_vl_2b": "JIN_BENCH_QWEN3_VL_2B_PATH",
+    "qwen3_vl_4b": "JIN_BENCH_QWEN3_VL_4B_PATH",
+}
+
+LOCAL_MODEL_WEIGHT_SHA256 = {
+    "qwen3_vl_2b": {
+        "model.safetensors": "7de1838c87a5349b016c26a1c3f7d2bc400a3d485f95ef39a7059ffd734977a0",
+    },
+    "qwen3_vl_4b": {
+        "model-00001-of-00002.safetensors": "30a01a0556622645a3cce87b655bbbbbc1f170c196099f1b666c93202c3339a9",
+        "model-00002-of-00002.safetensors": "046296a2a387efb43b0c997d5833c789604d168834f6e0d3064bf7bb13d002a6",
+    },
+}
+
+LOCAL_MODEL_REQUIRED_METADATA = (
+    "config.json",
+    "generation_config.json",
+    "preprocessor_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+)
+
+
 MODEL_RAM_GUIDANCE_GB = {
     "jin": 4.0,
     "qwen3_vl_2b": 12.0,
@@ -220,6 +245,43 @@ def _discover_private_inputs(root: Path) -> dict[str, list[str]]:
     }
 
 
+def _validate_local_open_weight_model(model_name: str, path: Path) -> dict[str, Any]:
+    expected_weights = LOCAL_MODEL_WEIGHT_SHA256.get(model_name) or {}
+    missing = [
+        name for name in (*LOCAL_MODEL_REQUIRED_METADATA, *expected_weights)
+        if not (path / name).is_file()
+    ]
+    check: dict[str, Any] = {
+        "name": f"local_model:{model_name}",
+        "path": str(path),
+        "ok": not missing,
+        "severity": "error",
+        "missing_files": missing,
+        "weight_sha256": {},
+    }
+    if missing:
+        check["detail"] = "missing required model files"
+        return check
+
+    bad_hashes = []
+    for filename, expected_sha in expected_weights.items():
+        actual_sha = _sha256(path / filename)
+        check["weight_sha256"][filename] = actual_sha
+        if actual_sha != expected_sha:
+            bad_hashes.append({
+                "file": filename,
+                "expected": expected_sha,
+                "actual": actual_sha,
+            })
+    if bad_hashes:
+        check["ok"] = False
+        check["bad_hashes"] = bad_hashes
+        check["detail"] = "official weight SHA-256 verification failed"
+    else:
+        check["detail"] = "official model files verified"
+    return check
+
+
 def _validate_jin_manifest(root: Path, models_dir: Path) -> list[dict[str, Any]]:
     manifest_path = root / "models" / "JIN_MODELS_MANIFEST.json"
     checks: list[dict[str, Any]] = []
@@ -391,6 +453,14 @@ def preflight(args: argparse.Namespace) -> dict[str, Any]:
         model_id = hf_models.get(model_name)
         if not model_id:
             continue
+
+        override_env = LOCAL_MODEL_ENV.get(model_name)
+        override_value = os.getenv(override_env, "").strip() if override_env else ""
+        if override_value:
+            local_path = Path(override_value).expanduser().resolve()
+            checks.append(_validate_local_open_weight_model(model_name, local_path))
+            continue
+
         cached = _hf_cache_has(model_id)
         ok = cached is True or (cached is not True and not offline)
         checks.append({
