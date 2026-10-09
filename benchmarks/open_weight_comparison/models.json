@@ -1,0 +1,9 @@
+{
+  "jin": {"track":"direct_ie","model_id":"RedakArraid/jin-model","license":"project-specific","runtime":"CPU","notes":"Current repository runtime and packaged core."},
+  "embeddinggemma2_zone": {"track":"zone_semantics","model_id":"google/embeddinggemma-2","license":"apache-2.0","parameters":"740M","source":"https://huggingface.co/google/embeddinggemma-2","notes":"Hybrid zone-text reranker. Not included in direct extraction leaderboard."},
+  "granite_docling_258m": {"track":"direct_ie","model_id":"ibm-granite/granite-docling-258M","license":"apache-2.0","parameters":"258M","source":"https://huggingface.co/ibm-granite/granite-docling-258M"},
+  "glm_ocr": {"track":"direct_ie","model_id":"zai-org/GLM-OCR","license":"mit","parameters":"0.9B","source":"https://huggingface.co/zai-org/GLM-OCR"},
+  "paddleocr_vl_1_6": {"track":"direct_ie","model_id":"PaddlePaddle/PaddleOCR-VL-1.6","license":"apache-2.0","parameters":"~1B","source":"https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6"},
+  "qwen3_vl_2b": {"track":"direct_ie","model_id":"Qwen/Qwen3-VL-2B-Instruct","license":"apache-2.0","parameters":"2B","source":"https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct"},
+  "qwen3_vl_4b": {"track":"direct_ie","model_id":"Qwen/Qwen3-VL-4B-Instruct","license":"apache-2.0","parameters":"4B","source":"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct","notes":"Optional heavier upper-bound model; not in default list."}
+}
