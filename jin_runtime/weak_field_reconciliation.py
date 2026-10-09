@@ -1013,14 +1013,17 @@ def _core_ship_is_suspicious(block: dict[str, Any]) -> bool:
     )
 
 
-def _ensure_order_container(payload: dict[str, Any], candidate: dict[str, Any], actions: list[dict[str, Any]]) -> dict[str, Any]:
+def _ensure_order_container(
+    payload: dict[str, Any],
+    candidate: dict[str, Any],
+    actions: list[dict[str, Any]],
+    date_candidate: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     po = _find_purchase_order(payload)
     if po:
         return po
     document = payload.get("document") or {}
     current_type = document.get("primary_document_type") or document.get("detected_document_type")
-    if current_type in ORDER_TYPES:
-        return {}
     page_classifications = document.get("page_classifications") or []
     first = next((item for item in page_classifications if item.get("page") == 1), {})
     first_signals = " ".join(str(item) for item in first.get("signals") or [])
@@ -1028,10 +1031,20 @@ def _ensure_order_container(payload: dict[str, Any], candidate: dict[str, Any], 
         marker in _norm(first_signals)
         for marker in ("COMMANDE", "ITEM LIKE IDENTIFIERS", "N COMMANDE")
     )
+    paired_metadata = bool(
+        isinstance(date_candidate, dict)
+        and date_candidate.get("value")
+        and float(date_candidate.get("confidence") or 0.0) >= 0.99
+        and int(date_candidate.get("page") or 0) == int(candidate.get("page") or 0)
+    )
     if (
         int(candidate.get("page") or 0) != 1
         or float(candidate.get("confidence") or 0.0) < 0.99
-        or order_signal_count < 2
+        or (
+            order_signal_count < 2
+            and not paired_metadata
+            and current_type not in ORDER_TYPES
+        )
     ):
         return {}
 
@@ -1072,7 +1085,12 @@ def reconcile_weak_fields(payload: dict[str, Any]) -> dict[str, Any]:
 
     po = _find_purchase_order(payload)
     if not po and isinstance(order_candidate, dict) and _plausible_order_candidate(order_candidate):
-        po = _ensure_order_container(payload, order_candidate, actions)
+        po = _ensure_order_container(
+            payload,
+            order_candidate,
+            actions,
+            date_candidate,
+        )
 
     if (
         po
@@ -1169,7 +1187,7 @@ def reconcile_weak_fields(payload: dict[str, Any]) -> dict[str, Any]:
         po
         and isinstance(order_candidate, dict)
         and str(order_candidate.get("source") or "").startswith(
-            "geometry_explicit_order_metadata_"
+            "geometry_explicit_order_"
         )
         and isinstance(date_candidate, dict)
         and date_candidate.get("value")
