@@ -11,7 +11,7 @@ import fitz
 import joblib
 import numpy as np
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageEnhance
 from sklearn.feature_extraction.text import HashingVectorizer
 from scipy.special import expit
 
@@ -106,6 +106,9 @@ def _extract_first_page_lines(
             image = Image.frombytes(
                 "L", [pixmap.width, pixmap.height], pixmap.samples
             )
+            # Moderate contrast improves small scan header dates while keeping
+            # the same OCR engine, resolution and geometry coordinate system.
+            image = ImageEnhance.Contrast(image).enhance(1.5)
             data_ocr = pytesseract.image_to_data(
                 image,
                 lang=ocr_languages,
