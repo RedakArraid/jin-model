@@ -274,6 +274,17 @@ def render_decision_report(
         "EmbeddingGemma2 remains a separate zone-semantics track and is not ranked against JIN field extraction.",
         "",
     ]
+    synthetic_count = int(
+        (report.get("selection") or {}).get("synthetic_ground_truth_documents") or 0
+    )
+    if synthetic_count:
+        lines.extend([
+            "> **Synthetic smoke data detected.** "
+            f"{synthetic_count} ground-truth document(s) are marked synthetic. "
+            "These results validate the benchmark plumbing only and must not be published "
+            "as Bosch/JIN business accuracy.",
+            "",
+        ])
 
     if not baseline.get("available"):
         lines.extend([
