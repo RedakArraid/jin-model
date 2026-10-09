@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from decimal import Decimal
+from datetime import datetime
 from typing import Any
 import re
 
@@ -14,6 +15,7 @@ NUMERIC_PATH_SUFFIXES = {
 IDENTIFIER_PATH_SUFFIXES = {
     "order_number", "customer_reference", "supplier_reference", "postal_code", "reference"
 }
+DATE_PATH_SUFFIXES = {"order_date"}
 
 def _evaluation_scope(truth: dict[str, Any]) -> list[str]:
     scope = truth.get("_scope") if isinstance(truth, dict) else None
@@ -56,6 +58,22 @@ def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:
     return out
 
 
+
+def _normalize_date(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    raw = re.sub(r"\s+", " ", raw)
+    for fmt in (
+        "%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y", "%d-%m-%Y",
+        "%d/%m/%y", "%d.%m.%y", "%d-%m-%y",
+    ):
+        try:
+            return datetime.strptime(raw, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
 def _token_f1(expected: Any, actual: Any) -> float:
     left = normalize_text(expected).split()
     right = normalize_text(actual).split()
@@ -75,6 +93,10 @@ def _same_value(path: str, expected: Any, actual: Any) -> bool:
     if suffix in NUMERIC_PATH_SUFFIXES:
         left = normalize_number(expected)
         right = normalize_number(actual)
+        return left is not None and right is not None and left == right
+    if suffix in DATE_PATH_SUFFIXES:
+        left = _normalize_date(expected)
+        right = _normalize_date(actual)
         return left is not None and right is not None and left == right
     if suffix in IDENTIFIER_PATH_SUFFIXES:
         return normalize_identifier(expected) == normalize_identifier(actual)
@@ -181,7 +203,11 @@ def evaluate_extraction(prediction: dict[str, Any], truth: dict[str, Any]) -> di
         match = present and _same_value(path, wanted, found)
         matches += int(match)
         missing += int(not present)
-        f1 = _token_f1(wanted, found) if present else 0.0
+        suffix = path.rsplit(".", 1)[-1]
+        if present and suffix in DATE_PATH_SUFFIXES:
+            f1 = 1.0 if _same_value(path, wanted, found) else 0.0
+        else:
+            f1 = _token_f1(wanted, found) if present else 0.0
         f1_values.append(f1)
         details.append({
             "path": path,
