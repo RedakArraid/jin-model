@@ -91,7 +91,7 @@ def learning_status() -> dict[str, Any]:
     return status
 
 
-@app.get("/schemas/jin-clean-extraction-v1")
+@app.get("/schemas/jin-clean-extraction-v2")
 def get_clean_output_schema() -> dict[str, Any]:
     return clean_output_schema()
 

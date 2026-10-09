@@ -300,7 +300,7 @@ def _same_party(left: Any, right: Any) -> bool:
 
 def clean_output_schema() -> dict[str, Any]:
     """Return the published JSON Schema for the clean extraction contract."""
-    path = Path(__file__).with_name("schemas") / "jin-clean-extraction-v1.schema.json"
+    path = Path(__file__).with_name("schemas") / "jin-clean-extraction-v2.schema.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -1345,7 +1345,36 @@ def _align_primary_delivery_party(
             clean_lines.append(line)
     delivery["formatted_lines"] = clean_lines
     delivery["formatted"] = ", ".join(clean_lines)
-    return delivery
+    return _sync_address_value_contract(delivery)
+
+
+def _sync_address_value_contract(address: dict[str, Any]) -> dict[str, Any]:
+    """Expose the normalized and source labels through the stable field contract.
+
+    ``formatted*`` remains available for backwards compatibility.  New
+    consumers can consistently read ``normalized_value`` first, then ``value``
+    when no normalized label exists.
+    """
+    lines = [str(line) for line in address.get("formatted_lines") or [] if str(line).strip()]
+    normalized_value = "\n".join(lines) if lines else address.get("formatted")
+    source_value = address.get("source_formatted") or normalized_value
+    if normalized_value:
+        address["normalized_value"] = normalized_value
+    else:
+        address.pop("normalized_value", None)
+    if source_value:
+        address["value"] = source_value
+    else:
+        address.pop("value", None)
+    return address
+
+
+def _publish_address_value_contract(address: dict[str, Any]) -> dict[str, Any]:
+    """Remove legacy presentation aliases from the public clean contract."""
+    _sync_address_value_contract(address)
+    for key in ("formatted", "formatted_lines", "source_formatted"):
+        address.pop(key, None)
+    return address
 
 
 def _refresh_delivery_label(delivery: dict[str, Any]) -> dict[str, Any]:
@@ -1370,7 +1399,7 @@ def _refresh_delivery_label(delivery: dict[str, Any]) -> dict[str, Any]:
     delivery["components"] = refreshed.get("components") or components
     delivery["formatted_lines"] = refreshed.get("lines") or delivery.get("formatted_lines")
     delivery["formatted"] = refreshed.get("one_line") or delivery.get("formatted")
-    return delivery
+    return _sync_address_value_contract(delivery)
 
 
 def _business_address(source: dict[str, Any]) -> dict[str, Any]:
@@ -1412,7 +1441,7 @@ def _business_address(source: dict[str, Any]) -> dict[str, Any]:
     # One physical address may legitimately be reused for several business
     # roles.  Keep each JSON object independently addressable for consumers.
     clean_id = f"{source_id}:{role}" if source_id and role else source_id
-    return _compact({
+    address = _compact({
         "id": clean_id, "role": role,
         "role_label": source.get("role_label"),
         "party_name": _clean_party_name(
@@ -1444,6 +1473,7 @@ def _business_address(source: dict[str, Any]) -> dict[str, Any]:
         "verification": verification,
         "evidence": _evidence(source), "warnings": source.get("warnings"),
     })
+    return _sync_address_value_contract(address)
 
 
 def _line(source: dict[str, Any]) -> dict[str, Any]:
@@ -1504,6 +1534,8 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
     primary_delivery = delivery_addresses[0] if len(delivery_addresses) == 1 else None
     parties = _reconcile_clean_parties(parties, primary_delivery, payload)
     primary_delivery = _align_primary_delivery_party(primary_delivery, parties)
+    for address in addresses:
+        _publish_address_value_contract(address)
     order_fields = {
         "customer_order_number": _field(
             _first_field(header.get("number"), header.get("order_number"))
@@ -1538,7 +1570,7 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
         ),
     }
     clean = {
-        "schema_version": "jin-clean-extraction-v1",
+        "schema_version": "jin-clean-extraction-v2",
         "generator": {"runtime": __version__, "core": document.get("engine_version")},
         "document": {
             "filename": source_filename or document.get("filename"),

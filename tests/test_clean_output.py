@@ -31,7 +31,7 @@ class CleanOutputTests(unittest.TestCase):
             "extraction_decision": {"status": "CHECKS_PASSED", "requires_review": False},
         }
         out = build_clean_output(payload, source_filename="commande.pdf")
-        self.assertEqual(out["schema_version"], "jin-clean-extraction-v1")
+        self.assertEqual(out["schema_version"], "jin-clean-extraction-v2")
         self.assertEqual(out["document"]["filename"], "commande.pdf")
         self.assertEqual(out["order"]["customer_order_number"]["value"], "CF0012")
         self.assertEqual(out["order"]["customer_reference"]["value"], "CLIENT-7")
@@ -119,8 +119,9 @@ class CleanOutputTests(unittest.TestCase):
         }
         enrich_delivery_addresses(payload)
         delivery = build_clean_output(payload)["order"]["delivery_address"]
-        self.assertEqual(delivery["formatted_lines"], ["2 RUE DIDEROT", "06003 NICE CEDEX 1"])
-        self.assertEqual(delivery["source_formatted"], "2 rue Diderot 06003 Nice CEDEX 1 Nice")
+        self.assertEqual(delivery["normalized_value"], "2 RUE DIDEROT\n06003 NICE CEDEX 1")
+        self.assertEqual(delivery["value"], "2 rue Diderot 06003 Nice CEDEX 1 Nice")
+        self.assertFalse({"formatted", "formatted_lines", "source_formatted"} & delivery.keys())
 
     def test_non_order_has_no_empty_order_shell(self):
         out = build_clean_output({"document": {"primary_document_type": "quotation"},
@@ -319,7 +320,7 @@ class CleanOutputTests(unittest.TestCase):
         delivery = build_clean_output(payload)["order"]["delivery_address"]
         self.assertEqual(delivery["party_name"], "Salon Chauffage Sanitaire")
         self.assertEqual(
-            delivery["formatted_lines"],
+            delivery["normalized_value"].splitlines(),
             ["SALON CHAUFFAGE SANITAIRE", "68110 ILLZACH"],
         )
         self.assertNotIn("department", delivery["components"])
@@ -514,7 +515,7 @@ class CleanOutputTests(unittest.TestCase):
         delivery = build_clean_output(payload)["order"]["delivery_address"]
         self.assertEqual(delivery["party_name"], "Agence ALFORTVILLE CEDEO")
         self.assertEqual(
-            delivery["formatted_lines"],
+            delivery["normalized_value"].splitlines(),
             [
                 "AGENCE ALFORTVILLE CEDEO",
                 "19 QUAI DE LA REVOLUTION",
@@ -978,7 +979,7 @@ class CleanOutputTests(unittest.TestCase):
         self.assertEqual(order["delivery_address"]["party_name"], "PIECES EXPRESS")
         self.assertEqual(order["delivery_address"]["components"]["recipient"], "PIECES EXPRESS")
         self.assertEqual(
-            order["delivery_address"]["formatted_lines"][:2],
+            order["delivery_address"]["normalized_value"].splitlines()[:2],
             ["PIECES EXPRESS", "Z.A. HENRI SPRIET"],
         )
 
@@ -1093,7 +1094,7 @@ class CleanOutputTests(unittest.TestCase):
             order["parties"]["ship_to"]["name"], "AU FORUM DU BATIMENT"
         )
         self.assertEqual(
-            order["delivery_address"]["formatted_lines"][0],
+            order["delivery_address"]["normalized_value"].splitlines()[0],
             "AU FORUM DU BATIMENT",
         )
 
@@ -1209,7 +1210,7 @@ class CleanOutputTests(unittest.TestCase):
         order = build_clean_output(payload)["order"]
         self.assertEqual(order["parties"]["ship_to"]["name"], "GAZ SERVICE RAPIDE")
         self.assertEqual(
-            order["delivery_address"]["formatted_lines"][:2],
+            order["delivery_address"]["normalized_value"].splitlines()[:2],
             ["GAZ SERVICE RAPIDE", "URBAN"],
         )
 
@@ -1281,7 +1282,7 @@ class CleanOutputTests(unittest.TestCase):
         self.assertEqual(order["parties"]["buyer"]["name"], "LEBLANC AMIENS")
         self.assertEqual(order["parties"]["ship_to"]["name"], "LEBLANC AMIENS")
         self.assertEqual(
-            order["delivery_address"]["formatted_lines"][:2],
+            order["delivery_address"]["normalized_value"].splitlines()[:2],
             ["LEBLANC AMIENS", "MONTIÈRES ACTIVITÉS"],
         )
 
@@ -1393,7 +1394,7 @@ class CleanOutputTests(unittest.TestCase):
         self.assertNotIn("bill_to", parties)
         self.assertEqual(parties["ship_to"]["name"], "FGP")
         delivery = build_clean_output(payload)["order"]["delivery_address"]
-        self.assertNotIn("RETOURNER", delivery["formatted"])
+        self.assertNotIn("RETOURNER", delivery["normalized_value"])
 
     def test_party_name_drops_concatenated_phone_and_next_table_column(self):
         payload = {
@@ -1468,7 +1469,7 @@ class CleanOutputTests(unittest.TestCase):
 
         delivery = build_clean_output(payload)["order"]["delivery_address"]
 
-        self.assertNotIn("6133247", delivery["formatted"])
+        self.assertNotIn("6133247", delivery["normalized_value"])
         self.assertNotIn("address_complement", delivery["components"])
 
     def test_short_ppc_site_suffix_repairs_truncated_buyer(self):
@@ -1698,10 +1699,16 @@ class CleanOutputTests(unittest.TestCase):
     def test_published_schema_describes_the_versioned_contract(self):
         schema = clean_output_schema()
         self.assertEqual(schema["properties"]["schema_version"]["const"],
-                         "jin-clean-extraction-v1")
+                         "jin-clean-extraction-v2")
         self.assertFalse(schema["additionalProperties"])
         self.assertIn("customer_agency_code", schema["properties"]["order"]["properties"])
         self.assertIn("customer_agency_code", schema["$defs"]["address"]["properties"])
+        self.assertIn("normalized_value", schema["$defs"]["address"]["properties"])
+        self.assertIn("value", schema["$defs"]["address"]["properties"])
+        self.assertFalse(
+            {"formatted", "formatted_lines", "source_formatted"}
+            & schema["$defs"]["address"]["properties"].keys()
+        )
 
 
 if __name__ == "__main__":

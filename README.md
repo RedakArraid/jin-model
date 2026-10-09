@@ -372,7 +372,7 @@ reconstruit les départements à partir de la version courante.
 ### JSON métier propre
 
 La réponse complète contient désormais `normalized_output` avec un contrat
-stable `jin-clean-extraction-v1` : document, commande, parties, adresses,
+stable `jin-clean-extraction-v2` : document, commande, parties, adresses,
 lignes, frais, totaux, qualité et preuves. Les détails OCR restent dans la
 réponse historique pour le diagnostic. Pour recevoir uniquement le contrat :
 
@@ -381,13 +381,13 @@ curl -F "file=@commande.pdf" "http://localhost:8080/api/extract?view=clean"
 ```
 
 Le schéma JSON formel du contrat est disponible sur
-`http://localhost:8080/api/schemas/jin-clean-extraction-v1` et dans
-`jin_runtime/schemas/jin-clean-extraction-v1.schema.json`.
+`http://localhost:8080/api/schemas/jin-clean-extraction-v2` et dans
+`jin_runtime/schemas/jin-clean-extraction-v2.schema.json`.
 
 Le bouton de téléchargement de l'interface exporte cette vue propre.
 
 Pour la livraison, `order.delivery_address` fournit directement le bloc
-sélectionné avec `formatted_lines`, `formatted`, `components`, `normalization`,
+sélectionné avec `normalized_value`, `value`, `components`, `normalization`,
 `verification` et la valeur source. Le contact et la société restent séparés
 du libellé postal. Plusieurs candidats `ship_to` ne sont jamais départagés
 silencieusement : la décision passe en revue avec `DELIVERY_ADDRESS_AMBIGUOUS`.

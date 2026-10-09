@@ -156,75 +156,63 @@ function normalizedLine(line) {
   };
 }
 
-function uiDeliveryAddresses(result) {
-  const normalize = value => String(value || '').normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9]+/gi, ' ').trim().toUpperCase();
-  const withoutDuplicateRecipient = (values, partyName) => {
-    const lines = [];
-    for (const value of values || []) {
-      const text = String(value || '').trim();
-      if (!text || lines.some(existing => normalize(existing) === normalize(text))) continue;
-      lines.push(text);
-    }
-    if (lines.length && partyName && normalize(lines[0]) === normalize(partyName)) lines.shift();
-    return lines;
-  };
-  const normalized = result?.normalized_output?.order?.delivery_address;
-  if (normalized) {
-    const partyName = normalized.party_name || normalized.components?.recipient || '';
-    const rawLines = normalized.formatted_lines?.length
-      ? normalized.formatted_lines
-      : normalized.formatted ? [normalized.formatted] : [];
-    const lines = withoutDuplicateRecipient(rawLines, partyName);
-    if (lines.length) return [{
-      role: normalized.role || 'ship_to',
-      role_label: normalized.role_label || 'Adresse de livraison sélectionnée',
-      party_name: partyName,
-      customer_agency_code: normalized.customer_agency_code || '',
-      lines,
-      role_confidence: normalized.role_confidence,
-      address_confidence: normalized.address_confidence,
-      clean_status: normalized.normalization?.status,
-      verification: normalized.verification || {},
-      evidence: normalized.evidence || {},
-      selected: true,
-    }];
+function rawFieldDisplay(field) {
+  if (!field || typeof field !== 'object') return null;
+  const value = field.normalized_value != null && field.normalized_value !== ''
+    ? field.normalized_value : field.value;
+  if (value == null || value === '') return null;
+  if (Array.isArray(value)) {
+    return value.map(item => typeof item === 'object' ? JSON.stringify(item) : String(item)).join('\n');
   }
+  return typeof value === 'object' ? JSON.stringify(value) : String(value);
+}
 
+function uiDeliveryAddresses(result) {
   const be = result?.business_extractions || {};
   const order = be.purchase_order || {};
   const addresses = be.business_addresses?.length
     ? be.business_addresses : (order.business_addresses || []);
-  return addresses.flatMap(address => {
-    const role = String(address.role || '').toLowerCase();
-    const warnings = address.warnings || [];
-    if (!['ship_to', 'deliver_to', 'consignee'].includes(role)
-        || /superseded/i.test(String(address.role_label || ''))
-        || warnings.some(warning => /superseded/i.test(String(warning)))) return [];
-    const clean = address.clean_address || {};
-    const rawLines = clean.lines?.length
-      ? clean.lines
-      : address.formatted_address_clean ? [address.formatted_address_clean] : [];
-    const partyName = address.party_name || clean.components?.recipient || '';
-    const lines = withoutDuplicateRecipient(rawLines, partyName);
-    if (!lines.length) return [];
+  const selectedAddress = addresses.find(address => (
+    ['ship_to', 'deliver_to', 'consignee'].includes(String(address?.role || '').toLowerCase())
+    && !/superseded/i.test(String(address?.role_label || ''))
+  ));
+  const normalized = result?.normalized_output?.order?.delivery_address
+    || (result?.schema_version === 'jin-clean-extraction-v2'
+      ? result?.order?.delivery_address : null);
+  const candidates = [
+    normalized,
+    normalized?.address,
+    order.delivery_address,
+    order.delivery_address?.address,
+    order.shipping_address,
+    order.shipping_address?.address,
+    order.ship_to?.address,
+    selectedAddress,
+    selectedAddress?.address,
+    order.purchase_order?.delivery_address,
+    order.purchase_order?.delivery_address?.address,
+    order.purchase_order?.shipping_address,
+    order.purchase_order?.shipping_address?.address,
+  ];
+  const source = candidates.find(candidate => rawFieldDisplay(candidate));
+  const directDisplay = rawFieldDisplay(source);
+  if (directDisplay) {
     return [{
-      role,
-      role_label: address.role_label || 'Adresse de livraison',
-      party_name: partyName,
-      customer_agency_code: address.customer_agency_code || '',
-      lines,
-      contact_name: address.contact_name,
-      contact_email: address.contact_email,
-      contact_phone: address.contact_phone,
-      role_confidence: address.role_confidence,
-      address_confidence: address.address_confidence,
-      clean_status: clean.status,
-      verification: address.ban_verification || address.address_verification || {},
-      evidence: address.evidence || {},
-      selected: false,
+      role: source.role || 'ship_to',
+      role_label: source.role_label || 'Adresse de livraison sélectionnée',
+      party_name: '',
+      customer_agency_code: source.customer_agency_code || order.ship_to?.customer_agency_code || '',
+      lines: [directDisplay],
+      role_confidence: source.role_confidence,
+      address_confidence: source.address_confidence,
+      clean_status: source.normalization?.status || source.clean_address?.status,
+      verification: source.verification || source.ban_verification || {},
+      evidence: source.evidence || {},
+      selected: true,
+      direct_value: true,
     }];
-  });
+  }
+  return [];
 }
 
 // ── Health ─────────────────────────────────────────────────────────────────

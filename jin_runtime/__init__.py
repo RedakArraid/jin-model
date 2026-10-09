@@ -1,1 +1,1 @@
-__version__ = "5.12.0-commercial-metadata"
+__version__ = "5.13.0-address-value-contract"

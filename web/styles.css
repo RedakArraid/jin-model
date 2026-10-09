@@ -229,7 +229,7 @@ body { display: flex; flex-direction: column; background: var(--bg); }
 .card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
 .card .role { text-transform: uppercase; letter-spacing: .08em; font-size: 9px; color: var(--blue); font-weight: 800; }
 .card .name { font-weight: 700; margin: 4px 0 2px; font-size: 12px; }
-.card .addr { white-space: pre-line; color: #334155; font-size: 11px; line-height: 1.5; }
+.card .addr { white-space: pre-wrap; color: #334155; font-size: 11px; line-height: 1.5; }
 .muted { color: #94a3b8; font-size: 10px; margin-top: 3px; }
 
 .info-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }

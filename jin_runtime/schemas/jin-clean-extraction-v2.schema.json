@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "/schemas/jin-clean-extraction-v1",
-  "title": "JIN clean extraction v1",
+  "$id": "/schemas/jin-clean-extraction-v2",
+  "title": "JIN clean extraction v2",
   "description": "Stable consumer view of a JIN document extraction. Empty optional values are omitted.",
   "type": "object",
   "required": ["schema_version", "generator", "document", "quality"],
   "additionalProperties": false,
   "properties": {
-    "schema_version": {"const": "jin-clean-extraction-v1"},
+    "schema_version": {"const": "jin-clean-extraction-v2"},
     "generator": {
       "type": "object",
       "required": ["runtime"],
@@ -146,9 +146,8 @@
         "customer_agency_code": {"type": "string"},
         "department": {"type": "string"},
         "contact": {"type": "object"},
-        "formatted": {"type": "string"},
-        "formatted_lines": {"type": "array", "items": {"type": "string"}},
-        "source_formatted": {"type": "string"},
+        "value": {"type": "string"},
+        "normalized_value": {"type": "string"},
         "components": {"type": "object"},
         "normalization": {"type": "object"},
         "role_confidence": {"type": "number", "minimum": 0, "maximum": 1},

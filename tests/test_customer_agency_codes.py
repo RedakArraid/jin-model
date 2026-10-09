@@ -70,7 +70,7 @@ class CustomerAgencyCodeTests(unittest.TestCase):
         self.assertEqual(clean["order"]["customer_agency_code"]["value"], "VIU")
         self.assertEqual(clean["order"]["parties"]["ship_to"]["customer_agency_code"], "VIU")
         self.assertEqual(clean["order"]["delivery_address"]["customer_agency_code"], "VIU")
-        self.assertNotIn("VIU", clean["order"]["delivery_address"]["formatted_lines"])
+        self.assertNotIn("VIU", clean["order"]["delivery_address"]["normalized_value"].splitlines())
 
     def test_unconfirmed_order_suffix_is_not_guessed(self):
         payload = iserba_payload(delivery_code=None)
@@ -190,7 +190,7 @@ class CustomerAgencyCodeTests(unittest.TestCase):
 
         self.assertEqual(clean["order"]["customer_agency_code"]["value"], "VIU")
         self.assertEqual(clean["order"]["delivery_address"]["customer_agency_code"], "VIU")
-        self.assertNotIn("VIU", clean["order"]["delivery_address"]["formatted_lines"])
+        self.assertNotIn("VIU", clean["order"]["delivery_address"]["normalized_value"].splitlines())
 
     def test_numeric_order_prefix_is_agency_only_when_isolated_in_delivery_block(self):
         payload = iserba_payload(delivery_code="11046")
