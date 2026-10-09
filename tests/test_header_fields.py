@@ -73,6 +73,32 @@ class HeaderFieldReconciliationTests(unittest.TestCase):
             "repeated_inline_order_label_v62",
         )
 
+    def test_explicit_order_du_date_outranks_delivery_date(self):
+        doc = payload("630014201", [])
+        doc["business_extractions"]["purchase_order"]["purchase_order"]["order_date"] = {
+            "value": "2026-04-03",
+            "evidence": {"source_text": "LIVRER LE 03/04/26"},
+        }
+        doc["pages"] = [{
+            "page": 1,
+            "text": (
+                "COMMANDE N° 630014201 Page 1 sur 1\n"
+                "du 20/03/26 Le : 20/03/26\n"
+                "LIVRER LE 03/04/26"
+            ),
+        }]
+
+        reconcile_header_fields(doc)
+        header = doc["business_extractions"]["purchase_order"]["purchase_order"]
+        self.assertEqual(header["order_date"]["value"], "2026-03-20")
+        self.assertEqual(
+            header["order_date"]["evidence"]["extraction_method"],
+            "explicit_order_du_date_v63",
+        )
+        self.assertEqual(
+            header["order_date_original"]["disqualified_reason"],
+            "EXPLICIT_ORDER_DU_DATE_OVERRIDES_OTHER_DATE",
+        )
     def test_piece_column_outranks_neighboring_our_reference(self):
         doc = payload("219928", [
             block("Date", [40, 228, 62, 239]),
