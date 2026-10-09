@@ -25,6 +25,8 @@ MODELS_DIR ?= data/learning
 LIMIT ?= 20
 DEVICE ?= cpu
 SMOKE_MODEL ?= qwen3_vl_2b
+JIN_MODELS_BUNDLE ?= JIN_MODELS_AVAILABLE.zip
+JIN_CORE_ENGINE ?=
 
 benchmark-preflight:
 	"$(PYTHON_BIN)" -m benchmarks.open_weight_comparison.preflight --pdf-dir "$(PDF_DIR)" --ground-truth "$(GROUND_TRUTH)" --models-dir "$(MODELS_DIR)" --models jin,qwen3_vl_2b,qwen3_vl_4b,embeddinggemma2_zone --output artifacts/open_weight_preflight.json
@@ -42,7 +44,7 @@ benchmark-embedding:
 	"$(PYTHON_BIN)" -m benchmarks.open_weight_comparison.runner --pdf-dir "$(PDF_DIR)" --ground-truth "$(GROUND_TRUTH)" --models jin,embeddinggemma2_zone --models-dir "$(MODELS_DIR)" --device "$(DEVICE)" --limit "$(LIMIT)" --output-dir artifacts/jin_vs_embeddinggemma2
 
 benchmark-open-weight:
-	PYTHON_BIN="$(PYTHON_BIN)" PDF_DIR="$(PDF_DIR)" GROUND_TRUTH="$(GROUND_TRUTH)" MODELS_DIR="$(MODELS_DIR)" LIMIT="$(LIMIT)" DEVICE="$(DEVICE)" sh scripts/run-open-weight-cpu-benchmark.sh
+	PYTHON_BIN="$(PYTHON_BIN)" PDF_DIR="$(PDF_DIR)" GROUND_TRUTH="$(GROUND_TRUTH)" MODELS_DIR="$(MODELS_DIR)" LIMIT="$(LIMIT)" DEVICE="$(DEVICE)" JIN_MODELS_BUNDLE="$(JIN_MODELS_BUNDLE)" JIN_CORE_ENGINE="$(JIN_CORE_ENGINE)" sh scripts/run-open-weight-cpu-benchmark.sh
 
 
 benchmark-env:
