@@ -538,6 +538,8 @@ def main(argv: list[str] | None = None) -> int:
         model.get("summary", {}).get("completed", 0)
         for model in report["models"].values()
     )
+    if BASELINE_MODEL in model_names and not (report.get("baseline") or {}).get("available"):
+        return 3
     return 0 if completed else 2
 
 
