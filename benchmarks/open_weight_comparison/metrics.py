@@ -19,7 +19,7 @@ def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:
     out: dict[str, Any] = {}
     if isinstance(value, dict):
         for key, child in value.items():
-            if key == "spatial":
+            if key == "spatial" or str(key).startswith("_"):
                 continue
             path = f"{prefix}.{key}" if prefix else key
             out.update(_flatten(child, path))
