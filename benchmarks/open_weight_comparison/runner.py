@@ -4,6 +4,7 @@ import argparse
 import csv
 import gc
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -39,6 +40,27 @@ JIN_DELTA_METRICS = (
     "latency_seconds_mean",
     "peak_rss_mb_max",
 )
+
+
+
+
+def _configure_cpu_threads(count: int) -> None:
+    count = max(1, int(count))
+    os.environ["OMP_NUM_THREADS"] = str(count)
+    os.environ["MKL_NUM_THREADS"] = str(count)
+    os.environ["OPENBLAS_NUM_THREADS"] = str(count)
+    os.environ["NUMEXPR_NUM_THREADS"] = str(count)
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    try:
+        import torch
+
+        torch.set_num_threads(count)
+        try:
+            torch.set_num_interop_threads(max(1, min(count, 2)))
+        except RuntimeError:
+            pass
+    except Exception:
+        pass
 
 
 def _json_default(value: Any):
@@ -210,6 +232,8 @@ def _new_report(
             "python": sys.version.split()[0],
             "platform": platform.platform(),
             "device": args.device,
+            "cpu_threads": args.cpu_threads,
+            "cpu_count": os.cpu_count(),
             "model_process_isolation": model_process_isolation,
         },
         "baseline_model": BASELINE_MODEL,
@@ -309,6 +333,8 @@ def _worker_command(
         str(args.max_pages),
         "--max-new-tokens",
         str(args.max_new_tokens),
+        "--cpu-threads",
+        str(args.cpu_threads),
     ]
     if args.models_dir is not None:
         command.extend(["--models-dir", str(args.models_dir)])
@@ -323,6 +349,7 @@ def _worker_command(
 
 def run_isolated(args: argparse.Namespace) -> dict[str, Any]:
     """Run each CPU model in its own process so peak RSS is not cumulative."""
+    _configure_cpu_threads(args.cpu_threads)
     pdf_root = args.pdf_dir.resolve()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -399,6 +426,7 @@ def run_isolated(args: argparse.Namespace) -> dict[str, Any]:
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     """Run one or more models in the current process."""
+    _configure_cpu_threads(args.cpu_threads)
     pdf_root = args.pdf_dir.resolve()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -538,6 +566,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-pages", type=int, default=3)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
+    parser.add_argument(
+        "--cpu-threads",
+        type=int,
+        default=max(1, min(os.cpu_count() or 1, 8)),
+        help="CPU threads exposed consistently to JIN and open-weight competitors.",
+    )
     parser.add_argument("--limit", type=int)
     parser.add_argument("--list-models", action="store_true")
     return parser
