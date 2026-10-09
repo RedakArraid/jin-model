@@ -66,8 +66,8 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
         path.write_text("", encoding="utf-8")
         return
-    keys = []
-    seen = set()
+    keys: list[str] = []
+    seen: set[str] = set()
     for row in rows:
         for key in row:
             if key not in seen:
@@ -101,7 +101,12 @@ def _document_csv_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _summary_csv_row(name: str, track: str, summary: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+def _summary_csv_row(
+    name: str,
+    track: str,
+    summary: dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
     return {
         "model": name,
         "track": track,
@@ -111,7 +116,10 @@ def _summary_csv_row(name: str, track: str, summary: dict[str, Any], metadata: d
     }
 
 
-def _attach_jin_comparison(report: dict[str, Any], summary_rows: list[dict[str, Any]]) -> None:
+def _attach_jin_comparison(
+    report: dict[str, Any],
+    summary_rows: list[dict[str, Any]],
+) -> None:
     """Attach explicit deltas against JIN for direct-IE models."""
     jin_report = report.get("models", {}).get(BASELINE_MODEL) or {}
     jin_summary = jin_report.get("summary") or {}
@@ -119,7 +127,10 @@ def _attach_jin_comparison(report: dict[str, Any], summary_rows: list[dict[str, 
         report["baseline"] = {
             "model": BASELINE_MODEL,
             "available": False,
-            "qualification": "JIN was not executed in this campaign, so no delta-vs-JIN metrics are reported.",
+            "qualification": (
+                "JIN was not executed successfully in this campaign, "
+                "so no delta-vs-JIN metrics are reported."
+            ),
         }
         return
 
@@ -137,11 +148,14 @@ def _attach_jin_comparison(report: dict[str, Any], summary_rows: list[dict[str, 
         if model_report.get("track") != "direct_ie":
             model_report["comparison_vs_jin"] = {
                 "comparable": False,
-                "reason": "Different benchmark track; zone-semantics scores must not be compared with JIN direct-IE field scores.",
+                "reason": (
+                    "Different benchmark track; zone-semantics scores must not "
+                    "be compared with JIN direct-IE field scores."
+                ),
             }
             continue
         summary = model_report.get("summary") or {}
-        deltas = {}
+        deltas: dict[str, float] = {}
         for metric in JIN_DELTA_METRICS:
             candidate = summary.get(metric)
             baseline = jin_summary.get(metric)
@@ -191,8 +205,9 @@ def _new_report(
         },
         "baseline_model": BASELINE_MODEL,
         "qualification": (
-            "JIN is the benchmark baseline. Accuracy metrics are reported only where reviewed ground truth is supplied. "
-            "EmbeddingGemma2 is a separate zone-semantics track, not a standalone generative extractor."
+            "JIN is the benchmark baseline. Accuracy metrics are reported only "
+            "where reviewed ground truth is supplied. EmbeddingGemma2 is a "
+            "separate zone-semantics track, not a standalone generative extractor."
         ),
         "selection": {
             "pdf_root": str(pdf_root),
@@ -206,30 +221,75 @@ def _new_report(
 def _finalize_report(report: dict[str, Any], output_dir: Path) -> dict[str, Any]:
     document_rows: list[dict[str, Any]] = []
     summary_rows: list[dict[str, Any]] = []
+
     for model_name, model_report in report.get("models", {}).items():
         for row in model_report.get("documents") or []:
-        summary = model_report.get("summary") or {}
-        metadata = model_report.get("metadata") or {}
+            document_rows.append(_document_csv_row(row))
         summary_rows.append(
-            _summary_csv_row(model_name, model_report.get("track") or "", summary, metadata)
+            _summary_csv_row(
+                model_name,
+                model_report.get("track") or "",
+                model_report.get("summary") or {},
+                model_report.get("metadata") or {},
+            )
         )
 
-    return _finalize_report(report, output_dir)
+    _attach_jin_comparison(report, summary_rows)
+    field_comparison_rows = build_field_comparison_rows(
+        report,
+        baseline_model=BASELINE_MODEL,
+    )
+    head_to_head_rows = build_head_to_head_rows(
+        report,
+        field_comparison_rows,
+        baseline_model=BASELINE_MODEL,
+    )
+    report["head_to_head"] = head_to_head_summary(head_to_head_rows)
+
+    (output_dir / "comparison.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, default=_json_default) + "\n",
+        encoding="utf-8",
+    )
+    _write_csv(output_dir / "documents.csv", document_rows)
+    _write_csv(output_dir / "summary.csv", summary_rows)
+    _write_csv(output_dir / "head_to_head.csv", head_to_head_rows)
+    _write_csv(output_dir / "field_comparison.csv", field_comparison_rows)
+    (output_dir / "decision_report.md").write_text(
+        render_decision_report(
+            report,
+            head_to_head_rows,
+            field_comparison_rows,
+            baseline_model=BASELINE_MODEL,
+        ),
+        encoding="utf-8",
+    )
+    return report
 
 
-def _worker_command(args: argparse.Namespace, model_name: str, output_dir: Path) -> list[str]:
+def _worker_command(
+    args: argparse.Namespace,
+    model_name: str,
+    output_dir: Path,
+) -> list[str]:
     command = [
         sys.executable,
         "-m",
         "benchmarks.open_weight_comparison.runner",
-        "--pdf-dir", str(args.pdf_dir),
-        "--output-dir", str(output_dir),
-        "--models", model_name,
-        "--models-dir", str(args.models_dir),
-        "--device", args.device,
-        "--max-pages", str(args.max_pages),
-        "--max-new-tokens", str(args.max_new_tokens),
+        "--pdf-dir",
+        str(args.pdf_dir),
+        "--output-dir",
+        str(output_dir),
+        "--models",
+        model_name,
+        "--device",
+        args.device,
+        "--max-pages",
+        str(args.max_pages),
+        "--max-new-tokens",
+        str(args.max_new_tokens),
     ]
+    if args.models_dir is not None:
+        command.extend(["--models-dir", str(args.models_dir)])
     if args.ground_truth is not None:
         command.extend(["--ground-truth", str(args.ground_truth)])
     if args.file_list is not None:
@@ -240,6 +300,7 @@ def _worker_command(args: argparse.Namespace, model_name: str, output_dir: Path)
 
 
 def run_isolated(args: argparse.Namespace) -> dict[str, Any]:
+    """Run each CPU model in its own process so peak RSS is not cumulative."""
     pdf_root = args.pdf_dir.resolve()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -249,6 +310,7 @@ def run_isolated(args: argparse.Namespace) -> dict[str, Any]:
         filenames = json.loads(args.file_list.read_text(encoding="utf-8-sig"))
     pdfs = _selected_pdfs(pdf_root, truth, filenames, args.limit)
     model_names = [item.strip() for item in args.models.split(",") if item.strip()]
+
     report = _new_report(
         args,
         pdf_root,
@@ -256,9 +318,9 @@ def run_isolated(args: argparse.Namespace) -> dict[str, Any]:
         pdfs,
         model_process_isolation=True,
     )
-
     raw_root = output_dir / "raw"
     raw_root.mkdir(parents=True, exist_ok=True)
+
     with tempfile.TemporaryDirectory(prefix="jin-open-weight-") as temp_root:
         for model_name in model_names:
             worker_dir = Path(temp_root) / model_name
@@ -267,26 +329,21 @@ def run_isolated(args: argparse.Namespace) -> dict[str, Any]:
                 file=sys.stderr,
                 flush=True,
             )
-            completed = subprocess.run(_worker_command(args, model_name, worker_dir), check=False)
+            completed = subprocess.run(
+                _worker_command(args, model_name, worker_dir),
+                check=False,
+            )
             comparison_path = worker_dir / "comparison.json"
+
             if comparison_path.exists():
-                worker_report = json.loads(comparison_path.read_text(encoding="utf-8"))
+                worker_report = json.loads(
+                    comparison_path.read_text(encoding="utf-8")
+                )
                 model_report = (worker_report.get("models") or {}).get(model_name)
-                if model_report is None:
-                    model_report = {
-                        "track": "unknown",
-                        "documents": [],
-                        "summary": {
-                            "documents": len(pdfs),
-                            "completed": 0,
-                            "errors": len(pdfs),
-                        },
-                        "load_error": {
-                            "type": "WorkerMissingModelReport",
-                            "message": f"Worker report did not contain model {model_name}.",
-                        },
-                    }
             else:
+                model_report = None
+
+            if model_report is None:
                 model_report = {
                     "track": "unknown",
                     "documents": [],
@@ -298,11 +355,12 @@ def run_isolated(args: argparse.Namespace) -> dict[str, Any]:
                     "load_error": {
                         "type": "WorkerProcessError",
                         "message": (
-                            f"Isolated worker exited with return code {completed.returncode} "
-                            "without producing comparison.json."
+                            f"Isolated worker exited with return code "
+                            f"{completed.returncode} without a usable model report."
                         ),
                     },
                 }
+
             model_report["worker_returncode"] = int(completed.returncode)
             report["models"][model_name] = model_report
 
@@ -318,6 +376,7 @@ def run_isolated(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    """Run one or more models in the current process."""
     pdf_root = args.pdf_dir.resolve()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -349,6 +408,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "documents": [],
         }
         print(f"[{model_name}] loading...", file=sys.stderr, flush=True)
+
         try:
             with measured() as load_resources:
                 adapter.load()
@@ -359,17 +419,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "type": type(exc).__name__,
                 "message": str(exc),
             }
-            report["models"][model_name] = model_report
-            summary = {
+            model_report["summary"] = {
                 "documents": len(pdfs),
                 "completed": 0,
                 "errors": len(pdfs),
             }
-            model_report["summary"] = summary
+            report["models"][model_name] = model_report
             continue
 
         raw_dir = output_dir / "raw" / model_name
         raw_dir.mkdir(parents=True, exist_ok=True)
+
         for pdf_path in pdfs:
             relative = pdf_path.relative_to(pdf_root).as_posix()
             print(f"[{model_name}] {relative}", file=sys.stderr, flush=True)
@@ -386,10 +446,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 prediction = result.get("prediction") or {}
                 row["prediction"] = prediction
                 if relative in truth:
-                    row["metrics"] = evaluate_extraction(prediction, truth[relative])
+                    row["metrics"] = evaluate_extraction(
+                        prediction,
+                        truth[relative],
+                    )
                 raw_path = raw_dir / (pdf_path.stem + ".json")
                 raw_path.write_text(
-                    json.dumps(result, ensure_ascii=False, indent=2, default=_json_default) + "\n",
+                    json.dumps(
+                        result,
+                        ensure_ascii=False,
+                        indent=2,
+                        default=_json_default,
+                    )
+                    + "\n",
                     encoding="utf-8",
                 )
             except Exception as exc:
@@ -398,53 +467,28 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     "message": str(exc),
                 }
             model_report["documents"].append(row)
-            document_rows.append(_document_csv_row(row))
 
-        summary = aggregate_model(model_report["documents"])
-        model_report["summary"] = summary
+        model_report["summary"] = aggregate_model(model_report["documents"])
         report["models"][model_name] = model_report
 
         del adapter
         gc.collect()
         try:
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except Exception:
             pass
 
-    _attach_jin_comparison(report, summary_rows)
-    field_comparison_rows = build_field_comparison_rows(report, baseline_model=BASELINE_MODEL)
-    head_to_head_rows = build_head_to_head_rows(
-        report,
-        field_comparison_rows,
-        baseline_model=BASELINE_MODEL,
-    )
-    report["head_to_head"] = head_to_head_summary(head_to_head_rows)
-
-    (output_dir / "comparison.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2, default=_json_default) + "\n",
-        encoding="utf-8",
-    )
-    _write_csv(output_dir / "documents.csv", document_rows)
-    _write_csv(output_dir / "summary.csv", summary_rows)
-    _write_csv(output_dir / "head_to_head.csv", head_to_head_rows)
-    _write_csv(output_dir / "field_comparison.csv", field_comparison_rows)
-    (output_dir / "decision_report.md").write_text(
-        render_decision_report(
-            report,
-            head_to_head_rows,
-            field_comparison_rows,
-            baseline_model=BASELINE_MODEL,
-        ),
-        encoding="utf-8",
-    )
-    return report
+    return _finalize_report(report, output_dir)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Compare JIN with open-weight document information-extraction models."
+        description=(
+            "Compare JIN with open-weight document information-extraction models."
+        )
     )
     parser.add_argument("--pdf-dir", type=Path)
     parser.add_argument("--ground-truth", type=Path)
@@ -455,8 +499,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=",".join(DEFAULT_MODELS),
         help="Comma-separated model adapter names.",
     )
-    parser.add_argument("--models-dir", type=Path, default=Path("data/learning"))
-    parser.add_argument("--device", default="cpu", choices=("cpu", "cuda", "auto"))
+    parser.add_argument(
+        "--models-dir",
+        type=Path,
+        default=Path("data/learning"),
+    )
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        choices=("cpu", "cuda", "auto"),
+    )
     parser.add_argument("--max-pages", type=int, default=3)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
     parser.add_argument("--limit", type=int)
@@ -467,16 +519,21 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
     if args.list_models:
         print("\n".join(available_model_names()))
         return 0
     if args.pdf_dir is None or args.output_dir is None:
-        parser.error("--pdf-dir and --output-dir are required unless --list-models is used")
+        parser.error(
+            "--pdf-dir and --output-dir are required unless --list-models is used"
+        )
+
     model_names = [item.strip() for item in args.models.split(",") if item.strip()]
     if args.device == "cpu" and len(model_names) > 1:
         report = run_isolated(args)
     else:
         report = run(args)
+
     completed = sum(
         model.get("summary", {}).get("completed", 0)
         for model in report["models"].values()
