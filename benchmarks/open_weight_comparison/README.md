@@ -53,7 +53,7 @@ python -m benchmarks.open_weight_comparison.prepare_ground_truth \\
   --output benchmarks/open_weight_comparison/ground_truth.json
 ```
 
-The scaffold marks every new document as `needs_review` and also creates `ground_truth_review.csv`. The runner scores a document only when `_review.status` is `reviewed`, `approved` or `validated`. Existing ground-truth files without `_review` remain backward-compatible and are treated as implicitly reviewed.
+The scaffold marks every new document as `needs_review` and also creates `ground_truth_review.csv`. When ground truth drives document selection, the runner executes only entries whose `_review.status` is `reviewed`, `approved` or `validated`; drafts therefore do not waste CPU and are never scored. Existing ground-truth files without `_review` remain backward-compatible and are treated as implicitly reviewed. An explicit `--file-list` can still be used for diagnostic inference outside the scored set.
 
 Example review metadata:
 
