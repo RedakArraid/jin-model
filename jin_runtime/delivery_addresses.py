@@ -106,11 +106,43 @@ def _source_street(address: dict[str, Any]) -> str | None:
 
 
 def _street_signature(value: Any) -> tuple[str, str]:
-    tokens = _norm(value).split()
+    folded = unicodedata.normalize("NFKD", str(value or ""))
+    folded = folded.encode("ascii", "ignore").decode()
+    tokens = _norm(folded).split()
     if not tokens:
         return "", ""
     street_type = STREET_TYPE_ALIASES.get(tokens[0], "")
     return street_type, " ".join(tokens[1:] if street_type else tokens)
+
+
+def _single_token_spelling_difference(source_name: str, canonical_name: str) -> bool:
+    """Return true for one small orthographic change in an otherwise equal name.
+
+    BAN is useful to establish that a street exists, but the document remains the
+    authority for its printed spelling.  This catches a canonical reference typo
+    such as ``ISAAC`` -> ``ISSAC`` without blocking useful canonicalisation of a
+    structurally different source (expanded abbreviations, missing articles, etc.).
+    """
+    source_tokens = source_name.split()
+    canonical_tokens = canonical_name.split()
+    if len(source_tokens) != len(canonical_tokens):
+        return False
+    differences = [
+        (source_token, canonical_token)
+        for source_token, canonical_token in zip(source_tokens, canonical_tokens)
+        if source_token != canonical_token
+    ]
+    if len(differences) != 1:
+        return False
+    source_token, canonical_token = differences[0]
+    if min(len(source_token), len(canonical_token)) < 4:
+        return False
+    if len(source_token) == len(canonical_token):
+        return sum(left != right for left, right in zip(source_token, canonical_token)) == 1
+    if abs(len(source_token) - len(canonical_token)) != 1:
+        return False
+    shorter, longer = sorted((source_token, canonical_token), key=len)
+    return any(longer[:index] + longer[index + 1:] == shorter for index in range(len(longer)))
 
 
 def _clean_street_ocr(value: Any) -> str | None:
@@ -152,6 +184,14 @@ def _preferred_street(address: dict[str, Any], matched: dict[str, Any]) -> str |
         ):
             # BAN remains the verifier, but it must not replace an explicitly
             # printed AVENUE by RUE (or the reverse) in the delivered label.
+            return _clean_street_ocr(source)
+        if (
+            source_type
+            and source_type == canonical_type
+            and _single_token_spelling_difference(source_name, canonical_name)
+        ):
+            # A close BAN match verifies the street identity; it does not
+            # authorize changing an explicitly printed proper name.
             return _clean_street_ocr(source)
     preferred = _clean_street_ocr(canonical or source)
     if preferred and _norm(preferred) in STREET_TYPE_ALIASES:

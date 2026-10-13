@@ -739,6 +739,32 @@ def test_final_normalizer_moves_shipping_and_tax_rows_out_of_products():
     assert counts == {"shipping": 1, "tax": 1}
 
 
+def test_final_normalizer_moves_bare_port_code_out_of_products():
+    product = LineItem(
+        line_number="1", material_number="EL87144314800", description="CLE DE CODAGE 1480",
+        quantity=1, unit_price=6.7, line_total=6.7, currency="EUR", page=1,
+    )
+    shipping = LineItem(
+        line_number="2", material_number="PORT", article_number="PORT",
+        quantity=1, unit_price=20, line_total=20, currency="EUR", page=1,
+        raw_text="PORT | 1,0 | 20,00 | 20,00 | 1",
+    )
+    po = SimpleNamespace(
+        lines=[product, shipping], additional_charges=[],
+        totals=Totals(total_net=26.7, currency="EUR"),
+    )
+
+    po, counts = _separate_additional_charge_lines_v62(po, {})
+
+    assert [line.material_number for line in po.lines] == ["EL87144314800"]
+    assert len(po.additional_charges) == 1
+    assert po.additional_charges[0].charge_type == "shipping"
+    assert po.additional_charges[0].code == "PORT"
+    assert po.additional_charges[0].amount == 20
+    assert po.totals.total_shipping == 20
+    assert counts == {"shipping": 1}
+
+
 def _compact_header_page(prefix="CF", title="COMMANDE FOURNISSEUR", label=None):
     row = [(prefix, 70, 88), ("001234567", 100, 175), ("26/03/26", 230, 290), ("1", 320, 325)]
     if label:

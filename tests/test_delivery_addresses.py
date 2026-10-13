@@ -305,6 +305,28 @@ class DeliveryAddressTests(unittest.TestCase):
         self.assertIn("9 AVENUE DES FRERES LUMIERE", clean["lines"])
         self.assertNotIn("9 RUE DES FRERES LUMIERE", clean["lines"])
 
+    def test_ban_cannot_replace_printed_street_name_with_close_reference_typo(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "ISERBA",
+            "address": {
+                "house_number": "16", "street": "RUE ISAAC NEWTON",
+                "postal_code": "31830", "city": "PLAISANCE DU TOUCH",
+                "country": "France",
+            },
+            "ban_verification": {
+                "status": "CANONICAL_MATCH",
+                "matched_components": {
+                    "house_number": "16", "street": "Rue Issac Newton",
+                    "postal_code": "31830", "city": "Plaisance-du-Touch",
+                },
+            },
+        })
+
+        self.assertIn("16 RUE ISAAC NEWTON", clean["lines"])
+        self.assertNotIn("16 RUE ISSAC NEWTON", clean["lines"])
+        self.assertEqual(clean["components"]["street"], "RUE ISAAC NEWTON")
+
     def test_delivery_party_instruction_and_apostrophe_ocr_are_cleaned(self):
         clean = clean_delivery_address({
             "role": "ship_to",

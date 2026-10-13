@@ -3582,6 +3582,18 @@ def _separate_additional_charge_lines_v62(po, config: dict):
         return False
 
     for line in getattr(po, "lines", []) or []:
+        description_kind = _explicit_charge_kind_v62(line.description)
+        raw_kind = _explicit_charge_kind_v62(line.raw_text)
+        reference_codes = {
+            _fold(value)
+            for value in (line.material_number, line.article_number)
+            if value
+        }
+        bare_shipping_code = bool(
+            reference_codes.intersection({"port", "transport", "livraison", "expedition"})
+            and not _fold(line.description)
+            and (line.line_total is not None or line.unit_price is not None)
+        )
         source = " ".join(
             str(value) for value in (
                 line.material_number,
@@ -3590,7 +3602,14 @@ def _separate_additional_charge_lines_v62(po, config: dict):
                 line.raw_text,
             ) if value
         )
-        kind = _explicit_charge_kind_v62(source)
+        # Inspect semantic fields before the concatenated fallback.  A native
+        # table can legitimately expose a charge as a bare code (``PORT``)
+        # with an empty designation; duplicating that code into material,
+        # article and raw text must not turn it into a product line.
+        kind = description_kind or raw_kind
+        if not kind and bare_shipping_code:
+            kind = "shipping"
+        kind = kind or _explicit_charge_kind_v62(source)
         if not kind:
             kept.append(line)
             last_product = line
