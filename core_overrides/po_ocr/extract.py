@@ -60,7 +60,8 @@ PARTY_LABELS = {
 HEADER_ALIASES = {
     "line": {"line", "pos", "position", "item", "poste", "ligne"},
     "material": {"material", "article", "itemno", "item-no", "part", "reference", "référence", "ref", "sku", "code", "product"},
-    "description": {"description", "designation", "désignation", "desc", "bezeichnung"},
+    "description": {"description", "designation", "désignation", "libelle", "libellé", "desc", "bezeichnung"},
+    "product_family": {"family", "famille", "productfamily", "product-family", "gamme", "range"},
     "quantity": {"qty", "quantity", "quantite", "quantité", "menge"},
     "uom": {"uom", "unit", "unite", "unité", "me", "einheit"},
     "unit_price": {"price", "prix", "unitprice", "unit-price", "einzelpreis", "preis", "pu", "p.u"},
@@ -82,6 +83,11 @@ STOP_WORDS = {"subtotal", "sub total", "sous-total", "sous total", "net total", 
 def _is_line_table_stop(text: str) -> bool:
     low = ascii_fold(text).lower().strip()
     if any(low.startswith(value) for value in STOP_WORDS):
+        return True
+    # Summary labels can share their physical row with a left-hand note (for
+    # example ``FRANCO ... Montant HT Net 95.48``), so they are not guaranteed
+    # to appear at the beginning of the reconstructed text row.
+    if re.search(r"\bmontant\s+(?:h\.?t\.?\s+)?net\b", low):
         return True
     return bool(re.match(
         r"^(?:\(?\d+\)?\s+)?(?:a\s+livrer\b|adresse\s+de\s+livraison\b|"
@@ -270,6 +276,27 @@ def _extract_party(rows: list[TextRow], labels: list[str]) -> Party:
             continue
         matched = [lbl for lbl in label_tokens if re.search(r"(?<![a-z0-9])" + re.escape(lbl) + r"(?![a-z0-9])", folded)]
         if matched:
+            # Product and freight descriptions can legitimately contain role
+            # words (for example ``PORT FOURNISSEUR 1 PI 20.0000``). A row with
+            # quantity, unit and monetary cells is commercial table data, not a
+            # party label.
+            numeric_cells = sum(
+                bool(re.fullmatch(
+                    r"[-+]?\d+(?:[ .']\d{3})*(?:[,.]\d{1,6})?",
+                    word.text.strip("€$£()[]{}:;"),
+                ))
+                for word in row.words
+            )
+            has_table_unit = any(
+                re.fullmatch(
+                    r"(?:U|UN|UNIT|PI|PIEC(?:E|ES)?|PCE|PCS|EA|KG|BOX|L|M)",
+                    word.text.strip("|[]()."),
+                    flags=re.I,
+                )
+                for word in row.words
+            )
+            if numeric_cells >= 2 and has_table_unit:
+                continue
             txt = row.text
             value = txt
             for label in labels:
@@ -393,14 +420,29 @@ def _find_table_header(
                 and distinct >= min_header_matches
             ):
                 continue
+            # Do not extend an already complete header into product or charge
+            # rows merely because their description contains a qualifier such as
+            # ``FOURNISSEUR``. Two numeric cells on a following row are a strong
+            # commercial-row signal; genuine split qualifier rows such as
+            # ``INTERNE | FOURNISSEUR`` do not contain commercial numbers.
+            contains_commercial_row = any(
+                sum(
+                    bool(re.fullmatch(
+                        r"[-+]?\d+(?:[ .']\d{3})*(?:[,.]\d{1,6})?",
+                        word.text.strip("€$£()[]{}:;"),
+                    ))
+                    for word in candidate.words
+                ) >= 2
+                for candidate in group[1:]
+            )
             explicit_roles = len(semantic & {"customer_material", "supplier_material"})
             # Prefer the narrowest header band once the same semantics are found;
             # otherwise the first product row can be swallowed as a third header.
-            score = (explicit_roles, distinct, -width)
+            score = (int(not contains_commercial_row), explicit_roles, distinct, -width)
             candidate = (score, start, start + width, columns)
             if best is None or score > best[0]:
                 best = candidate
-        if best is not None and best[1] == start and best[0][0] >= 1:
+        if best is not None and best[1] == start and best[0][0] >= 1 and best[0][1] >= 1:
             break
     return (best[1], best[2], best[3]) if best else None
 
@@ -492,7 +534,7 @@ def _line_from_cells(cells: dict[str, str], row: TextRow, default_currency: str)
             customer_spill, generic_spill, clean_text(cells.get("description")),
             supplier_spill, secondary_spill,
         ) if value
-    ))
+    )).strip(" -–—|:;")
     line_no = clean_text(cells.get("line"))
     # When a description word sits close to the quantity column, nearest-column
     # assignment can place it with the numeric quantity. Recover the text prefix.
@@ -528,6 +570,17 @@ def _line_from_cells(cells: dict[str, str], row: TextRow, default_currency: str)
             desc = clean_text(" ".join(x for x in [desc, spill] if x))
     if qty is None and unit_price is None and total is None and not material and not desc:
         return None
+    calculated_total = bool(
+        "total" not in cells
+        and qty is not None
+        and unit_price is not None
+    )
+    if calculated_total:
+        total = round(float(qty) * float(unit_price), 6)
+    raw_uom = clean_text(cells.get("uom"))
+    normalized_uom = normalize_unit(raw_uom)
+    if _header_token(raw_uom or "") in {"p", "pc", "pcs", "pce", "pi", "piec", "piece", "pieces"}:
+        normalized_uom = "PCE"
     completeness = sum(v is not None and v != "" for v in [material, desc, qty, unit_price, total]) / 5
     confidence = min(1.0, 0.6 * row.confidence + 0.4 * completeness)
     return LineItem(
@@ -538,9 +591,10 @@ def _line_from_cells(cells: dict[str, str], row: TextRow, default_currency: str)
         customer_material_number=customer_material,
         supplier_material_number=supplier_material,
         description=desc,
+        product_family=clean_text(cells.get("product_family")),
         quantity=qty,
         ordered_quantity=qty,
-        uom=normalize_unit(cells.get("uom")) or inline_uom,
+        uom=normalized_uom or inline_uom,
         unit_price=unit_price,
         net_unit_price=unit_price,
         currency=default_currency,
@@ -551,6 +605,9 @@ def _line_from_cells(cells: dict[str, str], row: TextRow, default_currency: str)
         page=row.page,
         bbox=row.bbox,
         confidence=confidence,
+        warnings=([
+            "Line total calculated from printed quantity and unit price; no printed line amount."
+        ] if calculated_total else []),
     )
 
 

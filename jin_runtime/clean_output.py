@@ -1521,6 +1521,7 @@ def _line(source: dict[str, Any]) -> dict[str, Any]:
     return _compact({
         "line_number": source.get("line_number"), "references": refs,
         "description": source.get("description"),
+        "product_family": source.get("product_family") or source.get("category"),
         "quantity": _first(source.get("quantity"), source.get("ordered_quantity")),
         "unit": source.get("uom"),
         "pricing": {

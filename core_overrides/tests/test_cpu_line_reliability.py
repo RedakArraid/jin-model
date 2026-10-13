@@ -3,12 +3,13 @@ from types import SimpleNamespace
 import fitz
 import pytest
 
-from po_ocr.models import PageResult, PurchaseOrderHeader, WordToken, Evidence, ExtractedField, LineItem, Totals
+from po_ocr.models import AdditionalCharge, PageResult, PurchaseOrderHeader, WordToken, Evidence, ExtractedField, LineItem, Totals
 from po_ocr.pdf_native import _needs_hybrid_ocr, _supplement_native_words, extract_native_page
 from po_ocr.extract import (
-    all_rows, extract_lines, extract_lines_from_pages,
+    all_rows, extract_lines, extract_lines_from_pages, extract_parties,
     extract_multiline_lines_from_pages, extract_totals,
     compact_transaction_header_candidate, verify_compact_header_number,
+    _find_table_header,
 )
 from uda.business import (
     _clean_po_number_v48,
@@ -20,6 +21,7 @@ from uda.business import (
     _material_anchored_numeric_row_items_v61,
     _merge_explicit_page_charges_v63,
     _party_from_labeled_zone_v48,
+    _repair_scan_currency_suffix_artifacts_v64,
     _separate_additional_charge_lines_v62,
     _sanitize_non_product_lines_v61,
     _price_then_quantity_table_items,
@@ -224,6 +226,81 @@ def test_split_internal_and_supplier_headers_keep_reference_ownership():
         assert "320MM(1)" in second.description
 
 
+def test_complete_header_does_not_swallow_product_and_supplier_shipping_rows():
+    page = _page([
+        (394, [("Reférence", 31, 75), ("-", 77, 80),
+               ("Désignation", 83, 134), ("Quantite", 422, 459),
+               ("Unite", 476, 499), ("Prix", 507, 524),
+               ("Unitaire", 527, 560)]),
+        (415, [("87167712610", 31, 86), ("-", 89, 92),
+               ("PRESSOS.", 94, 140), ("1", 451, 456),
+               ("PI", 479, 488), ("75.4800", 532, 564)]),
+        (437, [("PORT", 31, 56), ("FOURNISSEUR", 59, 124),
+               ("1", 451, 456), ("PI", 479, 488),
+               ("20.0000", 532, 564)]),
+        (479, [("Montant", 377, 420), ("HT", 423, 438),
+               ("Net", 441, 458), ("95.48", 522, 550)]),
+    ])
+    rows = all_rows([page], y_factor=0.55)
+
+    header = _find_table_header(rows, 3)
+    assert header is not None
+    assert header[:2] == (0, 1)
+
+    lines = extract_lines_from_pages([page])
+    assert len(lines) == 2
+    product, shipping = lines
+    assert product.material_number == "87167712610"
+    assert product.description == "PRESSOS."
+    assert (product.quantity, product.uom, product.unit_price, product.line_total) == (
+        1, "PCE", 75.48, 75.48,
+    )
+    assert "calculated" in product.warnings[0]
+    assert shipping.material_number is None
+    assert shipping.description == "PORT FOURNISSEUR"
+    assert (shipping.quantity, shipping.uom, shipping.unit_price, shipping.line_total) == (
+        1, "PCE", 20, 20,
+    )
+
+    # Multiline parsing can retain the following charge row in the product's
+    # raw evidence. The structured product identity must still win.
+    product.raw_text += " | PORT FOURNISSEUR 1 PI 20.0000"
+
+    po = SimpleNamespace(
+        lines=lines,
+        additional_charges=[],
+        totals=Totals(total_net=95.48, total_before_tax=95.48, currency="EUR"),
+    )
+    po, reclassified = _separate_additional_charge_lines_v62(po, {})
+    assert len(po.lines) == 1
+    assert len(po.additional_charges) == 1
+    assert po.additional_charges[0].charge_type == "shipping"
+    assert po.additional_charges[0].amount == 20
+    assert reclassified == {"shipping": 1}
+
+
+def test_supplier_role_word_inside_shipping_row_is_not_a_party_label():
+    page = _page([
+        (100, [("PORT", 31, 56), ("FOURNISSEUR", 59, 124),
+               ("1", 451, 456), ("PI", 479, 488),
+               ("20.0000", 532, 564)]),
+    ])
+
+    parties = extract_parties(all_rows([page]))
+
+    assert parties["supplier"].name is None
+
+    po = SimpleNamespace(lines=[], additional_charges=[], totals=Totals(currency="EUR"))
+    po, recovered = _merge_explicit_page_charges_v63(po, [page], {})
+    assert recovered == {"shipping": 1}
+    assert len(po.additional_charges) == 1
+    charge = po.additional_charges[0]
+    assert charge.description == "PORT FOURNISSEUR"
+    assert (charge.quantity, charge.uom, charge.unit_price, charge.amount) == (
+        1, "PCE", 20, 20,
+    )
+
+
 def test_quantity_column_prefers_unit_bound_number_over_product_dimension():
     page = _page([
         (100, [("Article", 20, 58), ("Designation", 150, 215),
@@ -272,7 +349,117 @@ def test_labelled_shipping_charge_is_recovered_outside_line_hypotheses():
     assert len(po.additional_charges) == 1
     assert po.additional_charges[0].charge_type == "shipping"
     assert po.additional_charges[0].amount == 35.0
+    assert po.additional_charges[0].description == "Montant de port"
     assert po.totals.total_shipping == 35.0
+
+
+def test_libelle_family_and_prix_total_header_extracts_complete_product_line():
+    page = _page([
+        (180, [("Code", 20, 48), ("article", 50, 91), ("Libelle", 110, 166),
+               ("Famille", 275, 329), ("Quantite", 385, 435),
+               ("PU", 465, 482), ("H.T.", 484, 505),
+               ("Prix", 525, 550), ("total", 552, 585)]),
+        (220, [("87167717410", 20, 88), ("Flexible", 110, 151),
+               ("de", 155, 167), ("manometre", 171, 228),
+               ("Pieces", 278, 316), ("detachees", 321, 371),
+               ("1.00", 397, 429), ("8.55EUR", 466, 505),
+               ("8.55EUR", 548, 590)]),
+        (250, [("TOTAL", 20, 58), ("8.55EUR", 548, 590)]),
+    ])
+
+    lines = extract_lines_from_pages([page])
+
+    assert len(lines) == 1
+    assert lines[0].material_number == "87167717410"
+    assert lines[0].description == "Flexible de manometre"
+    assert lines[0].product_family == "Pieces detachees"
+    assert (lines[0].quantity, lines[0].unit_price, lines[0].line_total) == (1, 8.55, 8.55)
+
+
+def test_geometry_separates_family_from_libelle_for_prix_total_layout():
+    page = _page([
+        (180, [("Code", 20, 48), ("article", 50, 91), ("Libelle", 110, 166),
+               ("Famille", 275, 329), ("Quantite", 385, 435),
+               ("PU", 465, 482), ("H.T.", 484, 505),
+               ("Prix", 525, 550), ("total", 552, 585)]),
+        (220, [("87167717410", 20, 88), ("Flexible", 110, 151),
+               ("de", 155, 167), ("manometre", 171, 228),
+               ("Pieces", 278, 316), ("detachees", 321, 371),
+               ("1.00", 397, 429), ("8.55", 466, 500),
+               ("8.551", 548, 590)]),
+        (250, [("TOTAL", 20, 58), ("8.551", 548, 590)]),
+        (270, [("FRAIS", 20, 55), ("DE", 58, 72), ("PORT", 75, 105),
+               ("0.00", 548, 590)]),
+    ])
+
+    lines, charges = _extract_geometry_table_items_v46([page], {})
+
+    assert len(charges) == 1
+    assert charges[0].charge_type == "shipping"
+    assert charges[0].description == "FRAIS DE PORT"
+    assert charges[0].amount == 0.0
+    assert len(lines) == 1
+    assert lines[0].description == "Flexible de manometre"
+    assert lines[0].product_family == "Pieces detachees"
+    assert (lines[0].quantity, lines[0].unit_price, lines[0].line_total) == (1, 8.55, 8.551)
+
+
+def test_repeated_aligned_euro_as_one_artifact_is_repaired_by_arithmetic():
+    page = _page([
+        (180, [("Prix", 525, 550), ("total", 552, 585)]),
+        (220, [("87167717410", 20, 88), ("1.00", 397, 429),
+               ("8.55", 466, 500), ("8.551", 548, 590)]),
+        (250, [("TOTAL", 20, 58), ("8.551", 548, 590)]),
+        (270, [("FRAIS", 20, 55), ("DE", 58, 72), ("PORT", 75, 105),
+               ("0.001", 548, 590)]),
+        (290, [("TOTAL", 20, 58), ("H.T.", 61, 83), ("8.551", 548, 590)]),
+    ])
+    page.source_type = "scan_ocr"
+    line = LineItem(
+        material_number="87167717410", description="Flexible de manometre",
+        quantity=1, unit_price=8.55, line_total=8.551, line_net_amount=8.551,
+        page=1,
+    )
+    charge = AdditionalCharge(
+        charge_type="shipping", description="FRAIS DE PORT 0.001",
+        amount=0.001, page=1,
+    )
+    po = SimpleNamespace(
+        lines=[line], additional_charges=[charge],
+        totals=Totals(
+            total_shipping=0.001, total_net=8.551, total_before_tax=8.551,
+            total_gross=8.551, total_after_tax=8.551, grand_total=8.551,
+            amount_due=8.551, currency="EUR",
+        ),
+    )
+
+    po, repairs = _repair_scan_currency_suffix_artifacts_v64(po, [page], {})
+
+    assert po.lines[0].line_total == 8.55
+    assert po.lines[0].line_net_amount == 8.55
+    assert po.additional_charges[0].amount == 0.0
+    assert po.totals.total_shipping == 0.0
+    assert po.totals.total_net == 8.55
+    assert po.totals.grand_total == 8.55
+    assert repairs["line_total"] == 1
+    assert repairs["additional_charge"] == 1
+    assert repairs["document_total"] >= 3
+
+
+def test_single_three_decimal_scan_value_is_not_rewritten_without_page_signature():
+    page = _page([
+        (180, [("Prix", 525, 550), ("total", 552, 585)]),
+        (220, [("TOTAL", 20, 58), ("8.551", 548, 590)]),
+    ])
+    page.source_type = "scan_ocr"
+    line = LineItem(quantity=1, unit_price=8.55, line_total=8.551, page=1)
+    po = SimpleNamespace(lines=[line], additional_charges=[], totals=Totals(total_net=8.551))
+
+    po, repairs = _repair_scan_currency_suffix_artifacts_v64(po, [page], {})
+
+    assert po.lines[0].line_total == 8.551
+    assert po.totals.total_net == 8.551
+    assert repairs == {}
 
 
 def test_geometry_keeps_net_price_when_an_extra_list_price_column_is_present():
@@ -353,7 +540,7 @@ def test_non_product_filter_removes_date_footer_and_empty_parser_fragments():
                  quantity=1183.29, unit_price=1183.29, line_total=1400175.2241),
         LineItem(material_number="7716780266", description=""),
         LineItem(material_number="8719999999", description="Produit partiellement lu"),
-        LineItem(material_number="REF-OK", description="Produit complet", quantity=2),
+        LineItem(material_number="REF-OK", description="Produit complet", quantity=2, unit_price=10),
     ]
     cleaned, rejected = _sanitize_non_product_lines_v61(lines, {})
     assert [line.material_number for line in cleaned] == ["8719999999", "REF-OK"]

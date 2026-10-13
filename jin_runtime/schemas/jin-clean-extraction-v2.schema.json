@@ -164,6 +164,7 @@
         "line_number": {},
         "references": {"type": "object"},
         "description": {"type": "string"},
+        "product_family": {"type": "string"},
         "quantity": {"type": "number"},
         "unit": {"type": "string"},
         "pricing": {"type": "object"},

@@ -25,7 +25,8 @@ class CleanOutputTests(unittest.TestCase):
                     "ban_verification": {"status": "EXACT_MATCH", "provider": "BAN"},
                 }],
                 "lines": [{"line_number": 1, "material_number": "0007", "quantity": 0,
-                           "net_unit_price": 0, "line_total": 0, "description": "Echantillon"}],
+                           "net_unit_price": 0, "line_total": 0, "description": "Echantillon",
+                           "product_family": "Pièces détachées"}],
                 "totals": {"total_net": 0, "currency": "EUR"},
             }},
             "extraction_decision": {"status": "CHECKS_PASSED", "requires_review": False},
@@ -38,6 +39,7 @@ class CleanOutputTests(unittest.TestCase):
         self.assertEqual(out["order"]["customer_agency_code"]["value"], "LY07")
         self.assertEqual(out["order"]["line_items"][0]["references"]["material_number"], "0007")
         self.assertEqual(out["order"]["line_items"][0]["quantity"], 0)
+        self.assertEqual(out["order"]["line_items"][0]["product_family"], "Pièces détachées")
         self.assertEqual(out["order"]["line_items"][0]["pricing"]["net_unit_price"], 0)
         self.assertEqual(out["order"]["totals"]["total_net"], 0)
         self.assertEqual(out["order"]["addresses"][0]["id"], "a1:ship_to")

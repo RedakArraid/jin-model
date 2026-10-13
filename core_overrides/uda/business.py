@@ -521,6 +521,156 @@ def _enhance_inline_transaction_header_v46(po, pages, config: dict):
     return po
 
 
+def _currency_suffix_one_candidate_v64(value):
+    """Return ``(ocr_value, money_value)`` when a trailing ``1`` replaced ``€``.
+
+    Some scanned purchase orders render a narrow euro sign that Tesseract reads as
+    ``1`` (``8.55€`` -> ``8.551``).  A single three-decimal value is not enough to
+    infer that substitution; callers must additionally establish a repeated,
+    aligned page-level signature before applying this candidate.
+    """
+    import re
+    from po_ocr.normalize import parse_number
+
+    token=str(value or "").strip().strip("€$\xa3()[]{}:;")
+    match=re.fullmatch(
+        r"([-+]?(?:\d{1,3}(?:[ .']\d{3})+|\d+)[,.]\d{2})1",
+        token,
+    )
+    if not match:
+        return None
+    original=parse_number(token)
+    repaired=parse_number(match.group(1))
+    if original is None or repaired is None:
+        return None
+    return float(original),float(repaired)
+
+
+def _scan_currency_suffix_one_maps_v64(pages, config: dict):
+    """Find repeated right-aligned OCR ``€`` -> ``1`` signatures per scan page."""
+    from collections import Counter
+    import re
+
+    layout=config.get("layout",{}) if isinstance(config,dict) else {}
+    if not layout.get("ocr_currency_suffix_one_repair",True):
+        return {}
+    minimum=max(2,int(layout.get("ocr_currency_suffix_one_min_aligned_tokens",3)))
+    x_tolerance_ratio=float(layout.get("ocr_currency_suffix_one_x_tolerance_ratio",0.018))
+    min_x_ratio=float(layout.get("ocr_currency_suffix_one_min_x_ratio",0.60))
+    result={}
+    for page in pages or []:
+        source_type=str(getattr(page,"source_type","") or "").lower()
+        if source_type=="native_pdf" or not getattr(page,"words",None):
+            continue
+        page_text=_fold(getattr(page,"text","") or "")
+        if not re.search(r"\b(?:total|montant|prix|amount|port|freight|shipping)\b",page_text):
+            continue
+        matches=[]
+        for word in page.words:
+            pair=_currency_suffix_one_candidate_v64(word.text)
+            if pair is None:
+                continue
+            center=(word.bbox[0]+word.bbox[2])/2
+            matches.append((center,pair))
+        if len(matches)<minimum:
+            continue
+        tolerance=max(8.0,float(page.width)*x_tolerance_ratio)
+        clusters=[]
+        for item in sorted(matches,key=lambda entry:entry[0]):
+            target=next((cluster for cluster in clusters
+                         if abs(item[0]-statistics.fmean(value[0] for value in cluster))<=tolerance),None)
+            if target is None:
+                clusters.append([item])
+            else:
+                target.append(item)
+        page_map={}
+        for cluster in clusters:
+            cluster_center=statistics.fmean(item[0] for item in cluster)
+            originals=Counter(round(item[1][0],6) for item in cluster)
+            # Repetition of the same apparent monetary value (typically product
+            # total + document total) is the strongest safeguard against changing
+            # a legitimate three-decimal unit price.
+            if (len(cluster)<minimum or cluster_center<float(page.width)*min_x_ratio
+                    or max(originals.values(),default=0)<2):
+                continue
+            for _,(original,repaired) in cluster:
+                page_map[round(original,6)]=repaired
+        if page_map:
+            result[int(page.page)]=page_map
+    return result
+
+
+def _repair_scan_currency_suffix_artifacts_v64(po, pages, config: dict):
+    """Apply corroborated scan repairs to rows, charges and document totals."""
+    from collections import Counter
+
+    page_maps=_scan_currency_suffix_one_maps_v64(pages,config)
+    if not page_maps:
+        return po,{}
+    repairs=Counter()
+
+    def candidate(page_number,value):
+        if value is None or page_number is None:
+            return None
+        return page_maps.get(int(page_number),{}).get(round(float(value),6))
+
+    for line in getattr(po,"lines",[]) or []:
+        repaired=candidate(line.page,line.line_total)
+        if repaired is None or line.quantity is None or line.unit_price is None:
+            continue
+        expected=float(line.quantity)*float(line.unit_price)
+        if abs(repaired-expected)>0.005:
+            continue
+        line.line_total=repaired
+        line.line_net_amount=repaired
+        if "ocr_currency_symbol_suffix_removed" not in line.warnings:
+            line.warnings.append("ocr_currency_symbol_suffix_removed")
+        repairs["line_total"]+=1
+
+    for charge in getattr(po,"additional_charges",[]) or []:
+        repaired=candidate(charge.page,charge.amount)
+        if repaired is None:
+            continue
+        charge.amount=repaired
+        if "ocr_currency_symbol_suffix_removed" not in charge.warnings:
+            charge.warnings.append("ocr_currency_symbol_suffix_removed")
+        repairs["additional_charge"]+=1
+
+    line_sum=sum(float(line.line_total) for line in getattr(po,"lines",[]) or []
+                 if line.line_total is not None)
+    charges=list(getattr(po,"additional_charges",[]) or [])
+    non_tax_charges=sum(float(charge.amount or 0.0) for charge in charges
+                        if charge.charge_type not in {"tax","vat"})
+    shipping=sum(float(charge.amount or 0.0) for charge in charges
+                 if charge.charge_type=="shipping")
+    tax=float(po.totals.total_tax if po.totals.total_tax is not None
+              else po.totals.total_vat or 0.0)
+    expected_net=line_sum+non_tax_charges
+    expected_gross=expected_net+tax
+    total_expectations={
+        "subtotal":(line_sum,expected_net),
+        "total_net":(expected_net,line_sum),
+        "total_before_tax":(expected_net,line_sum),
+        "total_gross":(expected_gross,expected_net),
+        "total_after_tax":(expected_gross,expected_net),
+        "grand_total":(expected_gross,expected_net),
+        "amount_due":(expected_gross,expected_net),
+        "total_shipping":(shipping,),
+        "total_freight":(shipping,),
+    }
+    all_repairs={key:value for mapping in page_maps.values() for key,value in mapping.items()}
+    for field,expected_values in total_expectations.items():
+        current=getattr(po.totals,field,None)
+        if current is None:
+            continue
+        repaired=all_repairs.get(round(float(current),6))
+        if repaired is None or not any(abs(repaired-value)<=0.005 for value in expected_values):
+            continue
+        setattr(po.totals,field,repaired)
+        repairs["document_total"]+=1
+    return po,dict(sorted(repairs.items()))
+
+
 def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str="EUR"):
     """Recover line items from visible PDF columns even when no native table object exists."""
     from po_ocr.extract import all_rows
@@ -541,7 +691,7 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
     def header_token(text):
         from difflib import get_close_matches
         token=_fold(text).strip("|[](){}.,:")
-        known=("reference","article","designation","description","quantite","montant")
+        known=("reference","article","designation","description","libelle","famille","family","gamme","range","quantite","montant","total")
         if len(token)>=5 and token not in known:
             close=get_close_matches(token,known,n=1,cutoff=0.84)
             if close: return close[0]
@@ -559,8 +709,8 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                 continue
             low=" ".join(header_token(w.text) for w in row.words)
             hits=sum(bool(re.search(pattern, low)) for pattern in (
-                r"\b(?:reference|article|sku)\b", r"\b(?:designation|description)\b",
-                r"\b(?:quantite|qte|qty)\b", r"\b(?:pu|px|prix|price|net)\b", r"\b(?:montant|mnt|amount)\b"))
+                r"\b(?:reference|article|sku)\b", r"\b(?:designation|description|libelle)\b",
+                r"\b(?:quantite|qte|qty)\b", r"\b(?:pu|px|prix|price|net)\b", r"\b(?:montant|mnt|amount|total)\b"))
             if hits<min_terms:
                 continue
             # Derive anchors from actual header word geometry.
@@ -568,7 +718,8 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                 wl=header_token(w.text)
                 if ("reference" in wl or wl in {"article", "sku"}) and "reference" not in anchors: anchors["reference"]=center(w)
                 if "adressage" in wl or ("code" in wl and "reference" not in wl): anchors.setdefault("secondary", center(w))
-                if "designation" in wl or "description" in wl: anchors["description"]=center(w)
+                if "designation" in wl or "description" in wl or "libelle" in wl: anchors["description"]=center(w)
+                if wl in {"famille", "family", "gamme", "range"}: anchors["product_family"]=center(w)
                 if "quantite" in wl or wl in {"qte","qty"}: anchors["quantity"]=center(w)
                 # P.A (prix d'achat) is a common ERP label for the net unit
                 # purchase price. Keep the dotted form because ``header_token``
@@ -577,7 +728,7 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                 if wl == "net" and "price" in anchors and center(w)>anchors["price"]:
                     anchors["price"]=(anchors["price"]+center(w))/2
                 elif wl == "net": anchors.setdefault("price", center(w))
-                if "montant" in wl or "amount" in wl or wl=="mnt": anchors["amount"]=center(w)
+                if "montant" in wl or "amount" in wl or wl in {"mnt", "total"}: anchors["amount"]=center(w)
                 if wl in {"unite", "uom", "unit"}: anchors["uom"]=center(w)
                 if wl in {"ua", "up"}: anchors[wl]=center(w)
                 if wl=="ref" and "interne" in low: anchors["internal_reference"]=center(w)
@@ -610,6 +761,9 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
         qp=(qx+px)/2; pa=(px+ax)/2
         ref_x=anchors.get("reference", 30.0)
         desc_x=anchors.get("description", q_left-30)
+        family_x=anchors.get("product_family")
+        desc_family_boundary=(desc_x+family_x)/2 if family_x is not None and family_x>desc_x else None
+        family_quantity_boundary=(family_x+qx)/2 if family_x is not None and family_x<qx else q_left
         sec_x=anchors.get("secondary")
         sec_desc_boundary=(sec_x+desc_x)/2 if sec_x is not None else desc_x-12
         current=None
@@ -712,17 +866,24 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
             auxiliary_start=min(auxiliary)-max(8,pg.width*0.012) if auxiliary else None
             desc_words=[w.text for w in left if w is not code_word and w.text!=secondary and (sec_x is None or center(w)>=sec_desc_boundary)
                         and (unit_anchor is None or center(w)<unit_anchor-15)
-                        and (auxiliary_start is None or center(w)<auxiliary_start)]
+                        and (auxiliary_start is None or center(w)<auxiliary_start)
+                        and (desc_family_boundary is None or center(w)<desc_family_boundary)]
             desc=" ".join(desc_words).strip()
+            product_family=None
+            if desc_family_boundary is not None:
+                family_words=[w.text for w in left
+                              if desc_family_boundary<=center(w)<family_quantity_boundary]
+                product_family=" ".join(family_words).strip() or None
             unit_words=[w.text.strip("|[]") for w in row.words if unit_anchor is not None and abs(center(w)-unit_anchor)<max(15,pg.width*0.012)]
             kind=_fee_kind(f"{code} {desc}")
-            if kind and re.search(r"\b(?:frais\s+de\s+(?:port|livraison)|shipping|freight)\b",_fold(desc)):
+            if kind and re.search(r"\b(?:frais\s+de\s+(?:port|livraison)|shipping|freight)\b",low):
                 kind="shipping"
             conf=max(0.0,min(1.0,float(row.confidence)*0.99))
             if kind:
                 parent=None if kind=="shipping" else current
+                charge_description=" ".join(w.text for w in left).strip()
                 charges.append(AdditionalCharge(
-                    charge_type=kind, code=code, description=desc or code,
+                    charge_type=kind, code=code, description=charge_description or desc or code,
                     parent_line_number=parent.line_number if parent else None,
                     parent_material_number=parent.material_number if parent else None,
                     supplier_reference=parent.supplier_material_number if parent else None,
@@ -747,6 +908,7 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
             current=LineItem(
                 line_number=str(len(items)+1), material_number=code, article_number=code,
                 supplier_material_number=secondary, description=desc or None,
+                product_family=product_family,
                 quantity=qty, ordered_quantity=qty, unit_price=price, net_unit_price=price,
                 uom=" ".join(unit_words) or None,
                 line_total=amount, line_net_amount=amount, currency=default_currency,
@@ -1506,7 +1668,7 @@ def _explicit_charge_kind_v62(text: str | None) -> str | None:
         return "environmental_fee"
     if (
         re.search(r"\b(?:frais|forfait|participation|cout|montant)\s+(?:de\s+|du\s+)?(?:port|transport|livraison|expedition)\b", low)
-        or re.search(r"\bport\s+(?:standard|express|ht|facture|forfait)\b", low)
+        or re.search(r"\bport\s+(?:standard|express|ht|facture|forfait|fournisseur)\b", low)
         or re.search(r"\b(?:shipping|freight)(?:\s+(?:charge|cost|fee))?\b", low)
         or re.fullmatch(r"(?:port|transport|livraison|expedition)(?:\s+ht)?", low)
         or re.search(r"\bportstd\b", low)
@@ -3605,14 +3767,31 @@ def _separate_additional_charge_lines_v62(po, config: dict):
                 line.raw_text,
             ) if value
         )
+        # A multiline parser may append a following freight row to the raw
+        # evidence of a valid product while keeping the product description and
+        # reference correctly separated. In that case the raw freight keyword
+        # must not reclassify the entire product as a charge; the standalone
+        # freight row is recovered independently below.
+        strong_product_identity = bool(
+            str(line.description or "").strip()
+            and any(
+                sum(character.isdigit() for character in str(value or "")) >= 5
+                for value in (
+                    line.supplier_material_number,
+                    line.material_number,
+                    line.article_number,
+                )
+            )
+        )
         # Inspect semantic fields before the concatenated fallback.  A native
         # table can legitimately expose a charge as a bare code (``PORT``)
         # with an empty designation; duplicating that code into material,
         # article and raw text must not turn it into a product line.
-        kind = description_kind or raw_kind
+        kind = description_kind or (raw_kind if not strong_product_identity else None)
         if not kind and bare_shipping_code:
             kind = "shipping"
-        kind = kind or _explicit_charge_kind_v62(source)
+        if not kind and not strong_product_identity:
+            kind = _explicit_charge_kind_v62(source)
         if not kind:
             kept.append(line)
             last_product = line
@@ -3675,6 +3854,7 @@ def _merge_explicit_page_charges_v63(po, pages, config: dict):
     from collections import Counter
     from po_ocr.extract import all_rows
     from po_ocr.models import AdditionalCharge, Evidence
+    from po_ocr.normalize import normalize_unit
     import re
 
     existing = list(getattr(po, "additional_charges", []) or [])
@@ -3711,6 +3891,40 @@ def _merge_explicit_page_charges_v63(po, pages, config: dict):
             amount = max(values, key=lambda item: item[0])[1]
             if duplicate(kind, page.page, amount):
                 continue
+            ordered = sorted(row.words, key=lambda word: word.bbox[0])
+            unit_index = next((
+                index for index, word in enumerate(ordered)
+                if re.fullmatch(
+                    r"(?:U|UN|UNIT|PI|PIEC(?:E|ES)?|PCE|PCS|EA|KG|BOX|L|M)",
+                    word.text.strip("|[]()."),
+                    flags=re.I,
+                )
+            ), None)
+            quantity = None
+            uom = None
+            unit_price = None
+            description_end = min(center for center, _ in values)
+            if unit_index is not None and unit_index > 0:
+                quantity_token = ordered[unit_index - 1].text.strip("€$£()[]{}:;")
+                if re.fullmatch(r"[-+]?\d+(?:[,.]\d{1,6})?", quantity_token):
+                    quantity = _parse_native_decimal(quantity_token)
+                    unit_token = ordered[unit_index].text.strip("|[]().").upper()
+                    uom = "PCE" if unit_token in {
+                        "P", "PC", "PCS", "PCE", "PI", "PIEC", "PIECE", "PIECES",
+                    } else normalize_unit(unit_token)
+                    description_end = ordered[unit_index - 1].bbox[0]
+                    monetary_after_unit = [
+                        value for center, value in values
+                        if center > (ordered[unit_index].bbox[0] + ordered[unit_index].bbox[2]) / 2
+                    ]
+                    if monetary_after_unit:
+                        unit_price = monetary_after_unit[-1]
+                        if quantity is not None:
+                            amount = round(float(quantity) * float(unit_price), 6)
+            description = " ".join(
+                word.text for word in ordered
+                if (word.bbox[0] + word.bbox[2]) / 2 < description_end
+            ).strip(" -–—|:;") or row.text
             parent = None
             if kind == "environmental_fee":
                 candidates = [
@@ -3721,10 +3935,13 @@ def _merge_explicit_page_charges_v63(po, pages, config: dict):
                     parent = max(candidates, key=lambda line: line.bbox[3])
             existing.append(AdditionalCharge(
                 charge_type=kind,
-                description=row.text,
+                description=description,
                 parent_line_number=parent.line_number if parent else None,
                 parent_material_number=parent.material_number if parent else None,
                 supplier_reference=parent.supplier_material_number if parent else None,
+                quantity=quantity,
+                uom=uom,
+                unit_price=unit_price,
                 amount=amount,
                 currency=po.totals.currency or "EUR",
                 page=page.page,
@@ -4760,6 +4977,9 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     po = _enhance_strict_totals_v47(po, pages, config)
     po = _summary_table_totals_v48(po, tables, config, default_currency=default_currency)
     po = _strict_text_totals_v48(po, pages, config, default_currency=default_currency)
+    po, parser_diag["ocr_currency_suffix_repairs"] = _repair_scan_currency_suffix_artifacts_v64(
+        po, pages, config
+    )
     po = _sanitize_double_counted_shipping_v47(po, config)
     po = _sanitize_internal_reference_v47(po)
     # Refresh normalized address-role records after structural party corrections.

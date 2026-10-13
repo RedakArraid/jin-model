@@ -321,6 +321,13 @@ layout:
   geometry_table_amount_tolerance_abs: 0.04
   geometry_table_amount_tolerance_rel: 0.006
   geometry_table_fee_parent_strategy: previous_product
+  # On some scans Tesseract reads a narrow euro sign as a trailing ``1``
+  # (8.55€ -> 8.551). Repair only a repeated, right-aligned page signature and
+  # require arithmetic reconciliation before changing extracted amounts.
+  ocr_currency_suffix_one_repair: true
+  ocr_currency_suffix_one_min_aligned_tokens: 3
+  ocr_currency_suffix_one_x_tolerance_ratio: 0.018
+  ocr_currency_suffix_one_min_x_ratio: 0.60
   geometry_table_secondary_reference_headers:
   - adressage
   - code client

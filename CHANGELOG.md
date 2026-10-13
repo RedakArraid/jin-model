@@ -1,5 +1,21 @@
 # Changelog
 
+## 5.16.1-native-table-header-guard
+
+- Prevent complete one-row table headers from swallowing product and freight rows whose descriptions contain header-like words such as `FOURNISSEUR`.
+- Calculate line amounts transparently from printed quantity and unit price when the document has no line-amount column.
+- Normalize the French unit abbreviation `PI` to `PCE` in generic table extraction.
+- Preserve `PORT FOURNISSEUR` as a typed shipping charge and reconcile product plus freight with the printed net total.
+- Add regression coverage for the supplied C.C.L. order `03 - 9260207221` layout.
+
+## 5.16.0-scanned-table-reliability
+
+- Recognize `Libellé` as a description header and `Prix total` as the line-amount column in scanned French purchase orders.
+- Extract `Famille` independently as `product_family` instead of appending it to the product description.
+- Repair the recurrent scan-only OCR substitution where a right-aligned euro sign becomes a trailing `1` (`8.55€` -> `8.551`), only when repeated page geometry and line arithmetic corroborate the correction.
+- Preserve explicit zero-value shipping rows while preventing fragmented `FRAIS DE PORT` labels from becoming duplicate surcharge records.
+- Add regression coverage for the supplied IZI by EDF order layout and expose `product_family` in the clean JSON contract.
+
 ## 5.12.0-commercial-metadata
 
 - Preserve several customer quote references per order and per product line, with explicit source-backed links between each quote and the affected lines.
