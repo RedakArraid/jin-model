@@ -1336,6 +1336,24 @@ def _align_primary_delivery_party(
         # The former "recipient" was actually a postal zone. Rebuild from
         # the corrected components and the source sequence instead of keeping
         # that zone artificially pinned to the first line.
+        source_formatted = delivery.get("source_formatted")
+        if source_formatted:
+            source_parts = [
+                part.strip()
+                for part in str(source_formatted).split(",")
+                if part.strip()
+            ]
+            zone_key = _name_key(components.get("industrial_zone"))
+            street_key = _name_key(components.get("street"))
+            if (
+                zone_key
+                and street_key
+                and any(zone_key == _name_key(part) for part in source_parts)
+                and any(street_key in _name_key(part) for part in source_parts)
+            ):
+                # Source parts are used only to recover ordering. The address
+                # cleaner will still emit the reconciled structured components.
+                delivery["formatted_lines"] = source_parts
         return _refresh_delivery_label(delivery)
 
     raw_lines = list(delivery.get("formatted_lines") or [])
@@ -1521,6 +1539,8 @@ def _line(source: dict[str, Any]) -> dict[str, Any]:
             "site": source.get("delivery_site"),
         },
         "status": source.get("validation_status"), "confidence": source.get("confidence"),
+        "reference_confidence": source.get("material_reference_confidence"),
+        "reference_status": source.get("material_reference_status"),
         "warnings": source.get("warnings"),
         "evidence": {"page": source.get("page"), "bbox": source.get("bbox")},
     })

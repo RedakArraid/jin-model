@@ -3520,10 +3520,13 @@ def _sanitize_non_product_lines_v61(lines, config: dict):
         description = str(line.description or "").strip()
         raw = str(line.raw_text or "").strip()
         low = _fold(f"{description} {raw}")
-        commercial = any(
+        commercial_field_count = sum(
             getattr(line, field, None) is not None
             for field in ("quantity", "unit_price", "line_total")
         )
+        # One isolated number is commonly a postal code, a date or footer noise.
+        # It is not enough to establish a commercial product row by itself.
+        commercial = commercial_field_count >= 2
         is_date = bool(re.fullmatch(
             r"(?:[0-3]?\d)[/.-](?:0?\d|1[0-2])[/.-](?:\d{2}|\d{4})", material
         ))
@@ -3534,7 +3537,7 @@ def _sanitize_non_product_lines_v61(lines, config: dict):
         if is_date and footer:
             rejected["date_footer_as_product"] += 1
             continue
-        if not commercial:
+        if not commercial or line.quantity is None:
             # Preserve a useful partial row only when both a learned material family
             # and a non-empty description corroborate it.
             candidates = [
@@ -4613,7 +4616,12 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     """V4.7 post-processor: strict semantic guards + native/geometry hypothesis fusion."""
     import re
     from po_ocr.extract import line_item_set_quality
-    from uda.material_references import enrich_supplier_material_roles, line_material_pattern_summary
+    from uda.material_references import (
+        calibrate_line_material_confidence,
+        enrich_supplier_material_roles,
+        line_material_pattern_summary,
+        recover_material_references_from_descriptions,
+    )
     default_currency = config.get("normalization", {}).get("default_currency", "EUR")
     po = _extract_native_table_header_fields(po, tables)
     po = _enhance_order_header_from_page_layout(po, pages, config)
@@ -4638,6 +4646,7 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     def hypothesis_score(lines, charges, source_bonus=0.0):
         if not lines:
             return -1.0, line_material_pattern_summary([], config)
+        recover_material_references_from_descriptions(lines, config)
         base=float(line_item_set_quality(lines))
         arithmetic=[]; noise=0.0; complete=0.0
         for line in lines:
@@ -4667,7 +4676,7 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
         return (
             0.30*base + 0.34*arithmetic_score + 0.24*completeness
             + source_bonus + fee_bonus + float(material_patterns["bonus"])
-            - noise_penalty,
+            - noise_penalty - float(material_patterns["penalty"]),
             material_patterns,
         )
 
@@ -4708,8 +4717,14 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     po, parser_diag["recovered_page_charges"] = _merge_explicit_page_charges_v63(
         po, pages, config
     )
+    recover_material_references_from_descriptions(po.lines, config)
+    parser_diag["description_reference_recoveries"] = sum(
+        "material_reference_recovered_from_description" in line.warnings
+        for line in po.lines
+    )
     parser_diag["supplier_role_enrichments"] = enrich_supplier_material_roles(po.lines, config)
     po.lines, parser_diag["semantic_line_rejections"] = _sanitize_non_product_lines_v61(po.lines, config)
+    reference_confidence = calibrate_line_material_confidence(po.lines, config)
     po = _sanitize_legal_footer_lines_v48(po, config)
     # Fill parent line ids after deduplication assigned stable sequence numbers.
     for charge in po.additional_charges:
@@ -4752,5 +4767,15 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     # Re-run validation/confidence after structural corrections.
     po = validate(po, config.get("validation", {}))
     po.validation.checks["line_parser_hypothesis"]=parser_diag
+    po.validation.checks["material_reference_shape"] = reference_confidence
+    if not reference_confidence.get("valid", True):
+        warning = (
+            "Implausible article-reference shape on line(s): "
+            + ", ".join(reference_confidence.get("severe_lines") or [])
+        )
+        if warning not in po.validation.warnings:
+            po.validation.warnings.append(warning)
+        if po.validation.status == "PASS":
+            po.validation.status = "WARNING"
     po = score(po, {**config.get("confidence", {}), "manual_review_threshold": config.get("ocr", {}).get("manual_review_threshold", 0.80)})
     return po

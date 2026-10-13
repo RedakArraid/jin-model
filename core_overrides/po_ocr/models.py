@@ -197,6 +197,8 @@ class LineItem(BaseModel):
     customer_material_number: str | None = None
     supplier_material_number: str | None = None
     material_reference_source_prefix: str | None = None
+    material_reference_confidence: float | None = None
+    material_reference_status: str | None = None
     manufacturer_part_number: str | None = None
     manufacturer_name: str | None = None
     ean: str | None = None

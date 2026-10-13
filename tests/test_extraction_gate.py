@@ -50,6 +50,20 @@ class ExtractionGateTests(unittest.TestCase):
                 del payload["business_extractions"]["purchase_order"]["lines"][0][missing]
                 self.assertTrue(apply_extraction_gate(payload)["extraction_decision"]["requires_review"])
 
+    def test_description_captured_as_reference_requires_review(self):
+        for status in ("ALPHA_ONLY", "TEXT_CAPTURE"):
+            with self.subTest(status=status):
+                payload = complete_order()
+                line = payload["business_extractions"]["purchase_order"]["lines"][0]
+                line["material_reference_status"] = status
+
+                reasons = apply_extraction_gate(payload)["extraction_decision"]["reasons"]
+
+                self.assertIn(
+                    "PRODUCT_REFERENCE_IMPLAUSIBLE",
+                    {reason["code"] for reason in reasons},
+                )
+
     def test_ambiguous_address_role_blocks_acceptance(self):
         payload = complete_order()
         payload["business_extractions"]["purchase_order"]["business_addresses"] = [{

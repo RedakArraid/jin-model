@@ -221,6 +221,41 @@ def _extract_model(payload: dict[str, Any]) -> dict[str, Any]:
         _value(field) for field in grouped_fields
         if _value(field) not in (None, "")
     ]
+    source_lines = clean_order.get("line_items") or po.get("lines") or []
+    line_summaries = []
+    reference_status_counts: dict[str, int] = {}
+    reference_confidences: list[float] = []
+    for index, line in enumerate(source_lines):
+        references = line.get("references") or {}
+        status = line.get("reference_status") or line.get("material_reference_status")
+        confidence = line.get("reference_confidence")
+        if confidence is None:
+            confidence = line.get("material_reference_confidence")
+        if status:
+            reference_status_counts[str(status)] = (
+                reference_status_counts.get(str(status), 0) + 1
+            )
+        if isinstance(confidence, (int, float)):
+            reference_confidences.append(float(confidence))
+        reference = next((value for value in (
+            references.get("supplier_material_number"),
+            references.get("article_number"),
+            references.get("material_number"),
+            references.get("customer_material_number"),
+            line.get("supplier_material_number"),
+            line.get("material_number"),
+            line.get("customer_material_number"),
+        ) if value not in (None, "")), None)
+        line_summaries.append({
+            "line_number": line.get("line_number") or str(index + 1),
+            "reference": reference,
+            "description": line.get("description"),
+            "quantity": line.get("quantity"),
+            "confidence": line.get("confidence"),
+            "reference_confidence": confidence,
+            "reference_status": status,
+            "warnings": line.get("warnings") or [],
+        })
     return {
         "document_type": document.get("primary_document_type") or document.get("detected_document_type"),
         "is_order": (document.get("primary_document_type") or document.get("detected_document_type")) in ORDER_TYPES,
@@ -265,6 +300,17 @@ def _extract_model(payload: dict[str, Any]) -> dict[str, Any]:
         "delivery_ban_status": verification.get("status"),
         "delivery_ban_verified": verification.get("verified"),
         "delivery_evidence": delivery.get("evidence") or {},
+        "line_count": len(line_summaries),
+        "line_reference_status_counts": dict(sorted(reference_status_counts.items())),
+        "line_reference_mean_confidence": (
+            round(sum(reference_confidences) / len(reference_confidences), 4)
+            if reference_confidences else None
+        ),
+        "line_reference_severe_count": sum(
+            reference_status_counts.get(status, 0)
+            for status in ("ALPHA_ONLY", "TEXT_CAPTURE")
+        ),
+        "lines": line_summaries,
         "vat_candidates": vat,
         "vat_number": vat[0]["value"] if vat else None,
         "vat_score": vat[0].get("score") if vat else None,
@@ -436,6 +482,12 @@ def _csv_row(item: dict[str, Any]) -> dict[str, Any]:
         "score_adresse_livraison": model.get("delivery_address_score"),
         "statut_ban": model.get("delivery_ban_status"),
         "ban_verifiee": model.get("delivery_ban_verified"),
+        "nombre_lignes": model.get("line_count"),
+        "statuts_references_articles": json.dumps(
+            model.get("line_reference_status_counts") or {}, ensure_ascii=False,
+        ),
+        "confiance_moyenne_references": model.get("line_reference_mean_confidence"),
+        "references_severes": model.get("line_reference_severe_count"),
         "numero_tva": model.get("vat_number"), "score_numero_tva": model.get("vat_score"),
         "decision_modele": model.get("decision"),
         "verification_type": checks["type"],

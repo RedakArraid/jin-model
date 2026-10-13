@@ -29,6 +29,8 @@ def main() -> int:
 
     raw_bytes = args.source.read_bytes()
     lengths: Counter[str] = Counter()
+    natures: Counter[str] = Counter()
+    natures_by_length: dict[str, Counter[str]] = defaultdict(Counter)
     signatures: Counter[str] = Counter()
     prefixes: dict[str, dict[str, Counter[str]]] = defaultdict(
         lambda: {"1": Counter(), "2": Counter(), "3": Counter()}
@@ -56,7 +58,14 @@ def main() -> int:
             rows += 1
             description_rows += bool(str(row.get(args.description_column) or "").strip())
             length_key = str(len(reference))
+            nature = (
+                "digits_only" if reference.isdigit()
+                else "contains_letter" if any(character.isalpha() for character in reference)
+                else "other"
+            )
             lengths[length_key] += 1
+            natures[nature] += 1
+            natures_by_length[length_key][nature] += 1
             signatures[reference_signature(reference)] += 1
             for size in (1, 2, 3):
                 if len(reference) >= size:
@@ -71,8 +80,8 @@ def main() -> int:
 
     payload = {
         "schema_version": 1,
-        "profile_id": "jin-material-reference-shapes-10564-v1",
-        "algorithm": "aggregate-length-signature-prefix-v1",
+        "profile_id": "jin-material-reference-shapes-10564-v2",
+        "algorithm": "aggregate-length-nature-signature-prefix-v2",
         "source_sha256": hashlib.sha256(raw_bytes).hexdigest(),
         "row_count": rows,
         "unique_reference_count": len(seen),
@@ -85,6 +94,13 @@ def main() -> int:
             "short_numeric_shapes_are_diagnostic_only": True,
         },
         "length_counts": dict(sorted(lengths.items(), key=lambda item: int(item[0]))),
+        "nature_counts": dict(sorted(natures.items())),
+        "nature_counts_by_length": {
+            length: dict(sorted(counter.items()))
+            for length, counter in sorted(
+                natures_by_length.items(), key=lambda item: int(item[0])
+            )
+        },
         "signature_counts": dict(sorted(signatures.items())),
         "prefix_counts_by_length": {
             length: {

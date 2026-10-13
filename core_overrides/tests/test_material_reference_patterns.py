@@ -1,9 +1,12 @@
 from types import SimpleNamespace
 
 from uda.material_references import (
+    assess_line_material_reference,
+    calibrate_line_material_confidence,
     enrich_supplier_material_roles,
     line_material_pattern_summary,
     load_material_reference_profile,
+    recover_material_references_from_descriptions,
     reference_signature,
     resolve_material_reference,
     score_material_reference,
@@ -23,6 +26,14 @@ def _line(reference, *, description="Produit", quantity=1, price=10, total=10):
         quantity=quantity,
         unit_price=price,
         line_total=total,
+        short_description=None,
+        long_description=None,
+        raw_text=None,
+        line_number="1",
+        confidence=0.99,
+        warnings=[],
+        material_reference_confidence=None,
+        material_reference_status=None,
     )
 
 
@@ -39,6 +50,19 @@ def test_material_profile_supports_families_not_only_exact_known_values():
     assert score_material_reference("8719999999", profile).supported
     assert score_material_reference("7739999999", profile).supported
     assert score_material_reference("63099999", profile).supported
+
+
+def test_grouped_and_qualified_numeric_notation_uses_the_same_shape_family():
+    profile = load_material_reference_profile({})
+    assert profile is not None
+
+    grouped = score_material_reference("8-703-406-153-0", profile)
+    qualified = score_material_reference("7733701936/LM", profile)
+    trailing_noise = score_material_reference("87387029230_", profile)
+
+    assert grouped.supported and grouped.normalized == "87034061530"
+    assert qualified.supported and qualified.normalized == "7733701936"
+    assert trailing_noise.supported and trailing_noise.normalized == "87387029230"
 
 
 def test_material_profile_rejects_common_header_numeric_noise():
@@ -160,3 +184,134 @@ def test_unknown_prefix_is_not_inferred_from_a_single_line():
     line = _line("ZX 8719999999")
     assert enrich_supplier_material_roles([line], config) == 0
     assert line.supplier_material_number is None
+
+
+def test_dominant_numeric_lengths_produce_explicit_high_reference_confidence():
+    lines = [_line("8719999999"), _line("87199999999")]
+
+    diagnostics = calibrate_line_material_confidence(lines, {})
+
+    assert diagnostics["valid"]
+    assert diagnostics["status_counts"] == {"SUPPORTED_DOMINANT_NUMERIC": 2}
+    assert all(line.material_reference_status == "SUPPORTED_DOMINANT_NUMERIC" for line in lines)
+    assert all(line.material_reference_confidence >= 0.95 for line in lines)
+    # Shape is corroboration: it cannot inflate the confidence read from the row.
+    assert all(line.confidence <= 0.99 for line in lines)
+
+
+def test_supported_alphanumeric_family_is_kept_without_exact_lookup():
+    line = _line("8750772763T03")
+
+    assessment = assess_line_material_reference(
+        line, load_material_reference_profile({}), {}
+    )
+
+    assert assessment["status"] == "SUPPORTED_PROFILE"
+    assert assessment["nature"] == "contains_letter"
+    assert assessment["confidence"] >= 0.90
+
+
+def test_alpha_only_reference_is_capped_and_flagged():
+    line = _line("ELECTRODE", description="Electrode allumage")
+
+    diagnostics = calibrate_line_material_confidence([line], {})
+
+    assert not diagnostics["valid"]
+    assert diagnostics["severe_lines"] == ["1"]
+    assert line.material_reference_status == "ALPHA_ONLY"
+    assert line.material_reference_confidence == 0.0
+    assert line.confidence <= 0.55
+    assert "material_reference_alpha_only" in line.warnings
+
+
+def test_reference_cannot_capture_the_description_or_full_product_text():
+    for reference, description in (
+        ("CARTER DU BLOC", "CARTER DU BLOC"),
+        ("8719999999 CARTER DU BLOC", "CARTER DU BLOC"),
+    ):
+        line = _line(reference, description=description)
+
+        diagnostics = calibrate_line_material_confidence([line], {})
+
+        assert not diagnostics["valid"]
+        assert line.material_reference_status == "TEXT_CAPTURE"
+        assert line.confidence <= 0.35
+        assert "material_reference_text_capture" in line.warnings
+
+
+def test_atypical_compact_reference_is_preserved_but_not_overtrusted():
+    line = _line("ABC123")
+
+    diagnostics = calibrate_line_material_confidence([line], {})
+
+    assert diagnostics["valid"]
+    assert line.material_reference_status == "ATYPICAL"
+    assert line.material_reference_confidence < 0.74
+    assert line.confidence <= 0.82
+    assert "material_reference_shape_atypical" in line.warnings
+
+
+def test_implausible_reference_shape_penalizes_parser_hypothesis():
+    supported = line_material_pattern_summary([_line("8719999999")], {})
+    captured = line_material_pattern_summary(
+        [_line("8719999999 CARTER DU BLOC", description="CARTER DU BLOC")], {}
+    )
+
+    assert supported["bonus"] > 0
+    assert supported["penalty"] == 0
+    assert captured["bonus"] == 0
+    assert captured["penalty"] > 0
+    assert captured["status_counts"] == {"TEXT_CAPTURE": 1}
+
+
+def test_reference_evidence_never_inflates_low_source_confidence():
+    line = _line("8719999999")
+    line.confidence = 0.61
+
+    calibrate_line_material_confidence([line], {})
+
+    assert line.confidence <= 0.61
+
+
+def test_missing_aggregate_profile_does_not_penalize_existing_line_confidence(tmp_path):
+    line = _line("8719999999")
+    config = {"layout": {"material_reference_profile_path": str(tmp_path / "missing.json")}}
+
+    diagnostics = calibrate_line_material_confidence([line], config)
+
+    assert not diagnostics["profile_loaded"]
+    assert diagnostics["checked"] == 0
+    assert line.confidence == 0.99
+    assert line.material_reference_status is None
+
+
+def test_leading_grouped_reference_is_recovered_from_a_commercial_description():
+    line = _line(None, description=(
+        "8 702 000 253 0 3 002752 BOUT. SELECTEUR TEMP/DEBIT D'EAU"
+    ))
+
+    recovered = recover_material_references_from_descriptions([line], {})
+
+    assert recovered == 1
+    assert line.material_number == "8 702 000 253 0"
+    assert line.article_number == "8 702 000 253 0"
+    assert line.supplier_material_number == "87020002530"
+    assert "material_reference_recovered_from_description" in line.warnings
+
+
+def test_description_recovery_requires_a_strong_commercial_row_and_profile_match():
+    incomplete = _line(
+        None,
+        description="8 702 000 253 0 BOUT. SELECTEUR",
+        price=None,
+        total=None,
+    )
+    customer_code = _line(None, description="1 003516 VIS DE PURGE")
+
+    recovered = recover_material_references_from_descriptions(
+        [incomplete, customer_code], {}
+    )
+
+    assert recovered == 0
+    assert incomplete.material_number is None
+    assert customer_code.material_number is None

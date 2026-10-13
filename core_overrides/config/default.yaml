@@ -277,6 +277,17 @@ layout:
   material_reference_profile_path: null
   material_reference_pattern_min_score: 0.74
   material_reference_pattern_hypothesis_weight: 0.14
+  material_reference_pattern_hypothesis_penalty: 0.18
+  # The aggregate profile calibrates confidence on an already extracted line.
+  # It never creates a row and never performs an exact master-data lookup.
+  material_reference_line_confidence: true
+  material_reference_line_confidence_weight: 0.28
+  material_reference_text_capture_cap: 0.35
+  material_reference_alpha_only_cap: 0.55
+  material_reference_missing_cap: 0.72
+  material_reference_atypical_cap: 0.82
+  material_reference_description_recovery: true
+  material_reference_description_recovery_min_score: 0.90
   material_reference_role_enrichment: true
   material_reference_role_min_score: 0.86
   # Some customers print a stable source qualifier before the real material

@@ -131,6 +131,12 @@ def apply_extraction_gate(payload: dict[str, Any]) -> dict[str, Any]:
                 "customer_material_number", "sku", "ean", "gtin",
             ) if line.get(key)), None)
             require(bool(reference), "PRODUCT_REFERENCE_MISSING", path)
+            reference_status = line.get("material_reference_status")
+            require(
+                reference_status not in {"ALPHA_ONLY", "TEXT_CAPTURE"},
+                "PRODUCT_REFERENCE_IMPLAUSIBLE",
+                f"{path}.material_number",
+            )
             require(_money(line.get("quantity")) is not None, "QUANTITY_MISSING", path)
             require(any(_money(line.get(key)) is not None for key in ("net_unit_price", "unit_price")), "UNIT_PRICE_MISSING", path)
             require(_money(line.get("line_total")) is not None, "LINE_TOTAL_MISSING", path)

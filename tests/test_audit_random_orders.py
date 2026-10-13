@@ -55,3 +55,45 @@ def test_extract_model_keeps_legacy_delivery_fields_compatible():
     assert model["delivery_address"] == "PIECES EXPRESS, 1 RUE PHILIPPE LEBON"
     assert model["delivery_source_value"] is None
     assert model["delivery_lines"] == ["PIECES EXPRESS", "1 RUE PHILIPPE LEBON"]
+
+
+def test_extract_model_keeps_article_reference_confidence_for_batch_audits():
+    payload = {
+        "document": {"primary_document_type": "purchase_order"},
+        "normalized_output": {
+            "order": {
+                "line_items": [
+                    {
+                        "line_number": "1",
+                        "references": {"supplier_material_number": "8719999999"},
+                        "description": "Produit",
+                        "quantity": 1,
+                        "confidence": 0.98,
+                        "reference_confidence": 1.0,
+                        "reference_status": "SUPPORTED_DOMINANT_NUMERIC",
+                    },
+                    {
+                        "line_number": "2",
+                        "references": {"article_number": "CARTER DU BLOC"},
+                        "description": "CARTER DU BLOC",
+                        "quantity": 1,
+                        "confidence": 0.35,
+                        "reference_confidence": 0.0,
+                        "reference_status": "TEXT_CAPTURE",
+                        "warnings": ["material_reference_text_capture"],
+                    },
+                ]
+            }
+        },
+    }
+
+    model = _extract_model(payload)
+
+    assert model["line_count"] == 2
+    assert model["line_reference_status_counts"] == {
+        "SUPPORTED_DOMINANT_NUMERIC": 1,
+        "TEXT_CAPTURE": 1,
+    }
+    assert model["line_reference_mean_confidence"] == 0.5
+    assert model["line_reference_severe_count"] == 1
+    assert model["lines"][1]["reference"] == "CARTER DU BLOC"

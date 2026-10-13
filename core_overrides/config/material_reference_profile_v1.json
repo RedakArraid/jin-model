@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "profile_id": "jin-material-reference-shapes-10564-v1",
-  "algorithm": "aggregate-length-signature-prefix-v1",
+  "profile_id": "jin-material-reference-shapes-10564-v2",
+  "algorithm": "aggregate-length-nature-signature-prefix-v2",
   "source_sha256": "2fb2cfc284190828400c22e61ed88db21aec549a954953a8cbfbd0e5978ddafe",
   "row_count": 34671,
   "unique_reference_count": 34671,
@@ -21,6 +21,37 @@
     "10": 25006,
     "11": 6897,
     "13": 120
+  },
+  "nature_counts": {
+    "contains_letter": 228,
+    "digits_only": 34443
+  },
+  "nature_counts_by_length": {
+    "5": {
+      "digits_only": 374
+    },
+    "6": {
+      "contains_letter": 1,
+      "digits_only": 10
+    },
+    "7": {
+      "digits_only": 1175
+    },
+    "8": {
+      "contains_letter": 25,
+      "digits_only": 1063
+    },
+    "10": {
+      "contains_letter": 65,
+      "digits_only": 24941
+    },
+    "11": {
+      "contains_letter": 17,
+      "digits_only": 6880
+    },
+    "13": {
+      "contains_letter": 120
+    }
   },
   "signature_counts": {
     "A1-D10": 1,

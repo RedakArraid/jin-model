@@ -171,6 +171,8 @@
         "delivery": {"type": "object"},
         "status": {"type": "string"},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "reference_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "reference_status": {"type": "string"},
         "warnings": {"type": "array"},
         "evidence": {"type": "object"}
       },
