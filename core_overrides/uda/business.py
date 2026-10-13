@@ -4379,7 +4379,15 @@ def _legal_footer_line_v48(line, config: dict) -> bool:
     terms=tuple(_fold(x) for x in config.get("layout",{}).get("legal_footer_line_terms",[
         "siren","siret","rcs","iban","bic","capital de","capital social","n° intracom","no intracom","tva intracom","ape ","naf "
     ]))
-    hits=sum(1 for x in terms if x and x in low)
+    # Match complete legal tokens/phrases. Substring matching made ``APE`` fire
+    # inside legitimate product words such as ``SOUPAPE`` and removed real lines.
+    hits=sum(
+        1 for value in terms
+        if value.strip() and re.search(
+            rf"(?<![a-z0-9]){re.escape(value.strip())}(?![a-z0-9])",
+            low,
+        )
+    )
     if hits>=int(config.get("layout",{}).get("legal_footer_min_term_hits",1)):
         # Legitimate material rows rarely contain corporate-registration vocabulary.
         return True
@@ -4403,6 +4411,29 @@ def _sanitize_legal_footer_lines_v48(po, config: dict):
                 bucket.append(raw[:1000])
     for i,line in enumerate(po.lines,1):
         line.line_number=str(i)
+    return po
+
+
+def _repair_legal_footer_validation_v65(po, config: dict):
+    """Keep final validation aligned with the token-safe footer filter."""
+    bad = [
+        line.line_number or str(index + 1)
+        for index, line in enumerate(po.lines)
+        if _legal_footer_line_v48(line, config)
+    ]
+    check = {"count": len(bad), "lines": bad, "valid": not bad}
+    po.validation.checks["legal_footer_line_items"] = check
+    prefix = "Legal/footer text was structured as purchase-order line item(s):"
+    po.validation.warnings = [
+        warning for warning in po.validation.warnings
+        if not str(warning).startswith(prefix)
+    ]
+    if bad:
+        po.validation.warnings.append(f"{prefix} {', '.join(bad)}")
+    po.validation.status = (
+        "FAIL" if po.validation.errors
+        else ("WARNING" if po.validation.warnings else "PASS")
+    )
     return po
 
 
@@ -4986,6 +5017,7 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     po.business_addresses = build_business_addresses(po, pages, config)
     # Re-run validation/confidence after structural corrections.
     po = validate(po, config.get("validation", {}))
+    po = _repair_legal_footer_validation_v65(po, config)
     po.validation.checks["line_parser_hypothesis"]=parser_diag
     po.validation.checks["material_reference_shape"] = reference_confidence
     if not reference_confidence.get("valid", True):

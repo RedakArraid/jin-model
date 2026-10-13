@@ -1,5 +1,14 @@
 # Changelog
 
+## 5.16.2-stacked-reference-net-price
+
+- Preserve product words such as `SOUPAPE` by matching legal-footer acronyms (`APE`, `NAF`, etc.) only as complete tokens.
+- Recognize a distinct `Prix net` / `Net price` column beside `P.U.` and calculate line amounts from the printed net unit price while retaining the gross/list price.
+- Type repeated references printed in the designation area as supplier material references and retain short left-column article codes as customer material references.
+- Repair leading OCR table-rule artifacts (`|871...` or `1871...`) only when a repeated numeric reference column establishes a dominant length and prefix.
+- Stop multiline descriptions at standalone attention/footer rows and expose `gross_unit_price` in the clean JSON output.
+- Add regression coverage for the supplied VERNEY order `CF0315701` layout.
+
 ## 5.16.1-native-table-header-guard
 
 - Prevent complete one-row table headers from swallowing product and freight rows whose descriptions contain header-like words such as `FOURNISSEUR`.

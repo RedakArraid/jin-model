@@ -22,7 +22,9 @@ from uda.business import (
     _merge_explicit_page_charges_v63,
     _party_from_labeled_zone_v48,
     _repair_scan_currency_suffix_artifacts_v64,
+    _repair_legal_footer_validation_v65,
     _separate_additional_charge_lines_v62,
+    _sanitize_legal_footer_lines_v48,
     _sanitize_non_product_lines_v61,
     _price_then_quantity_table_items,
     _quantity_first_table_items,
@@ -299,6 +301,92 @@ def test_supplier_role_word_inside_shipping_row_is_not_a_party_label():
     assert (charge.quantity, charge.uom, charge.unit_price, charge.amount) == (
         1, "PCE", 20, 20,
     )
+
+
+def test_stacked_customer_and_supplier_references_use_net_price_without_losing_rows():
+    page = _page([
+        (180, [("Article", 10, 50), ("Designation", 120, 210),
+               ("Quantite", 315, 360), ("U.F", 375, 395),
+               ("P.U", 420, 442), ("Prix", 480, 505), ("net", 515, 538)]),
+        (200, [("N/REF", 70, 105), (":", 108, 111),
+               ("A", 120, 128), ("L'ATTENTION", 132, 198)]),
+        (220, [("8718585355", 70, 125)]),
+        (232, [("SONDE", 70, 105), ("EXTERIEURE", 110, 170),
+               ("1,000", 320, 352), ("U", 378, 386),
+               ("98,66", 420, 450), ("50,32", 510, 540),
+               ("29/02/24", 548, 590), ("8", 594, 598)]),
+        (248, [("C10921", 10, 50), ("|87167432990", 70, 132)]),
+        (260, [("VASE", 70, 100), ("EXPANSION", 105, 165), ("5L", 170, 185),
+               ("3,000", 320, 352), ("U", 378, 386),
+               ("114,48", 415, 452), ("58,38", 510, 540),
+               ("29/02/24", 548, 590), ("8", 594, 598)]),
+        (276, [("C10937", 10, 50), ("|87167571380", 70, 132)]),
+        (288, [("TETE", 70, 98), ("DE", 102, 116), ("PURGEUR", 120, 170),
+               ("1,000", 320, 352), ("U", 378, 386),
+               ("27,79", 420, 450), ("14,17", 510, 540),
+               ("29/02/24", 548, 590), ("8", 594, 598)]),
+        # The leading ``1`` is an OCR rendering of the same vertical rule as ``|``.
+        (304, [("C19855", 10, 50), ("187181070500", 70, 137)]),
+        (316, [("ELECTRODE", 70, 130), ("ALLUMAGE", 135, 190),
+               ("2,000", 320, 352), ("U", 378, 386),
+               ("21,63", 420, 450), ("11,03", 510, 540),
+               ("29/02/24", 548, 590), ("8", 594, 598)]),
+        (340, [("io", 70, 82), ("ATTENTION", 90, 150)]),
+        (360, [("MT", 300, 315), ("H.T.", 320, 345), ("743,84", 510, 550)]),
+    ])
+
+    lines = extract_multiline_lines_from_pages([page])
+
+    assert len(lines) == 4
+    assert lines[0].material_number == "8718585355"
+    assert lines[0].supplier_material_number == "8718585355"
+    assert lines[0].customer_material_number is None
+    assert (lines[0].gross_unit_price, lines[0].unit_price,
+            lines[0].net_unit_price, lines[0].line_total) == (
+                98.66, 50.32, 50.32, 50.32,
+            )
+    assert lines[1].customer_material_number == "C10921"
+    assert lines[1].supplier_material_number == "87167432990"
+    assert lines[1].material_number == "87167432990"
+    assert (lines[1].quantity, lines[1].unit_price, lines[1].line_total) == (
+        3, 58.38, 175.14,
+    )
+    assert lines[2].material_number == "87167571380"
+    assert lines[3].customer_material_number == "C19855"
+    assert lines[3].supplier_material_number == "87181070500"
+    assert lines[3].material_number == "87181070500"
+    assert lines[3].description == "ELECTRODE ALLUMAGE"
+    assert "ATTENTION" not in lines[3].raw_text
+
+
+def test_legal_footer_filter_does_not_match_ape_inside_soupape():
+    product = LineItem(
+        line_number="1", material_number="87167621440",
+        description="SOUPAPE DE SECURITE 3BARS 15X21 FEM",
+        quantity=3, unit_price=17.26, line_total=51.78,
+        raw_text="SOUPAPE DE SECURITE 3BARS 15X21 FEM",
+    )
+    footer = LineItem(
+        line_number="2", material_number="01565121900014",
+        description="SIRET 015 651 219 00014 APE 4674 B",
+        quantity=1, unit_price=1, line_total=1,
+    )
+    po = SimpleNamespace(
+        lines=[product, footer], notes={},
+        validation=SimpleNamespace(
+            checks={"legal_footer_line_items": {"count": 1, "valid": False}},
+            warnings=["Legal/footer text was structured as purchase-order line item(s): 1"],
+            errors=[], status="WARNING",
+        ),
+    )
+
+    po = _sanitize_legal_footer_lines_v48(po, {})
+    po = _repair_legal_footer_validation_v65(po, {})
+
+    assert [line.material_number for line in po.lines] == ["87167621440"]
+    assert po.lines[0].description.startswith("SOUPAPE")
+    assert po.validation.checks["legal_footer_line_items"]["valid"]
+    assert po.validation.status == "PASS"
 
 
 def test_quantity_column_prefers_unit_bound_number_over_product_dimension():

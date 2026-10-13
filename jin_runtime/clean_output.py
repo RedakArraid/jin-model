@@ -1526,6 +1526,7 @@ def _line(source: dict[str, Any]) -> dict[str, Any]:
         "unit": source.get("uom"),
         "pricing": {
             "unit_price": source.get("unit_price"),
+            "gross_unit_price": source.get("gross_unit_price"),
             "net_unit_price": source.get("net_unit_price"),
             "price_unit": source.get("price_unit"), "currency": source.get("currency"),
             "discount_percent": source.get("discount_percent"),

@@ -1,1 +1,1 @@
-__version__ = "5.16.1-native-table-header-guard"
+__version__ = "5.16.2-stacked-reference-net-price"
