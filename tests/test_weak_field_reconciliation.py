@@ -1051,6 +1051,37 @@ class WeakFieldReconciliationTests(unittest.TestCase):
         self.assertNotIn("industrial_zone", selected[0]["address"])
         self.assertNotIn("01704", selected[0]["formatted_address"])
 
+    def test_geometry_crossing_two_address_columns_cannot_replace_clean_delivery(self):
+        payload = base_payload()
+        po = payload["business_extractions"]["purchase_order"]
+        po["business_addresses"] = [
+            address_block(
+                "ship_to", "SIDV BAYONNE", "24", "Chemin de Sabalce",
+                "64100", "BAYONNE",
+            )
+        ]
+        crossed = ship_candidate(
+            "SIDV BAYONNE", "124,126", "rue", "de Stalingrad",
+            "64100", "BAYONNE",
+        )
+        crossed["source_text"] = (
+            "SIDV BAYONNE | 124,126 rue de Stalingrad | "
+            "24 Chemin de Sabalce 93711 Drancy Cedex | 64100 BAYONNE"
+        )
+        crossed["formatted_address_suggestion"] = crossed["source_text"]
+        payload["weak_field_suggestions"]["address_candidates"] = [crossed]
+
+        out = reconcile_weak_fields(payload)
+        selected = [
+            item for item in out["business_extractions"]["purchase_order"]["business_addresses"]
+            if item["role"] == "ship_to"
+        ]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["address"]["house_number"], "24")
+        self.assertEqual(selected[0]["address"]["street"], "Chemin de Sabalce")
+        self.assertEqual(selected[0]["address"]["postal_code"], "64100")
+        self.assertEqual(out["weak_field_reconciliation"]["actions"], [])
+
     def test_geometry_removes_product_lines_but_keeps_named_delivery_contact(self):
         payload = base_payload()
         polluted = address_block(

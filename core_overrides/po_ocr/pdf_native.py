@@ -13,6 +13,31 @@ from .normalize import ascii_fold
 _LOGGER = logging.getLogger(__name__)
 
 
+def _deduplicate_native_words(words: list[WordToken]) -> list[WordToken]:
+    """Remove duplicated glyph layers without collapsing real repeated words.
+
+    Some ERP PDFs contain two identical text objects at the same coordinates.  They
+    render as a single word, but PyMuPDF returns both objects and downstream row
+    parsers see values such as ``337.12 337.12``.  Position is part of the key so a
+    legitimate repetition at a different location is preserved.
+    """
+    unique: list[WordToken] = []
+    seen: set[tuple[str, float, float, float, float]] = set()
+    for word in words:
+        key = (
+            word.text,
+            round(float(word.bbox[0]), 2),
+            round(float(word.bbox[1]), 2),
+            round(float(word.bbox[2]), 2),
+            round(float(word.bbox[3]), 2),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(word)
+    return unique
+
+
 def _needs_hybrid_ocr(page: fitz.Page, words: list[WordToken], cfg: dict) -> bool:
     """Recognize raster templates that contribute labels absent from the text layer.
 
@@ -72,6 +97,7 @@ def extract_native_page(page: fitz.Page, page_number: int, cfg: dict | None = No
         text = str(text).strip()
         if text:
             words.append(WordToken(text=text, page=page_number, bbox=(float(x0), float(y0), float(x1), float(y1)), confidence=1.0, source="native_pdf"))
+    words = _deduplicate_native_words(words)
     cfg = cfg or {}
     if _needs_hybrid_ocr(page, words, cfg):
         try:

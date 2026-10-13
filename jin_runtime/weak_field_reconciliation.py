@@ -1249,6 +1249,7 @@ def reconcile_weak_fields(payload: dict[str, Any]) -> dict[str, Any]:
             item for item in geometry_candidates
             if str(item.get("role") or "").lower() == "ship_to"
             and _complete_delivery(item)
+            and not _source_candidate_crosses_address_columns(item)
         ]
         if clean_source_candidates:
             role_candidates = clean_source_candidates
@@ -1259,6 +1260,7 @@ def reconcile_weak_fields(payload: dict[str, Any]) -> dict[str, Any]:
         candidates = [
             item for item in role_candidates
             if isinstance(item, dict) and str(item.get("role") or "").lower() == "ship_to"
+            and not _source_candidate_crosses_address_columns(item)
         ]
         candidates = _merge_multiline_delivery_candidates(candidates)
         complete: dict[tuple[str, ...], dict[str, Any]] = {}

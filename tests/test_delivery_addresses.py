@@ -1,9 +1,77 @@
 import unittest
 
+from jin_runtime.clean_output import _refresh_delivery_label
 from jin_runtime.delivery_addresses import clean_delivery_address, enrich_delivery_addresses
 
 
 class DeliveryAddressTests(unittest.TestCase):
+    def test_legal_footer_noise_and_untyped_siret_suffix_are_not_postal_lines(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "Z.A. HENRI SPRIET",
+            "warnings": ["untyped_postal_routing_code_inferred"],
+            "formatted_address": (
+                "1 RUE Philippe Lebon, www.piecesXpress.com | "
+                "SAS au capital de 225 000, 00013, 14120 MONDEVILLE, France"
+            ),
+            "address": {
+                "raw_lines": [
+                    "1 Rue Philippe Lebon", "14120 MONDEVILLE",
+                    "www.piecesXpress.com", "SAS au capital de 225 000",
+                    "RCS Caen 790 553 242 Siret 790 553 242 00013",
+                ],
+                "house_number": "1",
+                "street": "RUE Philippe Lebon",
+                "address_complement": (
+                    "www.piecesXpress.com | SAS au capital de 225 000"
+                ),
+                "postal_routing_code": "00013",
+                "postal_code": "14120",
+                "city": "MONDEVILLE",
+                "country": "France",
+            },
+        })
+
+        self.assertNotIn("address_complement", clean["components"])
+        self.assertNotIn("postal_routing_code", clean["components"])
+        self.assertEqual(clean["lines"], [
+            "Z.A. HENRI SPRIET",
+            "1 RUE PHILIPPE LEBON",
+            "14120 MONDEVILLE",
+            "FRANCE",
+        ])
+
+    def test_recipient_refresh_keeps_clean_zone_before_street_order(self):
+        refreshed = _refresh_delivery_label({
+            "role": "ship_to",
+            "party_name": "PIECES EXPRESS",
+            "formatted_lines": [
+                "Z.A. HENRI SPRIET", "1 RUE PHILIPPE LEBON",
+                "14120 MONDEVILLE", "FRANCE",
+            ],
+            "source_formatted": (
+                "1 RUE Philippe Lebon, www.piecesXpress.com | "
+                "SAS au capital de 225 000, 00013, 14120 MONDEVILLE, France"
+            ),
+            "components": {
+                "recipient": "PIECES EXPRESS",
+                "house_number": "1",
+                "street": "RUE Philippe Lebon",
+                "industrial_zone": "Z.A. HENRI SPRIET",
+                "postal_code": "14120",
+                "city": "MONDEVILLE",
+                "country": "France",
+            },
+        })
+
+        self.assertEqual(refreshed["formatted_lines"], [
+            "PIECES EXPRESS",
+            "Z.A. HENRI SPRIET",
+            "1 RUE PHILIPPE LEBON",
+            "14120 MONDEVILLE",
+            "FRANCE",
+        ])
+
     def test_clean_label_separates_contact_and_removes_duplicate_cedex(self):
         block = {
             "role": "ship_to", "party_name": "CLIENT", "contact_name": "Alice",
@@ -678,6 +746,33 @@ class DeliveryAddressTests(unittest.TestCase):
                 "FRANCE",
             ],
         )
+
+    def test_short_industrial_zone_keeps_printed_order_before_street(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "PIECES DETACHEES",
+            "department": "Z.I.",
+            "address": {
+                "raw_lines": [
+                    "Z.I. - Rue Denis Papin",
+                    "Rue Denis Papin",
+                    "24102 BERGERAC",
+                ],
+                "street": "Rue Denis Papin",
+                "industrial_zone": "Z.I.",
+                "postal_code": "24102",
+                "city": "BERGERAC",
+                "country": "France",
+            },
+        })
+
+        self.assertEqual(clean["lines"], [
+            "PIECES DETACHEES",
+            "Z.I.",
+            "RUE DENIS PAPIN",
+            "24102 BERGERAC",
+            "FRANCE",
+        ])
 
     def test_delivery_wish_sentence_is_not_a_department(self):
         clean = clean_delivery_address({

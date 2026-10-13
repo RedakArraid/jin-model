@@ -231,7 +231,11 @@ def _source_ordered_postal_lines(
             (
                 (index, source_line.index(normalized_line))
                 for index, source_line in enumerate(normalized_source)
-                if len(normalized_line.replace(" ", "")) >= 3
+                if (
+                    len(normalized_line.replace(" ", "")) >= 3
+                    or re.sub(r"[^A-Z0-9]", "", normalized_line.upper())
+                    in {"BP", "CS", "ZA", "ZAC", "ZAE", "ZI"}
+                )
                 and normalized_line in source_line
             ),
             None,
@@ -291,7 +295,9 @@ def _clean_address_complement(value: Any) -> str | None:
         r"code porte|code cadenas|digicode|horaires?|reception|adherent|portable|conditions? liv|"
         r"lieu de livraison|date de livraison|"
         r"livraison de preference|"
-        r"livrer de preference|livraison le matin|pas de livraison|instruction de livraison)\b",
+        r"livrer de preference|livraison le matin|pas de livraison|instruction de livraison|"
+        r"www|https?|au capital|capital social|siret|siren|rcs|n[ .]*(?:tva|intracom)|"
+        r"iban|bic)\b|@",
         folded,
     ):
         return None
@@ -508,6 +514,12 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
         if value
     )
     postal_routing_code = _text(address.get("postal_routing_code"))
+    block_warnings = block.get("warnings") or []
+    if isinstance(block_warnings, str):
+        block_warnings = [block_warnings]
+    untyped_routing = "untyped_postal_routing_code_inferred" in {
+        str(warning) for warning in block_warnings
+    }
     inferred_po_box = None
     if postal_routing_code and re.search(
         rf"\bB\.?\s*P\.?\s*{re.escape(postal_routing_code)}\b",
@@ -515,6 +527,11 @@ def clean_delivery_address(block: dict[str, Any]) -> dict[str, Any]:
         flags=re.I,
     ):
         inferred_po_box = _prefixed(postal_routing_code, "BP")
+        postal_routing_code = None
+    elif postal_routing_code and untyped_routing:
+        # A bare five-digit suffix recovered from a legal footer is commonly
+        # the NIC part of a SIRET (for example ``... 00013``), not a postal
+        # routing line.  Typed BP/CS/TSA values are handled separately above.
         postal_routing_code = None
 
     raw_party_name = _text(block.get("party_name"))

@@ -68,7 +68,28 @@ HEADER_ALIASES = {
     "date": {"date", "delivery", "livraison", "lieferdatum"},
 }
 
+CUSTOMER_MATERIAL_QUALIFIERS = {
+    "interne", "internal", "client", "customer", "acheteur", "buyer",
+    "cust", "kunden",
+}
+SUPPLIER_MATERIAL_QUALIFIERS = {
+    "fournisseur", "supplier", "vendor", "vendeur", "lieferant",
+}
+
 STOP_WORDS = {"subtotal", "sub total", "sous-total", "sous total", "net total", "total net", "grand total", "total", "vat", "tva", "tax", "taxe", "mwst", "shipping", "freight"}
+
+
+def _is_line_table_stop(text: str) -> bool:
+    low = ascii_fold(text).lower().strip()
+    if any(low.startswith(value) for value in STOP_WORDS):
+        return True
+    return bool(re.match(
+        r"^(?:\(?\d+\)?\s+)?(?:a\s+livrer\b|adresse\s+de\s+livraison\b|"
+        r"delivery\s+address\b|reglement\b|payment\b|poids\b|attention\b|"
+        r"total\s+hors\b|montant\s+de\s+port\b|frais\s+de\s+(?:port|transport)\b|"
+        r"(?:shipping|freight)\s+(?:charge|cost|fee)\b)",
+        low,
+    ))
 
 
 @dataclass
@@ -283,13 +304,161 @@ def _canonical_header(token: str) -> str | None:
     return None
 
 
-def _column_headers(row: TextRow) -> dict[str, float]:
+def _header_token(token: str) -> str:
+    return ascii_fold(token).lower().strip(" .:/-_()[]")
+
+
+def _column_headers_from_rows(rows: list[TextRow]) -> dict[str, float]:
+    """Resolve columns and the ownership of customer/supplier references.
+
+    Headers are frequently split over two rows, for example ``CODE | REF`` then
+    ``INTERNE | FOURNISSEUR``. Averaging both reference positions into one generic
+    material column destroys the table geometry, so each anchor is paired with its
+    nearest role qualifier.
+    """
+    words = [word for row in rows for word in row.words]
     found: dict[str, list[float]] = {}
-    for word in row.words:
+    material_headers: list[float] = []
+    qualifiers: list[tuple[str, float]] = []
+    for word in words:
         key = _canonical_header(word.text)
-        if key:
-            found.setdefault(key, []).append((word.bbox[0] + word.bbox[2]) / 2)
-    return {k: statistics.fmean(v) for k, v in found.items()}
+        center = (word.bbox[0] + word.bbox[2]) / 2
+        if key == "material":
+            material_headers.append(center)
+        elif key:
+            found.setdefault(key, []).append(center)
+        token = _header_token(word.text)
+        if token in CUSTOMER_MATERIAL_QUALIFIERS:
+            qualifiers.append(("customer_material", center))
+        elif token in SUPPLIER_MATERIAL_QUALIFIERS:
+            qualifiers.append(("supplier_material", center))
+
+    columns = {key: statistics.fmean(values) for key, values in found.items()}
+    assigned: set[str] = set()
+    unresolved: list[float] = []
+    for center in sorted(material_headers):
+        nearby = [
+            (abs(center - qualifier_center), role)
+            for role, qualifier_center in qualifiers
+            if abs(center - qualifier_center) <= 105.0
+        ]
+        role = min(nearby)[1] if nearby else None
+        if role and role not in assigned:
+            columns[role] = center
+            assigned.add(role)
+        else:
+            unresolved.append(center)
+    if unresolved:
+        columns.setdefault("material", unresolved.pop(0))
+    if unresolved:
+        # Retain a second unqualified boundary without inventing its business role.
+        columns.setdefault("secondary_material", unresolved.pop(0))
+    return columns
+
+
+def _column_headers(row: TextRow) -> dict[str, float]:
+    return _column_headers_from_rows([row])
+
+
+def _find_table_header(
+    rows: list[TextRow], min_header_matches: int,
+) -> tuple[int, int, dict[str, float]] | None:
+    """Find a one-to-three-row commercial table header."""
+    best = None
+    for start in range(len(rows)):
+        for width in range(1, 4):
+            group = rows[start:start + width]
+            if len(group) != width or any(row.page != group[0].page for row in group):
+                continue
+            heights = [max(1.0, row.bbox[3] - row.bbox[1]) for row in group if row.bbox]
+            if not heights:
+                continue
+            span = group[-1].bbox[3] - group[0].bbox[1]
+            if span > max(80.0, statistics.fmean(heights) * 6.0):
+                continue
+            columns = _column_headers_from_rows(group)
+            semantic = set(columns)
+            reference_keys = {
+                "material", "customer_material", "supplier_material",
+                "secondary_material",
+            }
+            has_reference = bool(semantic & reference_keys)
+            distinct = len(semantic - {"customer_material", "supplier_material", "secondary_material"})
+            distinct += int(bool(semantic & {"customer_material", "supplier_material", "secondary_material"}))
+            if not (
+                has_reference
+                and "description" in semantic
+                and "quantity" in semantic
+                and ("unit_price" in semantic or "net_unit_price" in semantic or "total" in semantic)
+                and distinct >= min_header_matches
+            ):
+                continue
+            explicit_roles = len(semantic & {"customer_material", "supplier_material"})
+            # Prefer the narrowest header band once the same semantics are found;
+            # otherwise the first product row can be swallowed as a third header.
+            score = (explicit_roles, distinct, -width)
+            candidate = (score, start, start + width, columns)
+            if best is None or score > best[0]:
+                best = candidate
+        if best is not None and best[1] == start and best[0][0] >= 1:
+            break
+    return (best[1], best[2], best[3]) if best else None
+
+
+def _parse_table_number(value: str | None) -> float | None:
+    """Parse a number while ignoring an attached printed unit marker."""
+    if value is None:
+        return None
+    source = str(value).replace("\u00a0", " ").strip()
+    compact = re.sub(r"\s+", "", source)
+    match = re.fullmatch(
+        r"([-+]?\d+(?:[.,]\d{1,6})?)(?:[A-Za-z]{1,6}\.?|[€$£])?",
+        compact,
+    )
+    if match:
+        numeric = match.group(1)
+    else:
+        candidates = re.findall(
+            r"(?<!\d)(?:\d{1,3}(?:[ .']\d{3})+|\d+)(?:[,.]\d{1,6})?(?!\d)",
+            source,
+        )
+        # Never concatenate distinct price/date/tax fields that drifted into a
+        # single geometry bucket. Callers with column anchors can recover the
+        # intended number independently.
+        if len(candidates) != 1:
+            return None
+        numeric = candidates[0]
+    if re.fullmatch(r"[-+]?\d+\.\d{1,6}", numeric):
+        try:
+            return float(numeric)
+        except ValueError:
+            return None
+    return parse_number(numeric)
+
+
+def _quantity_unit(value: str | None) -> str | None:
+    compact = re.sub(r"\s+", "", str(value or ""))
+    match = re.fullmatch(r"[-+]?\d+(?:[.,]\d{1,6})?([A-Za-z]{1,6})\.?", compact)
+    if not match:
+        return None
+    unit = match.group(1).upper()
+    if unit in {"P", "PC", "PCS", "PCE", "PIEC", "PIECE", "PIECES"}:
+        return "PCE"
+    return normalize_unit(unit)
+
+
+def _reference_cell(value: str | None) -> tuple[str | None, str | None]:
+    """Split a reference from description text that drifted into its column."""
+    text = clean_text(value)
+    if not text:
+        return None, None
+    tokens = text.split()
+    index = next((i for i, token in enumerate(tokens) if _looks_like_item_code(token)), None)
+    if index is None:
+        return None, text
+    reference = tokens[index].strip("[](){}:;,. ")
+    spill = clean_text(" ".join(tokens[:index] + tokens[index + 1:]))
+    return reference, spill
 
 
 def _partition_row(row: TextRow, columns: dict[str, float]) -> dict[str, str]:
@@ -311,32 +480,67 @@ def _line_from_cells(cells: dict[str, str], row: TextRow, default_currency: str)
     if not joined or any(joined.lower().startswith(x) for x in STOP_WORDS):
         return None
     qty_raw = cells.get("quantity") or ""
-    unit_price = parse_number(cells.get("unit_price"))
-    total = parse_number(cells.get("total"))
-    material = clean_text(cells.get("material"))
-    desc = clean_text(cells.get("description"))
+    unit_price = _parse_table_number(cells.get("unit_price"))
+    total = _parse_table_number(cells.get("total"))
+    generic_material, generic_spill = _reference_cell(cells.get("material"))
+    customer_material, customer_spill = _reference_cell(cells.get("customer_material"))
+    supplier_material, supplier_spill = _reference_cell(cells.get("supplier_material"))
+    secondary_material, secondary_spill = _reference_cell(cells.get("secondary_material"))
+    material = supplier_material or generic_material or customer_material or secondary_material
+    desc = clean_text(" ".join(
+        value for value in (
+            customer_spill, generic_spill, clean_text(cells.get("description")),
+            supplier_spill, secondary_spill,
+        ) if value
+    ))
     line_no = clean_text(cells.get("line"))
     # When a description word sits close to the quantity column, nearest-column
     # assignment can place it with the numeric quantity. Recover the text prefix.
-    qty_match = re.search(r"[-+]?\d[\d .,'-]*", qty_raw)
-    qty = parse_number(qty_match.group(0)) if qty_match else None
+    qty_matches = list(re.finditer(
+        r"[-+]?(?:\d{1,3}(?:[ .']\d{3})+|\d+)(?:[,.]\d{1,6})?",
+        qty_raw,
+    ))
+    unit_bound = [
+        match for match in qty_matches
+        if re.match(
+            r"\s*(?:p\.?|u|ea|pc|pcs|pce|piece|pieces|kg|g|m|m2|m3|l|h)\b",
+            qty_raw[match.end():],
+            flags=re.I,
+        )
+    ]
+    # Description text can drift into the quantity cell (for example
+    # ``18KW U 4,000 U``).  Prefer the rightmost number explicitly followed by
+    # a quantity unit instead of treating a product dimension as the quantity.
+    qty_match = unit_bound[-1] if unit_bound else (qty_matches[0] if qty_matches else None)
+    qty = _parse_table_number(qty_match.group(0)) if qty_match else None
+    inline_uom = _quantity_unit(qty_raw)
+    if inline_uom is None and qty_match is not None:
+        unit_tail = re.match(r"\s*([A-Za-z]{1,6})\.?", qty_raw[qty_match.end():])
+        if unit_tail:
+            inline_uom = normalize_unit(unit_tail.group(1))
     if qty_match:
         prefix = clean_text(qty_raw[:qty_match.start()].strip())
         suffix = clean_text(qty_raw[qty_match.end():].strip())
+        if inline_uom:
+            prefix = suffix = ""
         spill = clean_text(" ".join(x for x in [prefix, suffix] if x))
         if spill and re.search(r"[A-Za-zÀ-ÿ]", spill):
             desc = clean_text(" ".join(x for x in [desc, spill] if x))
-    if qty is None and unit_price is None and total is None and not material:
+    if qty is None and unit_price is None and total is None and not material and not desc:
         return None
     completeness = sum(v is not None and v != "" for v in [material, desc, qty, unit_price, total]) / 5
     confidence = min(1.0, 0.6 * row.confidence + 0.4 * completeness)
     return LineItem(
         line_number=line_no,
         material_number=material,
+        article_number=material,
+        product_code=secondary_material if secondary_material != material else None,
+        customer_material_number=customer_material,
+        supplier_material_number=supplier_material,
         description=desc,
         quantity=qty,
         ordered_quantity=qty,
-        uom=normalize_unit(cells.get("uom")),
+        uom=normalize_unit(cells.get("uom")) or inline_uom,
         unit_price=unit_price,
         net_unit_price=unit_price,
         currency=default_currency,
@@ -352,22 +556,19 @@ def _line_from_cells(cells: dict[str, str], row: TextRow, default_currency: str)
 
 def extract_lines(rows: list[TextRow], default_currency: str = "EUR", min_header_matches: int = 3) -> list[LineItem]:
     lines: list[LineItem] = []
-    for i, row in enumerate(rows):
-        cols = _column_headers(row)
-        if len(cols) < min_header_matches:
-            continue
-        page = row.page
-        for next_row in rows[i+1:]:
+    header = _find_table_header(rows, min_header_matches)
+    if header:
+        header_start, header_end, cols = header
+        page = rows[header_start].page
+        for next_row in rows[header_end:]:
             if next_row.page != page:
                 break
             lower = ascii_fold(next_row.text).lower()
-            if any(lower.startswith(x) for x in STOP_WORDS):
+            if _is_line_table_stop(lower):
                 break
             item = _line_from_cells(_partition_row(next_row, cols), next_row, default_currency)
             if item:
                 lines.append(item)
-        if lines:
-            break
 
     if lines:
         return _merge_continuations(lines)
@@ -393,7 +594,12 @@ def extract_lines(rows: list[TextRow], default_currency: str = "EUR", min_header
 
 
 def _partition_row_intervals(row: TextRow, columns: dict[str, float]) -> dict[str, str]:
-    """Assign tokens to table columns using header start positions as boundaries."""
+    """Assign tokens to the nearest resolved header anchor.
+
+    Supplier references are often right-aligned and therefore begin slightly to
+    the left of the ``REF FOURNISSEUR`` label. Midpoint/nearest assignment keeps
+    those values in the reference column instead of appending them to description.
+    """
     if not columns:
         return {}
     ordered = sorted(columns.items(), key=lambda kv: kv[1])
@@ -401,12 +607,7 @@ def _partition_row_intervals(row: TextRow, columns: dict[str, float]) -> dict[st
     buckets={k:[] for k in keys}
     for w in row.words:
         cx=(w.bbox[0]+w.bbox[2])/2
-        idx=0
-        for i,start in enumerate(starts):
-            if cx >= start-12:
-                idx=i
-            else:
-                break
+        idx=min(range(len(starts)), key=lambda i: abs(cx-starts[i]))
         buckets[keys[idx]].append(w.text)
     return {k:" ".join(v).strip() for k,v in buckets.items()}
 
@@ -414,46 +615,34 @@ def extract_lines_from_pages(pages: list[PageResult], default_currency: str = "E
     """Spatial table extraction tolerant to multi-row / fragmented OCR headers."""
     out: list[LineItem] = []
     for page in pages:
-        words = sorted(page.words, key=lambda w: (((w.bbox[1]+w.bbox[3])/2), w.bbox[0]))
-        hits=[]
-        for w in words:
-            key=_canonical_header(w.text)
-            if key:
-                hits.append((key,w.bbox[0],(w.bbox[1]+w.bbox[3])/2,w))
-        if not hits:
+        rows = [
+            TextRow(page=page.page, words=ws)
+            for ws in group_words_into_rows(page.words, y_factor=0.55)
+        ]
+        header = _find_table_header(rows, min_header_matches)
+        if not header:
             continue
-        # Candidate header bands of up to ~2 text lines.
-        best=None
-        for _,_,cy,_ in hits:
-            band=[h for h in hits if abs(h[2]-cy) <= 55]
-            distinct={h[0] for h in band}
-            # quantity + price/total are strong table signals.
-            strength=len(distinct)+(1 if "quantity" in distinct else 0)+(1 if "unit_price" in distinct or "total" in distinct else 0)
-            if len(distinct)>=min_header_matches and (best is None or strength>best[0]):
-                best=(strength,band)
-        if not best:
-            continue
-        band=best[1]
-        cols={}
-        for key in {x[0] for x in band}:
-            xs=[x[1] for x in band if x[0]==key]
-            cols[key]=statistics.fmean(xs)
-        header_bottom=max(x[3].bbox[3] for x in band)
-        # Keep words below the header; stop after totals begin.
-        data_words=[w for w in words if ((w.bbox[1]+w.bbox[3])/2) > header_bottom+3]
-        grouped=group_words_into_rows(data_words,y_factor=0.55)
-        for ws in grouped:
-            row=TextRow(page=page.page,words=ws)
+        _, header_end, cols = header
+        for row in rows[header_end:]:
+            ws = row.words
             low=ascii_fold(row.text).lower().strip()
-            if any(low.startswith(x) for x in STOP_WORDS):
+            if _is_line_table_stop(low):
                 break
             # Ignore repeated headers / prose and require at least one numeric token.
             if sum(1 for w in ws if _canonical_header(w.text)) >= 2:
                 continue
-            if not re.search(r"\d", row.text):
-                continue
             item=_line_from_cells(_partition_row_intervals(row,cols),row,default_currency)
-            if item and (item.quantity is not None or item.unit_price is not None or item.line_total is not None):
+            commercial_values = item and (
+                item.quantity is not None
+                or item.unit_price is not None
+                or item.line_total is not None
+            )
+            continuation = item and out and (
+                not item.material_number
+                and bool(item.description)
+                and not commercial_values
+            )
+            if item and (commercial_values or continuation):
                 # Reject obvious total rows that slipped through OCR noise.
                 if item.description and ascii_fold(item.description).lower().startswith(tuple(STOP_WORDS)):
                     break
@@ -479,7 +668,7 @@ def extract_totals(rows: list[TextRow], default_currency: str = "EUR") -> Totals
     totals = Totals(currency=default_currency)
     patterns = [
         ("grand_total", r"(?:grand\s*total|total\s*(?:ttc|due|commande|order)?|gesamtbetrag|total\s+general)\s*[: ]+([^\n]+)$"),
-        ("total_net", r"(?:net\s*total|total\s*ht|netto)\s*[: ]+([^\n]+)$"),
+        ("total_net", r"(?:net\s*total|total\s*(?:h\.?t\.?|hors\s+taxes?)|netto)\s*[: ]+([^\n]+)$"),
         ("subtotal", r"(?:sub\s*total|sous[- ]?total|zwischensumme)\s*[: ]+([^\n]+)$"),
         ("total_vat", r"(?:vat|tva|mwst)\s*(?:total)?\s*[: ]+([^\n]+)$"),
         ("total_tax", r"(?:tax|taxe)\s*(?:total)?\s*[: ]+([^\n]+)$"),
@@ -487,9 +676,18 @@ def extract_totals(rows: list[TextRow], default_currency: str = "EUR") -> Totals
     ]
     for row in rows:
         folded_row = ascii_fold(row.text).lower()
-        legal_vat_identifier = bool(re.search(r"(?:n[°ºo]?|no|numero|number)\s*(?:de\s*)?(?:tva|vat)|tva\s*(?:ic\b|intra)|vat\s*(?:id|no|number|registration)", folded_row, flags=re.I))
+        legal_vat_identifier = bool(re.search(
+            r"(?:n[\s.°ºo-]*|no\s+|numero\s+|number\s+)(?:de\s*)?(?:tva|vat)\b|"
+            r"\b(?:tva|vat)\s*(?:ic\b|intra|id|no|number|registration|[:#-]\s*[a-z]{0,2}\d{8,})",
+            folded_row,
+            flags=re.I,
+        ))
         for attr, pattern in patterns:
             if attr in {"total_vat", "total_tax"} and legal_vat_identifier:
+                continue
+            if attr in {"total_vat", "total_tax", "grand_total"} and re.search(
+                r"\b(?:hors\s+taxes?|total\s+h\.?t\.?)\b", folded_row
+            ):
                 continue
             m = re.search(pattern, row.text, flags=re.I)
             if m:
@@ -896,6 +1094,8 @@ def _looks_like_item_code(token: str) -> bool:
         return False
     if t.upper() in {"N/REF", "TOTAL", "PAIEMENT", "ACOMPTE"}:
         return False
+    if re.fullmatch(r"(?:[0-3]?\d)[/.-](?:0?\d|1[0-2])[/.-](?:\d{2}|\d{4})", t):
+        return False
     has_digit = any(ch.isdigit() for ch in t)
     has_alpha = any(ch.isalpha() for ch in t)
     return has_digit and (has_alpha or len(re.sub(r"\D", "", t)) >= 6) and bool(re.fullmatch(r"[A-Za-z0-9._/\-]+", t))
@@ -905,20 +1105,19 @@ def extract_multiline_lines_from_pages(pages: list[PageResult], default_currency
     """Segment line-item tables where an article code and its numeric detail live on different OCR rows."""
     for page in pages:
         rows = [TextRow(page=page.page, words=ws) for ws in group_words_into_rows(page.words, y_factor=0.58)]
-        header_idx = None
-        cols: dict[str, float] = {}
-        for i, row in enumerate(rows):
-            candidate = _multiword_columns(row)
-            distinct = set(candidate)
-            if len(distinct) >= min_header_matches and "quantity" in distinct and ("unit_price" in distinct or "net_unit_price" in distinct):
-                header_idx, cols = i, candidate
-                break
-        if header_idx is None:
+        header = _find_table_header(rows, min_header_matches)
+        if header is None:
             continue
+        header_idx, header_end, cols = header
 
         ordered = sorted(cols.items(), key=lambda kv: kv[1])
         x_by = dict(ordered)
-        material_x = x_by.get("material", ordered[0][1])
+        material_x = (
+            x_by.get("customer_material")
+            or x_by.get("material")
+            or x_by.get("supplier_material")
+            or ordered[0][1]
+        )
         qty_x = x_by.get("quantity")
         if qty_x is None:
             continue
@@ -929,12 +1128,12 @@ def extract_multiline_lines_from_pages(pages: list[PageResult], default_currency
         desc_left = material_x + max(12.0, page.width * 0.012)
         desc_right = qty_x - max(10.0, page.width * 0.008)
 
-        data_rows = rows[header_idx + 1:]
+        data_rows = rows[header_end:]
         # Find anchors.
         anchors: list[tuple[int, TextRow, list[WordToken]]] = []
         for ridx, row in enumerate(data_rows):
             low = ascii_fold(row.text).lower().strip()
-            if any(low.startswith(x) for x in STOP_WORDS) or "net a payer" in low or "net à payer" in row.text.lower():
+            if _is_line_table_stop(low) or "net a payer" in low or "net à payer" in row.text.lower():
                 break
             left_tokens = [w for w in row.words if w.bbox[0] <= anchor_right]
             id_tokens = [w for w in left_tokens if _looks_like_item_code(w.text)]
@@ -955,7 +1154,7 @@ def extract_multiline_lines_from_pages(pages: list[PageResult], default_currency
             trimmed = []
             for r in segment:
                 low = ascii_fold(r.text).lower()
-                if any(k in low for k in ["net a payer", "net total", "mt h.t", "grand total", "total ttc", "horaires de reception"]):
+                if _is_line_table_stop(low) or any(k in low for k in ["net a payer", "net total", "mt h.t", "grand total", "total ttc", "horaires de reception"]):
                     break
                 if low.strip() in {"attention", "attention !!!"}:
                     break
@@ -967,7 +1166,9 @@ def extract_multiline_lines_from_pages(pages: list[PageResult], default_currency
             first_token = min(id_tokens, key=lambda w: w.bbox[0])
             material = first_token.text.strip("[](){}:;,. ")
             extra_refs = [w.text.strip("[](){}:;,. ") for w in sorted(id_tokens, key=lambda w: w.bbox[0]) if w is not first_token]
-            supplier_ref = next((x for x in extra_refs if _looks_like_item_code(x)), None)
+            supplier_ref = None
+            if "supplier_material" not in x_by and "customer_material" not in x_by:
+                supplier_ref = next((x for x in extra_refs if _looks_like_item_code(x)), None)
 
             detail_row = None
             best_numeric = -1
@@ -978,7 +1179,7 @@ def extract_multiline_lines_from_pages(pages: list[PageResult], default_currency
                 nums = 0
                 for w in r.words:
                     cx = (w.bbox[0] + w.bbox[2]) / 2
-                    if cx >= qty_x - 90 and parse_number(w.text) is not None:
+                    if cx >= qty_x - 90 and _parse_table_number(w.text) is not None:
                         nums += 1
                 if nums > best_numeric:
                     best_numeric = nums
@@ -991,7 +1192,7 @@ def extract_multiline_lines_from_pages(pages: list[PageResult], default_currency
                     return None, None
                 candidates = []
                 for w in detail_row.words:
-                    v = parse_number(w.text)
+                    v = _parse_table_number(w.text)
                     if v is None:
                         continue
                     cx = (w.bbox[0] + w.bbox[2]) / 2
@@ -1010,7 +1211,7 @@ def extract_multiline_lines_from_pages(pages: list[PageResult], default_currency
                 net_price = unit_price
 
             # Unit token nearest the UOM header.
-            uom = None
+            uom = _quantity_unit(qty_w.text) if qty_w is not None else None
             if x_by.get("uom") is not None:
                 cand = []
                 for w in detail_row.words:
@@ -1029,6 +1230,47 @@ def extract_multiline_lines_from_pages(pages: list[PageResult], default_currency
                         continue
                     desc_words.append(w)
             description = clean_text(" ".join(w.text for w in desc_words))
+            customer_material = None
+            parsed_detail = _line_from_cells(
+                _partition_row(detail_row, cols), detail_row, default_currency
+            )
+            if parsed_detail is not None:
+                material = parsed_detail.material_number or material
+                supplier_ref = parsed_detail.supplier_material_number or supplier_ref
+                customer_material = (
+                    parsed_detail.customer_material_number or customer_material
+                )
+                description = parsed_detail.description or description
+                qty = parsed_detail.quantity if parsed_detail.quantity is not None else qty
+                unit_price = (
+                    parsed_detail.unit_price
+                    if parsed_detail.unit_price is not None else unit_price
+                )
+                net_price = (
+                    parsed_detail.net_unit_price
+                    if parsed_detail.net_unit_price is not None else net_price
+                )
+                uom = parsed_detail.uom or uom
+            continuation_descriptions = []
+            for continuation in segment:
+                if continuation is detail_row:
+                    continue
+                partial = _line_from_cells(
+                    _partition_row(continuation, cols), continuation, default_currency
+                )
+                if (
+                    partial is not None
+                    and partial.description
+                    and not partial.material_number
+                    and partial.quantity is None
+                    and partial.unit_price is None
+                    and partial.line_total is None
+                ):
+                    continuation_descriptions.append(partial.description)
+            if continuation_descriptions:
+                description = clean_text(" ".join(
+                    [description or "", *continuation_descriptions]
+                ))
 
             date_value = None
             date_word = None
@@ -1078,6 +1320,7 @@ def extract_multiline_lines_from_pages(pages: list[PageResult], default_currency
             items.append(LineItem(
                 material_number=material,
                 article_number=material,
+                customer_material_number=customer_material,
                 supplier_material_number=supplier_ref,
                 description=description,
                 quantity=qty,

@@ -1505,14 +1505,17 @@ def _explicit_charge_kind_v62(text: str | None) -> str | None:
     if re.search(r"\b(?:deee|d3ee|weee|eco[- ]?participation|eco[- ]?contribution)\b", low):
         return "environmental_fee"
     if (
-        re.search(r"\b(?:frais|forfait|participation|cout)\s+(?:de\s+|du\s+)?(?:port|transport|livraison|expedition)\b", low)
+        re.search(r"\b(?:frais|forfait|participation|cout|montant)\s+(?:de\s+|du\s+)?(?:port|transport|livraison|expedition)\b", low)
         or re.search(r"\bport\s+(?:standard|express|ht|facture|forfait)\b", low)
         or re.search(r"\b(?:shipping|freight)(?:\s+(?:charge|cost|fee))?\b", low)
         or re.fullmatch(r"(?:port|transport|livraison|expedition)(?:\s+ht)?", low)
         or re.search(r"\bportstd\b", low)
     ):
         return "shipping"
-    if re.search(r"\b(?:ecotaxe|taxe|tax|tgap|contribution\s+(?:fiscale|environnementale))\b", low):
+    if (
+        re.search(r"\b(?:ecotaxe|taxe|tax|tgap|contribution\s+(?:fiscale|environnementale))\b", low)
+        and not re.search(r"\bhors\s+taxes?\b", low)
+    ):
         return "tax"
     if re.search(r"\b(?:surcharge|supplement|frais\s+(?:de\s+)?(?:dossier|gestion|manutention|emballage))\b", low):
         return "surcharge"
@@ -3299,6 +3302,8 @@ def _material_anchored_split_table_items_v61(pages, config: dict, default_curren
         rows = all_rows([page], y_factor=0.50)
         header_end = None
         anchors = None
+        explicit_customer_code = False
+        explicit_supplier_reference = False
         for start in range(len(rows)):
             for width in range(1, 4):
                 group = rows[start:start + width]
@@ -3325,7 +3330,46 @@ def _material_anchored_split_table_items_v61(pages, config: dict, default_curren
                 if all(key in found for key in ("code", "description", "quantity", "price", "amount")) and (
                     found["code"] < found["description"] < found["quantity"] < found["price"] < found["amount"]
                 ):
+                    # A role qualifier is commonly printed on the immediately
+                    # following header row. Do not finalize the shorter header and
+                    # accidentally discard that semantic information.
+                    if width < 3 and start + width < len(rows):
+                        following_tokens = {
+                            _fold(word.text).strip(" .:/")
+                            for word in rows[start + width].words
+                        }
+                        if following_tokens & {
+                            "interne", "internal", "client", "customer",
+                            "acheteur", "buyer", "fournisseur", "supplier",
+                        }:
+                            continue
                     anchors = found
+                    # Role qualifiers may be printed on their own header row.  Use
+                    # their geometry instead of vendor names: a qualifier close to
+                    # CODE identifies the buyer/customer's internal material code,
+                    # while FOURNISSEUR close to REF identifies the supplier code.
+                    qualifier_words = [word for row in group for word in row.words]
+                    customer_qualifiers = [
+                        word for word in qualifier_words
+                        if _fold(word.text).strip(" .:/") in {"interne", "client", "acheteur"}
+                    ]
+                    supplier_qualifiers = [
+                        word for word in qualifier_words
+                        if _fold(word.text).strip(" .:/") in {"fournisseur", "supplier"}
+                    ]
+                    explicit_customer_code = any(
+                        abs(center(word) - found["code"]) <= page.width * 0.10
+                        for word in customer_qualifiers
+                    )
+                    reference_headers = [
+                        word for word in qualifier_words
+                        if _fold(word.text).strip(" .:/") in {"ref", "reference"}
+                    ]
+                    explicit_supplier_reference = any(
+                        any(abs(center(qualifier) - center(reference)) <= page.width * 0.12
+                            for qualifier in supplier_qualifiers)
+                        for reference in reference_headers
+                    )
                     header_end = start + len(group)
                     break
             if anchors is not None:
@@ -3385,11 +3429,16 @@ def _material_anchored_split_table_items_v61(pages, config: dict, default_curren
                 if abs(float(amount) - expected) > max(0.04, abs(expected) * 0.006):
                     price = amount = None
             uom = "PCE" if any(re.search(r"[A-Za-z]", word.text) for word in quantity_words) else None
+            customer_reference = code_word.text.strip() if explicit_customer_code else None
+            supplier_reference = reference
+            roles_explicit = explicit_customer_code and explicit_supplier_reference
+            primary_reference = supplier_reference or code_word.text.strip()
             item = LineItem(
                 line_number=str(len(items) + 1),
-                material_number=code_word.text.strip(),
-                article_number=code_word.text.strip(),
-                supplier_material_number=reference,
+                material_number=primary_reference if roles_explicit else code_word.text.strip(),
+                article_number=primary_reference if roles_explicit else code_word.text.strip(),
+                customer_material_number=customer_reference,
+                supplier_material_number=supplier_reference,
                 description=description,
                 quantity=quantity,
                 ordered_quantity=quantity,
@@ -3587,6 +3636,93 @@ def _separate_additional_charge_lines_v62(po, config: dict):
     ]
     if shipping_amounts and po.totals.total_shipping is None:
         po.totals.total_shipping = round(sum(shipping_amounts), 6)
+    return po, dict(sorted(counts.items()))
+
+
+def _merge_explicit_page_charges_v63(po, pages, config: dict):
+    """Recover labelled charges independently from the selected line parser.
+
+    Line hypothesis competition may correctly choose a product-only parser and
+    thereby omit a separate ``Montant de port`` row. Charge labels and their
+    right-most monetary value are strong semantics, so collect them directly from
+    page rows and merge them without duplicating charges already produced by a
+    table parser.
+    """
+    if not config.get("layout", {}).get("explicit_page_charge_recovery", True):
+        return po, {}
+    from collections import Counter
+    from po_ocr.extract import all_rows
+    from po_ocr.models import AdditionalCharge, Evidence
+    import re
+
+    existing = list(getattr(po, "additional_charges", []) or [])
+    counts = Counter()
+
+    def duplicate(kind: str, page_number: int, amount: float) -> bool:
+        return any(
+            charge.charge_type == kind
+            and charge.page == page_number
+            and charge.amount is not None
+            and abs(float(charge.amount) - amount) <= 0.01
+            for charge in existing
+        )
+
+    for page in pages or []:
+        for row in all_rows([page], y_factor=0.50):
+            kind = _explicit_charge_kind_v62(row.text)
+            if not kind:
+                continue
+            values = []
+            for word in row.words:
+                token = str(word.text).strip("€$£()[]{}:;")
+                if re.fullmatch(r"(?:[0-3]?\d)[/.-](?:0?\d|1[0-2])[/.-](?:\d{2}|\d{4})", token):
+                    continue
+                # Decimal-only values avoid treating codes or percentages in the
+                # label as a charge amount.
+                if not re.fullmatch(r"[-+]?\d[\d .']*(?:[,.]\d{2,6})", token):
+                    continue
+                value = _parse_native_decimal(token)
+                if value is not None:
+                    values.append(((word.bbox[0] + word.bbox[2]) / 2, float(value)))
+            if not values:
+                continue
+            amount = max(values, key=lambda item: item[0])[1]
+            if duplicate(kind, page.page, amount):
+                continue
+            parent = None
+            if kind == "environmental_fee":
+                candidates = [
+                    line for line in getattr(po, "lines", []) or []
+                    if line.page == page.page and line.bbox and line.bbox[3] <= row.bbox[1] + 2
+                ]
+                if candidates:
+                    parent = max(candidates, key=lambda line: line.bbox[3])
+            existing.append(AdditionalCharge(
+                charge_type=kind,
+                description=row.text,
+                parent_line_number=parent.line_number if parent else None,
+                parent_material_number=parent.material_number if parent else None,
+                supplier_reference=parent.supplier_material_number if parent else None,
+                amount=amount,
+                currency=po.totals.currency or "EUR",
+                page=page.page,
+                confidence=float(row.confidence) * 0.99,
+                evidence=Evidence(
+                    page=page.page,
+                    bbox=row.bbox,
+                    source_text=row.text,
+                    extraction_method="explicit_page_charge_recovery_v63",
+                ),
+            ))
+            counts[kind] += 1
+
+    po.additional_charges = existing
+    shipping = [
+        float(charge.amount) for charge in existing
+        if charge.charge_type == "shipping" and charge.amount is not None
+    ]
+    if shipping:
+        po.totals.total_shipping = round(sum(shipping), 6)
     return po, dict(sorted(counts.items()))
 
 
@@ -4178,7 +4314,11 @@ def _party_from_labeled_zone_v48(pages, label_patterns, config:dict, *, prefer_r
             matched=False
             for pat in label_patterns:
                 core=_pat_core(pat)
-                if re.search(pat,low) or (core and all(_fold(t) in low for t in core)):
+                # A one-token fuzzy fallback (for example only ``livrer`` from
+                # ``a livrer a``) also matches delivery-date notes such as
+                # ``a livrer le 26/02``.  Keep fuzzy matching only when at least
+                # two distinctive label tokens corroborate the role.
+                if re.search(pat,low) or (len(core)>=2 and all(_fold(t) in low for t in core)):
                     matched=True; break
             if not matched: continue
             # Locate a distinctive anchor token for multi-word labels so mixed rows
@@ -4194,12 +4334,43 @@ def _party_from_labeled_zone_v48(pages, label_patterns, config:dict, *, prefer_r
                 lx=min(w.bbox[0] for w in label_words); rx=max(w.bbox[2] for w in label_words)
             else:
                 lx=row.bbox[0]; rx=row.bbox[2]
-            # Use the label's half/column. This avoids mixing left bill-to with right ship-to blocks.
+            # Use the label's half/column for paired party blocks.  A standalone
+            # delivery instruction may introduce a centred, full-width address;
+            # clipping it to the label's half can otherwise split a company name
+            # or move an industrial-zone qualifier behind the street.
             mid=pg.width*0.50
-            if (lx+rx)/2 < mid:
-                x0=max(0.0,lx-pg.width*0.03); x1=mid-pg.width*0.015
+            label_is_left=(lx+rx)/2 < mid
+            label_word_ids={id(word) for word in label_words}
+            opposite_content=[
+                word for word in row.words
+                if id(word) not in label_word_ids
+                and any(char.isalnum() for char in word.text)
+                and (
+                    ((word.bbox[0]+word.bbox[2])/2 >= mid) if label_is_left
+                    else ((word.bbox[0]+word.bbox[2])/2 < mid)
+                )
+            ]
+            competing_role=bool(re.search(
+                r"\b(?:factur(?:e|er|ation)|billing|bill\s+to|acheteur|buyer|donneur\s+d'ordre)\b",
+                low,
+            ))
+            standalone_delivery=(
+                prefer_role=="ship_to"
+                and not competing_role
+                and not opposite_content
+                and len(row.words)<=10
+                and _row_center_safe(row)>=pg.height*0.20
+            )
+            if standalone_delivery:
+                x0=0.0; x1=pg.width
+            elif label_is_left:
+                # The label is often indented farther than the address below it
+                # (notably the house number and postal code).  The column
+                # boundary, rather than the label's own x position, is the
+                # reliable delimiter for paired buyer/supplier blocks.
+                x0=0.0; x1=mid-pg.width*0.015
             else:
-                x0=max(mid*0.90,lx-pg.width*0.03); x1=pg.width
+                x0=mid; x1=pg.width
             start_y=max(w.bbox[3] for w in row.words) if row.words else row.bbox[3]
             max_h=pg.height*float(config.get("layout",{}).get("role_zone_max_height_ratio",0.24))
             zone=_collect_rows_in_xzone_v48(pages,page_no=pg.page,y0=start_y-2,y1=min(pg.height,start_y+max_h),x0=x0,x1=x1)
@@ -4515,6 +4686,9 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
         parser_diag["selected"]=chosen_name
     po.lines = _dedupe_line_items(po.lines)
     po, parser_diag["reclassified_additional_charges"] = _separate_additional_charge_lines_v62(po, config)
+    po, parser_diag["recovered_page_charges"] = _merge_explicit_page_charges_v63(
+        po, pages, config
+    )
     parser_diag["supplier_role_enrichments"] = enrich_supplier_material_roles(po.lines, config)
     po.lines, parser_diag["semantic_line_rejections"] = _sanitize_non_product_lines_v61(po.lines, config)
     po = _sanitize_legal_footer_lines_v48(po, config)

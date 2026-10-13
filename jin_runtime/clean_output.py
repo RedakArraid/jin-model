@@ -1389,11 +1389,15 @@ def _refresh_delivery_label(delivery: dict[str, Any]) -> dict[str, Any]:
     if not components:
         return delivery
     source_formatted = delivery.get("source_formatted")
-    source_lines = (
-        [part.strip() for part in str(source_formatted).split(",") if part.strip()]
-        if source_formatted
-        else list(delivery.get("formatted_lines") or [])
-    )
+    # The existing formatted lines already went through postal cleanup and
+    # source-order reconstruction. Prefer them when reconciling a recipient;
+    # falling back to a contaminated diagnostic ``source_formatted`` can put a
+    # Z.I./Z.A. after the street and reintroduce legal-footer fragments.
+    source_lines = list(delivery.get("formatted_lines") or [])
+    if not source_lines and source_formatted:
+        source_lines = [
+            part.strip() for part in str(source_formatted).split(",") if part.strip()
+        ]
     refreshed = clean_delivery_address({
         "role": delivery.get("role"),
         "party_name": components.get("recipient") or delivery.get("party_name"),

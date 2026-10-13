@@ -5,7 +5,11 @@ import pytest
 
 from po_ocr.models import PageResult, PurchaseOrderHeader, WordToken, Evidence, ExtractedField, LineItem, Totals
 from po_ocr.pdf_native import _needs_hybrid_ocr, _supplement_native_words, extract_native_page
-from po_ocr.extract import all_rows, extract_totals, compact_transaction_header_candidate, verify_compact_header_number
+from po_ocr.extract import (
+    all_rows, extract_lines, extract_lines_from_pages,
+    extract_multiline_lines_from_pages, extract_totals,
+    compact_transaction_header_candidate, verify_compact_header_number,
+)
 from uda.business import (
     _clean_po_number_v48,
     _enhance_order_header_from_page_layout,
@@ -14,6 +18,8 @@ from uda.business import (
     _extract_geometry_table_items_v46,
     _material_anchored_split_table_items_v61,
     _material_anchored_numeric_row_items_v61,
+    _merge_explicit_page_charges_v63,
+    _party_from_labeled_zone_v48,
     _separate_additional_charge_lines_v62,
     _sanitize_non_product_lines_v61,
     _price_then_quantity_table_items,
@@ -30,6 +36,67 @@ def _page(rows, number=1):
     return PageResult(page=number, width=600, height=842, source_type="native_pdf",
                       text="\n".join(" ".join(t for t, _, _ in cells) for _, cells in rows),
                       words=words, confidence=1.0)
+
+
+def test_standalone_delivery_label_keeps_centered_address_block_full_width():
+    page = _page([
+        (414, [("(1)", 45, 58), ("a", 62, 70), ("livrer", 74, 107),
+               ("le", 111, 121), ("26/02/2024", 125, 184)]),
+        (430, [("A", 20, 28), ("livrer", 32, 65), ("a", 69, 77),
+               ("l'adresse", 81, 126), ("ci-dessous", 130, 187)]),
+        (450, [("PIECES", 248, 292), ("DETACHEES", 298, 365)]),
+        (466, [("Z.I.", 240, 260), ("-", 264, 270), ("Rue", 274, 295),
+               ("Denis", 300, 330), ("Papin", 335, 368)]),
+        (482, [("24102", 260, 292), ("BERGERAC", 298, 360)]),
+        (498, [("FRANCE", 275, 324)]),
+        (530, [("Reglement", 20, 80), ("TOTAL", 430, 475), ("337.12", 500, 545)]),
+    ])
+
+    party = _party_from_labeled_zone_v48(
+        [page],
+        [r"adresse\s+de\s+livraison", r"a\s+livrer\s+a", r"livre\s+a"],
+        {},
+        prefer_role="ship_to",
+    )
+
+    assert party is not None
+    assert party.name == "PIECES DETACHEES"
+    assert party.address.line1 == "Z.I. - Rue Denis Papin"
+    assert party.address.postal_code == "24102"
+    assert party.address.city == "BERGERAC"
+
+
+def test_delivery_label_with_opposite_supplier_content_stays_in_its_column():
+    page = _page([
+        # The label is deliberately indented relative to the address.  House
+        # number and postal code must still be collected from the whole half.
+        (200, [("Adresse", 70, 108), ("de", 112, 122),
+               ("livraison", 126, 172), ("imperative", 176, 230),
+               ("ELM", 340, 365), ("LEBLANC", 370, 420),
+               ("BOSCH", 425, 465)]),
+        (220, [("SIDV", 20, 48), ("BAYONNE", 52, 105),
+               ("124,126", 340, 380), ("rue", 385, 404),
+               ("de", 408, 418), ("Stalingrad", 422, 480)]),
+        (236, [("24", 20, 32), ("Chemin", 36, 75), ("de", 79, 89),
+               ("Sabalce", 93, 136), ("93711", 340, 372),
+               ("DRANCY", 377, 420), ("CEDEX", 425, 462)]),
+        (252, [("64100", 20, 52), ("BAYONNE", 57, 110),
+               ("Tel", 340, 360), ("08", 365, 378), ("20", 382, 395)]),
+    ])
+
+    party = _party_from_labeled_zone_v48(
+        [page],
+        [r"adresse\s+de\s+livraison", r"a\s+livrer\s+a"],
+        {},
+        prefer_role="ship_to",
+    )
+
+    assert party is not None
+    assert party.name == "SIDV BAYONNE"
+    assert party.address.line1 == "24 Chemin de Sabalce"
+    assert party.address.postal_code == "64100"
+    assert party.address.city == "BAYONNE"
+    assert "STALINGRAD" not in " ".join(party.address.raw_lines).upper()
 
 
 def test_duplicate_pdf_layer_cleanup_preserves_composite_po_suffix():
@@ -96,6 +163,118 @@ def test_hybrid_ocr_preserves_native_numbers_and_word_coordinates(monkeypatch):
     document.close()
 
 
+def test_native_pdf_exact_overlay_words_are_deduplicated_by_position():
+    document = fitz.open()
+    page = document.new_page(width=600, height=842)
+    page.insert_text((100, 110), "BERGERAC")
+    page.insert_text((100, 110), "BERGERAC")
+    page.insert_text((100, 140), "BERGERAC")
+
+    _, words, _ = extract_native_page(
+        page, 1, {"hybrid_native_ocr_enabled": False}
+    )
+
+    assert [word.text for word in words] == ["BERGERAC", "BERGERAC"]
+    assert words[0].bbox != words[1].bbox
+    document.close()
+
+
+def test_split_internal_and_supplier_headers_keep_reference_ownership():
+    page = _page([
+        (262, [("CODE", 25, 51), ("DESIGNATION", 180, 243),
+               ("REF", 387, 405), ("QUANTITE", 445, 491),
+               ("PRIX", 500, 521), ("MONTANT", 533, 578)]),
+        (273, [("INTERNE", 18, 58), ("FOURNISSEUR", 367, 433)]),
+        (304, [("1663503", 20, 55), ("COUVERCLE", 59, 103),
+               ("DN120", 105, 127), ("MANCHON(1)", 129, 174),
+               ("1.00p.", 465, 490), ("68.46p.", 505, 535),
+               ("68.46", 552, 575)]),
+        (315, [("1674662", 20, 55), ("KIT", 59, 68),
+               ("RESISTANCE", 70, 104), ("ELECTRIQUE", 106, 139),
+               ("LONGUEUR", 231, 261), ("7735502657", 357, 402),
+               ("1.00p.", 465, 490), ("233.66p.", 500, 535),
+               ("233.66", 547, 575)]),
+        (327, [("320MM(1)", 59, 95)]),
+        (359, [("Montant", 59, 86), ("de", 88, 96), ("port", 98, 112),
+               ("35.00", 512, 535), ("35.00", 552, 575)]),
+        (382, [("(1)", 59, 68), ("a", 70, 74), ("livrer", 75, 93),
+               ("le", 94, 101), ("26/02/2024", 102, 138)]),
+    ])
+
+    candidates = [
+        extract_lines(all_rows([page])),
+        extract_lines_from_pages([page]),
+        extract_multiline_lines_from_pages([page]),
+    ]
+    for lines in candidates:
+        assert len(lines) >= 2
+        first, second = lines[:2]
+        assert first.customer_material_number == "1663503"
+        assert first.supplier_material_number is None
+        assert first.material_number == "1663503"
+        assert (first.quantity, first.uom, first.unit_price, first.line_total) == (
+            1, "PCE", 68.46, 68.46,
+        )
+        assert second.customer_material_number == "1674662"
+        assert second.supplier_material_number == "7735502657"
+        assert second.material_number == "7735502657"
+        assert (second.quantity, second.uom, second.unit_price, second.line_total) == (
+            1, "PCE", 233.66, 233.66,
+        )
+        assert "320MM(1)" in second.description
+
+
+def test_quantity_column_prefers_unit_bound_number_over_product_dimension():
+    page = _page([
+        (100, [("Article", 20, 58), ("Designation", 150, 215),
+               ("Quantite", 340, 385), ("Prix", 445, 470),
+               ("Montant", 525, 575)]),
+        (120, [("C26952", 20, 58), ("CHAUDIERE", 75, 125),
+               ("18KW", 315, 340), ("U", 345, 352), ("4,000", 360, 388),
+               ("U", 392, 399), ("560,00", 445, 480),
+               ("2240,00", 525, 575)]),
+    ])
+
+    lines = extract_lines(all_rows([page]))
+
+    assert len(lines) == 1
+    assert lines[0].quantity == 4.0
+
+
+def test_total_hors_taxe_is_net_and_legal_vat_identifier_is_not_amount():
+    page = _page([
+        (700, [("TOTAL", 390, 430), ("HORS", 435, 465),
+               ("TAXE", 470, 500), ("EUR", 505, 530), ("337.12", 550, 580)]),
+        (810, [("N.TVA", 350, 390), (":", 393, 396),
+               ("FR57467200515", 400, 480)]),
+    ])
+
+    totals = extract_totals(all_rows([page]))
+
+    assert totals.total_net == 337.12
+    assert totals.total_vat is None
+    assert totals.total_tax is None
+    assert totals.grand_total is None
+
+
+def test_labelled_shipping_charge_is_recovered_outside_line_hypotheses():
+    page = _page([
+        (359, [("Montant", 59, 86), ("de", 88, 96), ("port", 98, 112),
+               ("35.00", 512, 535), ("35.00", 552, 575)]),
+        (715, [("TOTAL", 400, 430), ("HORS", 435, 465),
+               ("TAXE", 470, 500), ("337.12", 550, 580)]),
+    ])
+    po = SimpleNamespace(lines=[], additional_charges=[], totals=Totals(currency="EUR"))
+
+    po, recovered = _merge_explicit_page_charges_v63(po, [page], {})
+
+    assert recovered == {"shipping": 1}
+    assert len(po.additional_charges) == 1
+    assert po.additional_charges[0].charge_type == "shipping"
+    assert po.additional_charges[0].amount == 35.0
+    assert po.totals.total_shipping == 35.0
+
+
 def test_geometry_keeps_net_price_when_an_extra_list_price_column_is_present():
     page = _page([
         (200, [("ARTICLE", 10, 60), ("DESIGNATION", 150, 220), ("UNITE", 275, 300),
@@ -156,7 +335,8 @@ def test_material_pattern_reassembles_split_product_and_environmental_fee_rows()
     lines, charges = _material_anchored_split_table_items_v61([page], {})
     assert len(lines) == 1
     line = lines[0]
-    assert line.material_number == "1506621"
+    assert line.material_number == "7736606771"
+    assert line.customer_material_number == "1506621"
     assert line.supplier_material_number == "7736606771"
     assert line.description == "MODULE WIFI HOMECOM EASY"
     assert (line.quantity, line.uom) == (2, "PCE")
