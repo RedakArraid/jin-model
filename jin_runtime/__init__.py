@@ -1,1 +1,1 @@
-__version__ = "5.16.4-stacked-dual-reference-charges"
+__version__ = "5.16.5-semantic-text-table-recovery"

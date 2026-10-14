@@ -1237,9 +1237,12 @@ def _two_row_erp_table_items(pages, default_currency="EUR"):
             if abs(float(amount)-expected)>tolerance: pending=None; continue
             metadata=detail.group("meta").strip(" /-;:")
             raw=" | ".join(x for x in (description,text) if x)
+            supplier_reference=detail.group("supplier")
+            customer_reference=detail.group("code")
             items.append(LineItem(
-                line_number=str(len(items)+1),material_number=detail.group("code"),article_number=detail.group("code"),
-                supplier_material_number=detail.group("supplier"),description=description,
+                line_number=str(len(items)+1),material_number=supplier_reference,article_number=supplier_reference,
+                customer_material_number=customer_reference,
+                supplier_material_number=supplier_reference,description=description,
                 quantity=quantity,ordered_quantity=quantity,uom=detail.group("uom"),
                 unit_price=price,net_unit_price=price,line_total=amount,line_net_amount=amount,
                 currency=default_currency,delivery_week=week,delivery_period=week,
@@ -1249,6 +1252,405 @@ def _two_row_erp_table_items(pages, default_currency="EUR"):
             ))
             pending=None
     return _dedupe_line_items(items)
+
+
+def _semantic_text_table_items_v68(pages, config: dict, default_currency="EUR"):
+    """Recover arithmetically verifiable lines from OCR text table rows.
+
+    Scanned purchase orders frequently retain the logical row order in ``page.text``
+    while word geometry is too noisy to build stable columns. This recovery activates
+    only below a semantic table header and accepts product rows only when the printed
+    quantity, unit price and amount reconcile.
+    """
+    import re
+    from po_ocr.models import AdditionalCharge, Evidence, LineItem
+    from po_ocr.normalize import normalize_unit
+
+    cfg = config.get("layout", {}) if isinstance(config, dict) else {}
+    if not cfg.get("semantic_text_table_recovery_v68", True):
+        return [], []
+
+    number = r"[-+]?(?:\d{1,3}(?:[ .']\d{3})+|\d+)(?:[,.]\d+)?"
+    unit = r"PIEC(?:E|ES)?|PCE|PCS|EA|UN|U|KG|BOX|L|M"
+    code = r"[A-Z0-9][A-Z0-9._/-]{2,29}"
+    amount_abs_tolerance = float(cfg.get("semantic_text_table_amount_tolerance_abs", 0.04))
+    amount_rel_tolerance = float(cfg.get("semantic_text_table_amount_tolerance_rel", 0.006))
+    items = []
+    charges = []
+    charge_signatures = set()
+
+    def decimal(value):
+        return _parse_native_decimal(value)
+
+    def arithmetic_ok(quantity, price, amount):
+        if None in (quantity, price, amount):
+            return False
+        expected = float(quantity) * float(price)
+        tolerance = max(amount_abs_tolerance, abs(expected) * amount_rel_tolerance)
+        return abs(float(amount) - expected) <= tolerance
+
+    def reference_candidate(value):
+        raw = str(value or "").strip(" |[](){};:,*")
+        if not re.fullmatch(r"[A-Za-z0-9._/-]{5,30}", raw):
+            return None
+        if sum(ch.isdigit() for ch in raw) < 5:
+            return None
+        return raw
+
+    def add_charge(*, kind, description, page, raw, amount, parent=None,
+                   quantity=None, unit_price=None, uom=None, code_value=None,
+                   confidence=0.0):
+        if amount is None:
+            return
+        signature = (
+            page, kind, _fold(description), round(float(amount), 6),
+            getattr(parent, "material_number", None),
+        )
+        if signature in charge_signatures:
+            return
+        charge_signatures.add(signature)
+        charges.append(AdditionalCharge(
+            charge_type=kind,
+            code=code_value,
+            description=description,
+            parent_line_number=getattr(parent, "line_number", None),
+            parent_material_number=getattr(parent, "material_number", None),
+            supplier_reference=getattr(parent, "supplier_material_number", None),
+            quantity=quantity,
+            uom=uom,
+            unit_price=unit_price,
+            amount=amount,
+            currency=default_currency,
+            page=page,
+            confidence=confidence,
+            evidence=Evidence(
+                page=page,
+                source_text=raw,
+                extraction_method="semantic_text_table_recovery_v68",
+            ),
+        ))
+
+    def table_header_index(lines):
+        for idx in range(len(lines)):
+            # Header labels may be wrapped across as many as three OCR text rows.
+            window = _fold(" ".join(lines[idx:idx + 3]))
+            has_description = bool(re.search(r"\b(?:designa\w*|description|libelle)\b", window))
+            has_quantity = bool(re.search(r"\b(?:quantit\w*|qte|qty|quantity|nbr)\b", window))
+            has_reference = bool(re.search(r"\b(?:references?|fournisseur|article|code)\b", window))
+            has_commercial = bool(re.search(r"\b(?:prix|montant|net)\b|\bp\s*[.]?\s*u\b", window))
+            has_delivery_period = bool(re.search(r"\bdela[ti]\b|\bsem\s*/\s*ann\b", window))
+            if has_description and (
+                (has_quantity and (has_reference or has_commercial or has_delivery_period))
+                or (has_reference and has_commercial)
+            ):
+                return idx
+        return None
+
+    two_row_description = re.compile(
+        rf"^(?P<description>.+?)\s+(?P<quantity>{number})\s+"
+        rf"[|\[(<Iil]*\s*(?P<week>\d{{1,3}}\s*/\s*\d{{2,4}})\s*$",
+        re.I,
+    )
+    two_row_detail = re.compile(
+        rf"^(?P<internal>{code})(?:\s+(?P<middle>.*?))?\s+"
+        rf"(?P<uom>{unit})\s+(?P<price>{number})\s+(?P<amount>{number})"
+        rf"(?:\s*[EUR€$£])?\s*$",
+        re.I,
+    )
+    conventional = re.compile(
+        rf"^(?P<internal>{code})\s+(?P<supplier>{code})\s+(?P<description>.+?)\s+"
+        rf"(?P<uom>{unit})\s+(?P<quantity>{number})\s+(?P<price>{number})\s+"
+        rf"(?P<discount>{number})\s+(?P<amount>{number})(?:\s+\S+)?\s*$",
+        re.I,
+    )
+    nbr_product = re.compile(
+        rf"^(?P<reference>{code})\s+(?P<pack>{number})\s+(?P<description>.+?)\s+"
+        rf"(?P<quantity>{number})\s+(?P<uom>{unit})\s+"
+        rf"(?P<price>{number})\s+(?P<amount>{number})\s*$",
+        re.I,
+    )
+    nbr_charge = re.compile(
+        rf"^(?P<pack>{number})\s+(?P<description>(?:FRAIS|PORT|TRANSPORT).+?)\s+"
+        rf"(?P<quantity>{number})\s+(?P<uom>{unit})\s+"
+        rf"(?P<price>{number})\s+(?P<amount>{number})\s*$",
+        re.I,
+    )
+    quantity_first = re.compile(
+        rf"^(?P<quantity>{number})\s+(?P<uom>{unit})\s+"
+        rf"(?P<body>.+?)\s+(?P<price>{number})(?:\s*/\s*(?:{unit}))?\s*$",
+        re.I,
+    )
+
+    for page in pages:
+        lines = [" ".join(line.split()) for line in str(page.text or "").splitlines() if line.strip()]
+        header_idx = table_header_index(lines)
+        if header_idx is None:
+            continue
+        confidence = max(0.0, min(1.0, float(page.confidence or 0.0) * 0.94))
+        pending = None
+        awaiting_supplier = None
+        last_product = None
+        page_items_before = len(items)
+
+        for raw in lines[header_idx + 1:]:
+            text = " ".join(raw.split())
+            low = _fold(text)
+            if len(items) > page_items_before and re.search(
+                r"\b(?:horaires?\s+de\s+reception|siege\s+social|conditions\s+generales|"
+                r"total\s+poids|total\s+ht|total\s+ttc|merci\s+de\s+nous|suite\s+page)\b",
+                low,
+            ):
+                break
+
+            # A supplier reference is sometimes repeated alone immediately after the
+            # commercial row. It is stronger than a missing/garbled middle cell.
+            standalone = (
+                reference_candidate(text)
+                if re.fullmatch(r"[A-Za-z0-9._/-]+", text)
+                and sum(ch.isdigit() for ch in text) >= 6
+                else None
+            )
+            if awaiting_supplier is not None and standalone:
+                internal = awaiting_supplier.customer_material_number or awaiting_supplier.material_number
+                awaiting_supplier.customer_material_number = internal
+                awaiting_supplier.material_number = standalone
+                awaiting_supplier.article_number = standalone
+                awaiting_supplier.supplier_material_number = standalone
+                awaiting_supplier = None
+                continue
+            if awaiting_supplier is not None:
+                awaiting_supplier = None
+
+            # The second physical row of the ERP layout contains customer code,
+            # optional supplier reference, UOM, price and amount.
+            detail = two_row_detail.fullmatch(text) if pending is not None else None
+            if detail is not None:
+                description, quantity, week, description_raw = pending
+                price = decimal(detail.group("price"))
+                amount = decimal(detail.group("amount"))
+                if arithmetic_ok(quantity, price, amount):
+                    internal = detail.group("internal")
+                    if sum(ch.isdigit() for ch in internal) >= 4:
+                        trailing = re.search(r"(?P<reference>[A-Za-z0-9._/-]{6,30})$", description)
+                        description_reference = reference_candidate(trailing.group("reference")) if trailing else None
+                        if description_reference:
+                            description = description[:trailing.start()].rstrip(" -/;:")
+                        middle_candidates = [
+                            candidate for candidate in (
+                                reference_candidate(token)
+                                for token in re.findall(r"[A-Za-z0-9._/-]+", detail.group("middle") or "")
+                            ) if candidate and candidate != internal
+                        ]
+                        supplier = description_reference or (
+                            max(middle_candidates, key=lambda value:(10 <= len(value) <= 11, sum(ch.isdigit() for ch in value), len(value)))
+                            if middle_candidates else None
+                        )
+                        primary = supplier or internal
+                        item = LineItem(
+                            material_number=primary,
+                            article_number=primary,
+                            customer_material_number=internal if supplier else None,
+                            supplier_material_number=supplier,
+                            description=description,
+                            quantity=quantity,
+                            ordered_quantity=quantity,
+                            uom=normalize_unit(detail.group("uom")),
+                            unit_price=price,
+                            net_unit_price=price,
+                            line_total=amount,
+                            line_net_amount=amount,
+                            currency=default_currency,
+                            delivery_week=week,
+                            delivery_period=week,
+                            raw_text=f"{description_raw} | {text}",
+                            page=page.page,
+                            confidence=confidence,
+                        )
+                        items.append(item)
+                        last_product = item
+                        awaiting_supplier = item
+                pending = None
+                continue
+
+            match = conventional.fullmatch(text)
+            if match is not None:
+                quantity = decimal(match.group("quantity"))
+                price = decimal(match.group("price"))
+                amount = decimal(match.group("amount"))
+                supplier = reference_candidate(match.group("supplier"))
+                internal = reference_candidate(match.group("internal"))
+                if supplier and internal and arithmetic_ok(quantity, price, amount):
+                    item = LineItem(
+                        material_number=supplier,
+                        article_number=supplier,
+                        customer_material_number=internal,
+                        supplier_material_number=supplier,
+                        description=match.group("description").strip(),
+                        quantity=quantity,
+                        ordered_quantity=quantity,
+                        uom=normalize_unit(match.group("uom")),
+                        unit_price=price,
+                        net_unit_price=price,
+                        discount_percent=decimal(match.group("discount")),
+                        line_total=amount,
+                        line_net_amount=amount,
+                        currency=default_currency,
+                        raw_text=text,
+                        page=page.page,
+                        confidence=confidence,
+                    )
+                    items.append(item)
+                    last_product = item
+                    pending = None
+                    continue
+
+            match = nbr_product.fullmatch(text)
+            if match is not None:
+                quantity = decimal(match.group("quantity"))
+                price = decimal(match.group("price"))
+                amount = decimal(match.group("amount"))
+                reference = reference_candidate(match.group("reference"))
+                if reference and arithmetic_ok(quantity, price, amount):
+                    item = LineItem(
+                        material_number=reference,
+                        article_number=reference,
+                        customer_material_number=reference,
+                        description=match.group("description").strip(),
+                        quantity=quantity,
+                        ordered_quantity=quantity,
+                        pack_quantity=decimal(match.group("pack")),
+                        uom=normalize_unit(match.group("uom")),
+                        unit_price=price,
+                        net_unit_price=price,
+                        line_total=amount,
+                        line_net_amount=amount,
+                        currency=default_currency,
+                        raw_text=text,
+                        page=page.page,
+                        confidence=confidence,
+                        warnings=["Only the customer's printed article code is available; supplier reference is not printed."],
+                    )
+                    items.append(item)
+                    last_product = item
+                    pending = None
+                    continue
+
+            match = nbr_charge.fullmatch(text)
+            if match is not None:
+                quantity = decimal(match.group("quantity"))
+                price = decimal(match.group("price"))
+                amount = decimal(match.group("amount"))
+                if arithmetic_ok(quantity, price, amount):
+                    add_charge(
+                        kind="shipping",
+                        description=match.group("description").strip(),
+                        page=page.page,
+                        raw=text,
+                        quantity=quantity,
+                        unit_price=price,
+                        uom=normalize_unit(match.group("uom")),
+                        amount=amount,
+                        confidence=confidence,
+                    )
+                    pending = None
+                    continue
+
+            match = quantity_first.fullmatch(text)
+            if match is not None:
+                quantity = decimal(match.group("quantity"))
+                price = decimal(match.group("price"))
+                body = match.group("body").strip()
+                tokens = body.split()
+                printed_reference = reference_candidate(tokens[-1]) if tokens else None
+                description = " ".join(tokens[:-1]).strip() if printed_reference else body
+                amount = round(float(quantity) * float(price), 6) if None not in (quantity, price) else None
+                kind = _fee_kind(description)
+                if kind and amount is not None:
+                    add_charge(
+                        kind="shipping" if re.search(r"\b(?:port|transport|livraison)\b", _fold(description)) else kind,
+                        description=description,
+                        page=page.page,
+                        raw=text,
+                        quantity=quantity,
+                        unit_price=price,
+                        uom=normalize_unit(match.group("uom")),
+                        amount=amount,
+                        code_value=printed_reference,
+                        confidence=confidence,
+                    )
+                    pending = None
+                    continue
+                if printed_reference and description and amount is not None:
+                    item = LineItem(
+                        material_number=printed_reference,
+                        article_number=printed_reference,
+                        supplier_material_number=printed_reference,
+                        description=description,
+                        quantity=quantity,
+                        ordered_quantity=quantity,
+                        uom=normalize_unit(match.group("uom")),
+                        unit_price=price,
+                        net_unit_price=price,
+                        line_total=amount,
+                        line_net_amount=amount,
+                        currency=default_currency,
+                        raw_text=text,
+                        page=page.page,
+                        confidence=confidence,
+                        warnings=["Line total calculated from printed quantity and unit price; no printed line amount."],
+                    )
+                    items.append(item)
+                    last_product = item
+                    pending = None
+                    continue
+
+            # Short explicit charge rows are accepted only inside the table and only
+            # when their final token is a monetary value.
+            charge_match = re.fullmatch(rf"(?P<label>.+?)\s+(?P<amount>{number})", text, re.I)
+            if charge_match is not None:
+                kind = _explicit_charge_kind_v62(charge_match.group("label"))
+                if kind:
+                    unit_amount = decimal(charge_match.group("amount"))
+                    quantity = None
+                    amount = unit_amount
+                    if (
+                        kind == "environmental_fee" and last_product is not None
+                        and re.search(r"\bunit", _fold(charge_match.group("label")))
+                        and last_product.quantity is not None
+                    ):
+                        quantity = last_product.quantity
+                        amount = round(float(unit_amount) * float(quantity), 6)
+                    add_charge(
+                        kind=kind,
+                        description=charge_match.group("label").strip(),
+                        page=page.page,
+                        raw=text,
+                        amount=amount,
+                        quantity=quantity,
+                        unit_price=unit_amount if quantity is not None else None,
+                        parent=last_product if kind != "shipping" else None,
+                        confidence=confidence,
+                    )
+                    pending = None
+                    continue
+
+            description_match = two_row_description.fullmatch(text)
+            if description_match is not None:
+                quantity = decimal(description_match.group("quantity"))
+                if quantity is not None:
+                    week_parts = re.sub(r"\s+", "", description_match.group("week")).split("/", 1)
+                    if len(week_parts[0]) > 2:
+                        week_parts[0] = week_parts[0][-2:]
+                    pending = (
+                        description_match.group("description").strip(),
+                        quantity,
+                        "/".join(week_parts),
+                        text,
+                    )
+                    continue
+            pending = None
+
+    return _dedupe_line_items(items), charges
 
 
 def _enhance_paired_party_zones_v46(po, pages, config: dict):
@@ -4232,8 +4634,26 @@ def _merge_explicit_page_charges_v63(po, pages, config: dict):
 
     for page in pages or []:
         for row in all_rows([page], y_factor=0.50):
+            low = _fold(row.text)
+            # Summary grids often contain the words ``Ecotaxe`` and ``Port`` next
+            # to VAT/TTC totals. Their right-most number is the document total, not
+            # a charge. Only detail rows belong in ``additional_charges``.
+            if re.search(
+                r"\b(?:total\s+ttc|net\s+a\s+payer|montant\s+tva|regle\s+ce\s+jour|"
+                r"montant\s+ht\s+ecotaxe|total\s+eco[- ]?participation)\b",
+                low,
+            ):
+                continue
             kind = _explicit_charge_kind_v62(row.text)
             if not kind:
+                continue
+            # A selected parser may already have recovered the exact labelled row
+            # and calculated a per-unit fee using its parent quantity. Source-row
+            # identity is therefore a stronger duplicate key than amount equality.
+            if any(
+                _fold(getattr(getattr(charge, "evidence", None), "source_text", None)) == low
+                for charge in existing
+            ):
                 continue
             values = []
             for word in row.words:
@@ -5249,6 +5669,9 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     quantity_first_lines, quantity_first_charges = _quantity_first_table_items(pages, default_currency)
     price_then_quantity_lines = _price_then_quantity_table_items(pages, default_currency)
     two_row_erp_lines = _two_row_erp_table_items(pages, default_currency)
+    semantic_text_lines, semantic_text_charges = _semantic_text_table_items_v68(
+        pages, config, default_currency
+    )
     material_split_lines, material_split_charges = _material_anchored_split_table_items_v61(
         pages, config, default_currency
     )
@@ -5319,8 +5742,18 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     if quantity_first_lines: hypotheses.append(("quantity_first_table",quantity_first_lines,quantity_first_charges,0.12))
     if price_then_quantity_lines: hypotheses.append(("price_then_quantity_table",price_then_quantity_lines,[],0.14))
     if two_row_erp_lines: hypotheses.append(("two_row_erp_table",two_row_erp_lines,[],0.16))
-    if material_split_lines: hypotheses.append(("material_anchored_split",material_split_lines,material_split_charges,0.24))
     current_pattern_support=int(line_material_pattern_summary(po.lines, config).get("supported_lines",0))
+    if semantic_text_lines and (
+        not current_pattern_support or len(semantic_text_lines) >= current_pattern_support
+    ):
+        hypotheses.append(("semantic_text_table",semantic_text_lines,semantic_text_charges,0.20))
+    elif semantic_text_lines:
+        suppressed_hypotheses["semantic_text_table"]={
+            "reason":"partial_coverage_vs_current_supported_lines",
+            "candidate_lines":len(semantic_text_lines),
+            "current_supported_lines":current_pattern_support,
+        }
+    if material_split_lines: hypotheses.append(("material_anchored_split",material_split_lines,material_split_charges,0.24))
     if material_numeric_lines and (
         not current_pattern_support or len(material_numeric_lines) >= current_pattern_support
     ):

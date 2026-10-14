@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.16.5-semantic-text-table-recovery
+
+- Recover scanned order lines when OCR preserves row order but table geometry is unreliable, using semantic headers and strict quantity × unit-price = amount validation.
+- Support split two-row ERP tables, quantity-first tables without line amounts, conventional dual-reference rows, and `NBR`/`UAC` purchasing tables.
+- Promote explicit supplier references to the primary article fields and retain printed internal codes as customer material references.
+- Separate freight and environmental contributions from product lines, including per-unit environmental fees linked to their parent products.
+- Add regression coverage for the four structures behind the nine zero-line failures found in the 150-document ESKER campaign.
+
 ## 5.16.4-stacked-dual-reference-charges
 
 - Parse ERP tables that stack several logical order lines in one physical row while exposing separate customer `RÃ©fÃ©rence` and supplier `Ref Four` columns.

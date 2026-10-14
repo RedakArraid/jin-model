@@ -43,6 +43,7 @@ from uda.business import (
     _price_then_quantity_table_items,
     _quantity_first_table_items,
     _summary_table_totals_v48,
+    _semantic_text_table_items_v68,
     _two_row_erp_table_items,
     _strict_text_totals_v48,
     enhance_purchase_order_with_native_structure,
@@ -456,6 +457,30 @@ def test_labelled_shipping_charge_is_recovered_outside_line_hypotheses():
     assert po.totals.total_shipping == 35.0
 
 
+def test_charge_recovery_ignores_summary_grid_and_exact_source_duplicate():
+    page = _page([
+        (359, [("Eco", 59, 82), ("Contribution", 86, 145), ("unit.", 150, 176),
+               ("HT", 180, 195), (":", 198, 201), ("1,75", 552, 575)]),
+        (700, [("Montant", 20, 65), ("HT", 70, 85), ("Ecotaxe", 100, 145),
+               ("HT", 150, 165), ("Port", 180, 205), ("HT", 210, 225),
+               ("%", 240, 247), ("TVA", 250, 272), ("Total", 400, 430),
+               ("TTC", 435, 455), ("1", 505, 512), ("372,27", 540, 580)]),
+        (720, [("TOTAL", 20, 55), ("ECO-PARTICIPATION", 60, 175),
+               ("(HT)", 180, 205), ("9,44", 550, 580)]),
+    ])
+    existing = AdditionalCharge(
+        charge_type="environmental_fee",
+        description="Eco Contribution unit. HT",
+        amount=3.5,
+        page=1,
+        evidence=Evidence(page=1, source_text="Eco Contribution unit. HT : 1,75"),
+    )
+    po = SimpleNamespace(lines=[], additional_charges=[existing], totals=Totals(currency="EUR"))
+    po, recovered = _merge_explicit_page_charges_v63(po, [page], {})
+    assert recovered == {}
+    assert po.additional_charges == [existing]
+
+
 def test_libelle_family_and_prix_total_header_extracts_complete_product_line():
     page = _page([
         (180, [("Code", 20, 48), ("article", 50, 91), ("Libelle", 110, 166),
@@ -817,11 +842,103 @@ def test_two_row_erp_layout_aligns_description_quantity_and_commercial_row():
     ])
     lines=_two_row_erp_table_items([page])
     assert len(lines)==2
-    assert (lines[0].material_number,lines[0].supplier_material_number)==("5560438","7716780588")
+    assert (lines[0].material_number,lines[0].supplier_material_number)==("7716780588","7716780588")
+    assert lines[0].customer_material_number == "5560438"
     assert (lines[0].quantity,lines[0].unit_price,lines[0].line_total)==(2,20,40)
     assert lines[0].delivery_week=="14/26"
-    assert (lines[1].material_number,lines[1].supplier_material_number)==("4913906","7716705092")
+    assert (lines[1].material_number,lines[1].supplier_material_number)==("7716705092","7716705092")
+    assert lines[1].customer_material_number == "4913906"
     assert (lines[1].quantity,lines[1].unit_price,lines[1].line_total)==(5,615,3075)
+
+
+def test_semantic_text_table_recovers_quantity_first_product_and_shipping():
+    page = _page([
+        (180, [("oté", 20, 42), ("Désignation", 70, 150), ("Vos", 300, 320),
+               ("Références", 325, 390), ("Prix", 500, 525), ("Unit.", 530, 560)]),
+        (220, [("1,000", 20, 55), ("PCE", 60, 90), ("CONSOLE", 110, 170),
+               ("CL5000IU", 175, 235), ("CN35E", 240, 280), ("7733701995", 320, 390),
+               ("497,48/PCE", 500, 570)]),
+        (250, [("1,000", 20, 55), ("PCE", 60, 90), ("TRANSPORT", 110, 190),
+               ("55,00/PCE", 500, 570)]),
+    ])
+    lines, charges = _semantic_text_table_items_v68([page], {})
+    assert len(lines) == 1 and len(charges) == 1
+    assert lines[0].material_number == "7733701995"
+    assert lines[0].description == "CONSOLE CL5000IU CN35E"
+    assert (lines[0].quantity, lines[0].unit_price, lines[0].line_total) == (1, 497.48, 497.48)
+    assert charges[0].charge_type == "shipping" and charges[0].amount == 55
+
+
+def test_semantic_text_table_recovers_dual_reference_rows_and_unit_eco_fees():
+    page = _page([
+        (180, [("Numéro", 10, 55)]),
+        (195, [("d'article", 10, 60), ("Réf.fournisseur", 70, 160), ("Description", 170, 250),
+               ("Unité", 300, 335), ("Quantité", 345, 395), ("Prix", 410, 435),
+               ("unit.net", 440, 485), ("Remise", 490, 530), ("Montant", 535, 585)]),
+        (230, [("832404", 10, 50), ("7733701933", 70, 135), ("UNITE", 170, 205),
+               ("EXTERIEURE", 210, 280), ("UN", 300, 318), ("1,00", 350, 380),
+               ("810,13", 415, 450), ("0,00", 490, 520), ("810,13", 540, 580)]),
+        (245, [("Eco", 170, 190), ("Contribution", 195, 255), ("unit.", 260, 285),
+               ("HT", 290, 305), (":", 308, 311), ("7,69", 540, 570)]),
+        (270, [("779847", 10, 50), ("7733701566", 70, 135), ("UNITE", 170, 205),
+               ("INTERIEURE", 210, 275), ("UN", 300, 318), ("2,00", 350, 380),
+               ("161,12", 415, 450), ("0,00", 490, 520), ("322,24", 540, 580)]),
+        (285, [("Eco", 170, 190), ("Contribution", 195, 255), ("unit.", 260, 285),
+               ("HT", 290, 305), (":", 308, 311), ("1,75", 540, 570)]),
+    ])
+    lines, charges = _semantic_text_table_items_v68([page], {})
+    assert [line.material_number for line in lines] == ["7733701933", "7733701566"]
+    assert [line.customer_material_number for line in lines] == ["832404", "779847"]
+    assert [charge.amount for charge in charges] == [7.69, 3.5]
+    assert sum(line.line_total for line in lines) + sum(charge.amount for charge in charges) == 1143.56
+
+
+def test_semantic_text_table_recovers_noisy_two_row_erp_and_reference_roles():
+    page = _page([
+        (180, [("DESIGNATION", 20, 110), ("QUANTITES", 300, 350),
+               ("DELAT", 390, 425), ("MONTANT", 520, 575)]),
+        (195, [("CODE", 20, 55), ("REFERENCE", 90, 145), ("FOURNISSEUR", 150, 225),
+               ("Sem/Ann", 390, 430), ("P.U", 470, 490), ("NET", 515, 535)]),
+        (220, [("PLATINE", 20, 80), ("ELECTRONIQUE", 85, 170), ("ELM;REF", 175, 220),
+               ("8738712225", 225, 285), ("4,00", 315, 345), ("131/26", 390, 430)]),
+        (235, [("4004868", 20, 65), ("87387712225", 90, 165), ("PIECE", 360, 400),
+               ("262,20", 470, 505), ("1.048,80", 525, 575)]),
+        (245, [("****33816", 20, 75)]),
+        (260, [("MODULE", 20, 75), ("WI-FI", 80, 115), ("6,00", 315, 345),
+               ("31/26", 390, 430)]),
+        (275, [("1325892", 20, 65), ("PIECE", 360, 400), ("33,75", 470, 505),
+               ("202,50", 525, 575)]),
+        (290, [("7736606771", 90, 155)]),
+    ])
+    lines, charges = _semantic_text_table_items_v68([page], {})
+    assert not charges and len(lines) == 2
+    assert (lines[0].material_number, lines[0].customer_material_number) == ("8738712225", "4004868")
+    assert lines[0].description == "PLATINE ELECTRONIQUE ELM;REF"
+    assert lines[0].delivery_week == "31/26"
+    assert (lines[1].material_number, lines[1].customer_material_number) == ("7736606771", "1325892")
+
+
+def test_semantic_text_table_recovers_nbr_uac_products_and_port():
+    page = _page([
+        (180, [("CODE", 10, 45), ("NBR", 50, 75), ("en", 80, 95),
+               ("DESIGNATION", 110, 200), ("NBR", 250, 275), ("EN", 280, 295),
+               ("UAC", 300, 330), ("PRIX", 410, 440), ("ACH", 445, 475),
+               ("MONTANT", 520, 580), ("HT", 585, 598)]),
+        (220, [("63043454", 10, 65), ("1,00", 75, 95), ("JOINT", 110, 150),
+               ("D'ÉTANCHÉITÉ", 155, 235), ("120X152X10MM", 240, 325),
+               ("1,00", 335, 365), ("PCE", 370, 395), ("9,60", 450, 480),
+               ("9,60", 540, 570)]),
+        (245, [("8735100865", 10, 75), ("1", 80, 87), ("ANODE", 110, 155),
+               ("M8X1280", 160, 220), ("D=33", 225, 255), ("1,00", 335, 365),
+               ("PCE", 370, 395), ("83,40", 445, 480), ("83,40", 535, 575)]),
+        (270, [("1", 10, 17), ("FRAIS", 110, 150), ("DE", 155, 170), ("PORT", 175, 210),
+               ("1,00", 335, 365), ("PCE", 370, 395), ("20,00", 445, 480),
+               ("20,00", 535, 575)]),
+    ])
+    lines, charges = _semantic_text_table_items_v68([page], {})
+    assert [line.material_number for line in lines] == ["63043454", "8735100865"]
+    assert [line.line_total for line in lines] == [9.6, 83.4]
+    assert len(charges) == 1 and charges[0].charge_type == "shipping" and charges[0].amount == 20
 
 
 def test_geometry_recovers_missing_quantity_label_from_repeated_aligned_unit_cells():

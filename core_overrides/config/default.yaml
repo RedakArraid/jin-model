@@ -249,6 +249,9 @@ layout:
   - ECO-PARTICIPATION
   - ECO PARTICIPATION
   geometry_table_recovery: true
+  semantic_text_table_recovery_v68: true
+  semantic_text_table_amount_tolerance_abs: 0.04
+  semantic_text_table_amount_tolerance_rel: 0.006
   geometry_table_header_min_terms: 4
   geometry_table_header_terms:
   - reference
