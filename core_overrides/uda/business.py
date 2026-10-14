@@ -856,15 +856,48 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                 continue
             code=code_word.text.strip()
             secondary=None
+            secondary_words=[]
             if sec_x is not None:
-                sec_words=[w.text for w in left if center(w)>center(code_word)+15 and center(w)<sec_desc_boundary]
-                secondary=" ".join(sec_words).strip() or None
+                # The explicit supplier-reference column is often narrow while
+                # its first description token starts well before the centre of
+                # the ``Designation`` header. Do not concatenate every token in
+                # that geometric band: this produced values such as
+                # ``7738111040 BOS`` and ``7716704752 #3p -``. Select the
+                # code-shaped token nearest the reference header and leave all
+                # other tokens to the description.
+                secondary_candidates=[]
+                for word in left:
+                    token=word.text.strip()
+                    if not (center(word)>center(code_word)+15 and center(word)<sec_desc_boundary):
+                        continue
+                    if not (4<=len(token)<=max_mat):
+                        continue
+                    if not re.fullmatch(r"[A-Za-z0-9._/-]+",token):
+                        continue
+                    if not any(ch.isdigit() for ch in token):
+                        continue
+                    secondary_candidates.append(word)
+                if secondary_candidates:
+                    secondary_is_left=sec_x<ref_x
+                    expected_reference_x=ref_x if secondary_is_left else sec_x
+                    reference_word=min(
+                        secondary_candidates,
+                        key=lambda word:abs(center(word)-expected_reference_x),
+                    )
+                    secondary_words=[reference_word]
+                    secondary=reference_word.text.strip() or None
             elif len(left)>1 and all(re.fullmatch(r"[A-Za-z0-9._/-]*\d[A-Za-z0-9._/-]*",w.text) for w in left):
-                secondary=" ".join(w.text for w in left if w is not code_word) or None
+                secondary_words=[w for w in left if w is not code_word]
+                secondary=" ".join(w.text for w in secondary_words) or None
             unit_anchor=anchors.get("uom")
             auxiliary=[anchors[key] for key in ("ua","up","internal_reference") if key in anchors]
             auxiliary_start=min(auxiliary)-max(8,pg.width*0.012) if auxiliary else None
-            desc_words=[w.text for w in left if w is not code_word and w.text!=secondary and (sec_x is None or center(w)>=sec_desc_boundary)
+            secondary_word_ids={id(word) for word in secondary_words}
+            row_desc_start=(
+                max(word.bbox[2] for word in secondary_words)
+                if secondary_words else sec_desc_boundary
+            )
+            desc_words=[w.text for w in left if w is not code_word and id(w) not in secondary_word_ids and (sec_x is None or center(w)>=row_desc_start)
                         and (unit_anchor is None or center(w)<unit_anchor-15)
                         and (auxiliary_start is None or center(w)<auxiliary_start)
                         and (desc_family_boundary is None or center(w)<desc_family_boundary)]
@@ -905,9 +938,26 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
             tol=max(abs_tol,abs(computed)*rel_tol)
             if abs(amount-computed)>tol and cfg.get("geometry_table_validate_quantity_price", True):
                 continue
+            # When the table explicitly contains both ``Code art`` and
+            # ``Reference`` columns, the left code belongs to the customer while
+            # the reference is the supplier/material identifier. Type those
+            # roles before hypothesis scoring so an internal customer code such
+            # as ``H51087`` cannot make an otherwise complete table look
+            # implausible against the supplier reference-shape profile.
+            secondary_is_customer_left=(
+                secondary is not None and sec_x is not None and sec_x<ref_x
+            )
+            supplier_reference=(
+                secondary if secondary_is_customer_left else code
+            )
+            customer_reference=(
+                code if secondary_is_customer_left else secondary
+            )
             current=LineItem(
-                line_number=str(len(items)+1), material_number=code, article_number=code,
-                supplier_material_number=secondary, description=desc or None,
+                line_number=str(len(items)+1), material_number=supplier_reference,
+                article_number=supplier_reference,
+                customer_material_number=customer_reference,
+                supplier_material_number=supplier_reference, description=desc or None,
                 product_family=product_family,
                 quantity=qty, ordered_quantity=qty, unit_price=price, net_unit_price=price,
                 uom=" ".join(unit_words) or None,
@@ -916,6 +966,94 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
             )
             items.append(current)
     return _dedupe_line_items(items), charges
+
+
+def _line_hypothesis_total_fit_v66(lines, charges, target, config: dict):
+    """Score candidate coverage against an explicitly printed net total.
+
+    Hypothesis quality is otherwise averaged per row. A tiny set of pristine
+    rows can therefore outrank a complete table. Printed quantity/price/amount
+    arithmetic and an explicit document net total provide independent evidence
+    about set completeness; use them only to rank already-detected candidates.
+    """
+    validation = config.get("validation", {}) if isinstance(config, dict) else {}
+    layout = config.get("layout", {}) if isinstance(config, dict) else {}
+    diagnostics = {
+        "available": False,
+        "target": target,
+        "document_sum": None,
+        "amount_coverage": 0.0,
+        "relative_error": None,
+        "valid": False,
+        "adjustment": 0.0,
+    }
+    if target in (None, 0) or not lines:
+        return diagnostics
+    try:
+        target = float(target)
+    except (TypeError, ValueError):
+        return diagnostics
+    if target <= 0:
+        return diagnostics
+
+    amounts = []
+    for line in lines:
+        amount = getattr(line, "line_total", None)
+        if amount is None:
+            amount = getattr(line, "line_net_amount", None)
+        if amount is None:
+            quantity = getattr(line, "quantity", None)
+            price = getattr(line, "net_unit_price", None)
+            if price is None:
+                price = getattr(line, "unit_price", None)
+            if quantity is not None and price is not None:
+                amount = float(quantity) * float(price)
+        if amount is not None:
+            amounts.append(float(amount))
+    charge_amounts = [
+        float(charge.amount) for charge in charges or []
+        if getattr(charge, "amount", None) is not None
+    ]
+    amount_coverage = len(amounts) / max(1, len(lines))
+    if amount_coverage < float(layout.get(
+        "line_hypothesis_total_min_amount_coverage", 0.80
+    )):
+        diagnostics["amount_coverage"] = round(amount_coverage, 4)
+        return diagnostics
+
+    document_sum = sum(amounts) + sum(charge_amounts)
+    absolute_error = abs(document_sum - target)
+    tolerance = max(
+        float(validation.get("amount_absolute_tolerance", 0.03)),
+        abs(target) * float(validation.get("amount_relative_tolerance", 0.005)),
+    )
+    relative_error = absolute_error / max(abs(target), 1e-9)
+    valid = absolute_error <= tolerance
+    if valid:
+        adjustment = float(layout.get("line_hypothesis_total_match_bonus", 0.42))
+    elif 0 <= document_sum < target:
+        captured = max(0.0, min(1.0, document_sum / target))
+        adjustment = -float(layout.get(
+            "line_hypothesis_total_undercoverage_penalty", 0.38
+        )) * (1.0 - captured)
+    else:
+        adjustment = -min(
+            float(layout.get("line_hypothesis_total_mismatch_penalty_cap", 0.38)),
+            relative_error * float(layout.get(
+                "line_hypothesis_total_mismatch_penalty_weight", 0.24
+            )),
+        )
+    adjustment *= amount_coverage
+    diagnostics.update({
+        "available": True,
+        "target": round(target, 6),
+        "document_sum": round(document_sum, 6),
+        "amount_coverage": round(amount_coverage, 4),
+        "relative_error": round(relative_error, 6),
+        "valid": valid,
+        "adjustment": round(adjustment, 4),
+    })
+    return diagnostics
 
 
 def _quantity_first_table_items(pages, default_currency="EUR"):
@@ -1634,6 +1772,201 @@ def _stacked_column_native_table_items_v46(table, default_currency: str = "EUR")
     return out
 
 
+def _stacked_description_groups_v67(value, expected_count: int):
+    """Split a stacked designation cell into logical commercial descriptions.
+
+    Some ERP PDF tables put every logical order row in a single physical cell.
+    Narrative routing/contact text is mixed with the actual descriptions, while
+    wrapped product descriptions occupy several lines.  We only accept a split
+    when exactly ``expected_count`` strong description anchors can be found.
+    """
+    import re
+
+    lines = [x for x in _split_cell_lines(value) if x and not re.fullmatch(r"\*+", x)]
+    if not lines or expected_count < 1:
+        return []
+
+    # "Pour stock" closes the document-routing preamble in this family of ERP
+    # tables.  It is metadata, not the first product description.
+    stock_markers = [i for i, x in enumerate(lines) if _fold(x).strip(" :.-") == "pour stock"]
+    if stock_markers:
+        lines = lines[stock_markers[-1] + 1:]
+
+    cleaned = []
+    for line in lines:
+        low = _fold(line).strip()
+        if any(marker in low for marker in (
+            "commande par le depot", "horaires de reception",
+            "du lundi au vendredi",
+        )):
+            continue
+        # Customer routing notes can sit between a charge and the next product.
+        # Keep genuine product descriptions beginning with "pour" unless the
+        # line explicitly looks like an order/reference annotation.
+        if low.startswith("pour ") and re.search(r"(?:\bcmde\b|\bcommande\b|\bref\b|/)", low):
+            continue
+        if re.search(r"\b(?:cmde|commande)\b.*\bref\b|\bref\s*:", low):
+            continue
+        cleaned.append(line)
+    lines = cleaned
+    if not lines:
+        return []
+
+    continuation_words = {
+        "refacture", "fournisseur", "transporteur", "standard", "express",
+    }
+
+    def is_anchor(index: int) -> bool:
+        line = lines[index]
+        low = _fold(line).strip(" :;.-")
+        if _explicit_charge_kind_v62(line):
+            return True
+        if low in continuation_words or line.lstrip().startswith(("(", "-", "/")):
+            return False
+        alpha_words = re.findall(r"[a-z]{2,}", low)
+        if len(alpha_words) < 2:
+            return False
+        # Rows made almost exclusively of model numbers (G224 G234...) extend
+        # the preceding designation rather than starting another order line.
+        tokens = re.findall(r"[a-z0-9]+", low)
+        code_tokens = sum(bool(re.search(r"[a-z]", token) and re.search(r"\d", token)) for token in tokens)
+        if tokens and code_tokens >= max(1, len(tokens) - 1):
+            return False
+        return True
+
+    anchors = [i for i in range(len(lines)) if is_anchor(i)]
+    if len(anchors) != expected_count:
+        return []
+    groups = []
+    for pos, start in enumerate(anchors):
+        end = anchors[pos + 1] if pos + 1 < len(anchors) else len(lines)
+        groups.append(" ".join(lines[start:end]).strip())
+    return groups
+
+
+def _dual_reference_stacked_native_table_items_v67(table, default_currency: str = "EUR"):
+    """Parse stacked ERP tables with explicit customer and supplier references.
+
+    ``RÃ©fÃ©rence`` is the buyer's internal code and ``Ref Four`` is the supplier
+    article reference.  The supplier reference is therefore the canonical
+    material number whenever one is printed.  Empty supplier cells on charge
+    rows are aligned semantically instead of shifting the following product.
+    """
+    from po_ocr.models import LineItem
+    from po_ocr.normalize import parse_number
+    import re
+
+    data = table.data or []
+    if len(data) < 2:
+        return []
+    headers = [_fold(str(x or "")) for x in data[0]]
+    compact = [re.sub(r"[^a-z0-9]+", "", h) for h in headers]
+
+    def col(pred):
+        for i, (header, compact_header) in enumerate(zip(headers, compact)):
+            if pred(header, compact_header):
+                return i
+        return None
+
+    supplier_col = col(lambda h, c: c in {
+        "reffour", "reffournisseur", "referencefour", "referencefournisseur",
+        "supplierref", "supplierreference", "vendorref", "vendorreference",
+    })
+    customer_col = col(lambda h, c: c in {
+        "reference", "referencearticle", "article", "code", "material",
+    })
+    desc_col = col(lambda h, c: "designation" in c or "description" in c or "libelle" in c)
+    qty_col = col(lambda h, c: "quantite" in c or c in {"qty", "quantity"})
+    price_col = col(lambda h, c: c in {"prixht", "prixnetht", "puht", "prixunitaire"} or "prixht" in c)
+    amount_col = col(lambda h, c: "montantht" in c or "montantnet" in c or "linetotal" in c)
+    gross_col = col(lambda h, c: c in {"ppht", "prixpublicht", "tarifht", "grossprice"} or "ppht" in c)
+    if None in (supplier_col, customer_col, desc_col, qty_col, price_col, amount_col):
+        return []
+    if supplier_col == customer_col:
+        return []
+
+    out = []
+    for row in data[1:]:
+        customer_refs = _split_cell_lines(row[customer_col] if customer_col < len(row) else None)
+        supplier_refs = _split_cell_lines(row[supplier_col] if supplier_col < len(row) else None)
+        n = len(customer_refs)
+        if n < 1:
+            continue
+        descriptions = _stacked_description_groups_v67(
+            row[desc_col] if desc_col < len(row) else None,
+            n,
+        )
+        if len(descriptions) != n:
+            continue
+
+        prices = [parse_number(x) for x in _split_cell_lines(row[price_col] if price_col < len(row) else None)]
+        amounts = [parse_number(x) for x in _split_cell_lines(row[amount_col] if amount_col < len(row) else None)]
+        gross = [parse_number(x) for x in _split_cell_lines(row[gross_col] if gross_col is not None and gross_col < len(row) else None)]
+        qty_raw = _split_cell_lines(row[qty_col] if qty_col < len(row) else None)
+        quantities = []
+        for value in qty_raw:
+            match = re.match(r"\s*([-+]?\d[\d .']*(?:[,.]\d+)?)\s*([^\W\d_]{1,8})?\s*$", value)
+            if match:
+                quantities.append((parse_number(match.group(1)), match.group(2)))
+        if len(prices) != n or len(amounts) != n or len(quantities) != n:
+            continue
+
+        kinds = [
+            _explicit_charge_kind_v62(f"{customer_refs[i]} {descriptions[i]}")
+            for i in range(n)
+        ]
+        supplier_by_index = [None] * n
+        if len(supplier_refs) == n:
+            supplier_by_index = supplier_refs
+        else:
+            product_indexes = [i for i, kind in enumerate(kinds) if not kind]
+            if len(supplier_refs) != len(product_indexes):
+                continue
+            for index, supplier_ref in zip(product_indexes, supplier_refs):
+                supplier_by_index[index] = supplier_ref
+
+        row_items = []
+        valid = True
+        for i, customer_ref in enumerate(customer_refs):
+            supplier_ref = supplier_by_index[i]
+            primary_ref = supplier_ref or customer_ref
+            quantity, uom = quantities[i]
+            price, amount = prices[i], amounts[i]
+            if not primary_ref or quantity is None or price is None or amount is None:
+                valid = False
+                break
+            expected = float(quantity) * float(price)
+            if abs(float(amount) - expected) > max(0.04, abs(expected) * 0.006):
+                valid = False
+                break
+            row_items.append(LineItem(
+                line_number=str(len(out) + len(row_items) + 1),
+                material_number=primary_ref,
+                article_number=primary_ref,
+                customer_material_number=customer_ref or None,
+                supplier_material_number=supplier_ref or None,
+                description=descriptions[i],
+                quantity=quantity,
+                ordered_quantity=quantity,
+                uom=uom,
+                gross_unit_price=gross[i] if i < len(gross) else None,
+                unit_price=price,
+                net_unit_price=price,
+                line_total=amount,
+                line_net_amount=amount,
+                currency=default_currency,
+                page=table.source.page,
+                confidence=float(table.confidence) * 0.997,
+                raw_text=" | ".join(str(x) for x in (
+                    customer_ref, supplier_ref, descriptions[i],
+                    qty_raw[i] if i < len(qty_raw) else "", price, amount,
+                ) if x not in (None, "")),
+            ))
+        if valid:
+            out.extend(row_items)
+    return out
+
+
 
 def _parse_native_decimal(value):
     """Parse ERP-native decimal strings without assuming <=3 decimal places.
@@ -1664,7 +1997,10 @@ def _explicit_charge_kind_v62(text: str | None) -> str | None:
     low = _fold(text)
     if not low:
         return None
-    if re.search(r"\b(?:deee|d3ee|weee|eco[- ]?participation|eco[- ]?contribution)\b", low):
+    if (
+        re.search(r"(?<![a-z0-9])(?:deee|d3ee|weee)(?=$|[\s_./:+-]|\d)", low)
+        or re.search(r"\beco[- ]?(?:participation|contribution)\b", low)
+    ):
         return "environmental_fee"
     if (
         re.search(r"\b(?:frais|forfait|participation|cout|montant)\s+(?:de\s+|du\s+)?(?:port|transport|livraison|expedition)\b", low)
@@ -1672,6 +2008,7 @@ def _explicit_charge_kind_v62(text: str | None) -> str | None:
         or re.search(r"\b(?:shipping|freight)(?:\s+(?:charge|cost|fee))?\b", low)
         or re.fullmatch(r"(?:port|transport|livraison|expedition)(?:\s+ht)?", low)
         or re.search(r"\bportstd\b", low)
+        or re.search(r"(?<![a-z0-9])port\s*/\s*achats?\b", low)
     ):
         return "shipping"
     if (
@@ -1877,11 +2214,33 @@ def _native_table_line_items_and_charges(tables, default_currency: str = "EUR"):
     all_items=[]; all_charges=[]
     for table in tables:
         fee_items, fee_charges = _rexellike_product_fee_table(table, default_currency=default_currency)
+        dual_reference = _dual_reference_stacked_native_table_items_v67(table, default_currency=default_currency)
+        dual_charges = []
+        if dual_reference:
+            # Charge rows must be separated before global hypothesis scoring.
+            # Otherwise a geometry hypothesis containing two products plus one
+            # charge can outrank this semantically authoritative table merely
+            # because the charge still looks like an atypical third material.
+            from types import SimpleNamespace
+            temporary = SimpleNamespace(
+                lines=dual_reference,
+                additional_charges=[],
+                totals=SimpleNamespace(total_shipping=None, total_freight=None),
+            )
+            temporary, _ = _separate_additional_charge_lines_v62(temporary, {})
+            dual_reference = temporary.lines
+            dual_charges = temporary.additional_charges
         standard = _standard_native_table_items(table, default_currency=default_currency)
         stacked = _stacked_column_native_table_items_v46(table, default_currency=default_currency)
         packed = _packed_native_table_items(table, default_currency=default_currency)
         packed, packed_charges = _repair_packed_fee_rows(table, packed, default_currency=default_currency)
-        candidates=[x for x in (fee_items, standard, stacked, packed) if x]
+        # On an equal quality score, the explicit dual-reference schema has
+        # stronger semantics than the generic native-table parser.
+        candidates=(
+            [dual_reference]
+            if dual_reference
+            else [x for x in (fee_items, standard, stacked, packed) if x]
+        )
         if candidates:
             ranked=sorted(((line_item_set_quality(x), len(x), x) for x in candidates), key=lambda z:(z[0],z[1]), reverse=True)
             items=ranked[0][2]
@@ -1889,6 +2248,8 @@ def _native_table_line_items_and_charges(tables, default_currency: str = "EUR"):
             # Only charges belonging to the selected parse are retained.
             if items is fee_items:
                 all_charges.extend(fee_charges)
+            elif items is dual_reference:
+                all_charges.extend(dual_charges)
             elif items is packed:
                 all_charges.extend(packed_charges)
     return _dedupe_line_items(all_items), all_charges
@@ -4872,6 +5233,13 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     )
     default_currency = config.get("normalization", {}).get("default_currency", "EUR")
     po = _extract_native_table_header_fields(po, tables)
+    # Establish explicit printed totals before comparing line hypotheses. These
+    # routines are idempotent and are repeated later after the selected lines are
+    # normalized. Doing the first pass here prevents a two-line recovery from
+    # outranking a complete nineteen-line table whose amounts reconcile exactly.
+    po = _enhance_totals_from_native_tables(po, tables, default_currency=default_currency)
+    po = _summary_table_totals_v48(po, tables, config, default_currency=default_currency)
+    po = _strict_text_totals_v48(po, pages, config, default_currency=default_currency)
     po = _enhance_order_header_from_page_layout(po, pages, config)
     po = _enhance_inline_transaction_header_v46(po, pages, config)
     po = _enhance_strict_order_number_v47(po, pages, config)
@@ -4891,9 +5259,14 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     # V4.6 hypothesis competition.  Structural quality alone is not enough: a bad
     # parser can be arithmetically self-consistent while misreading the columns.  We
     # therefore also penalize fee/legal pseudo-products and reward clean material rows.
-    def hypothesis_score(lines, charges, source_bonus=0.0):
+    def hypothesis_score(lines, charges, source_bonus=0.0, max_lines=1, total_target=None):
         if not lines:
-            return -1.0, line_material_pattern_summary([], config)
+            return (
+                -1.0,
+                line_material_pattern_summary([], config),
+                _line_hypothesis_total_fit_v66([], charges, total_target, config),
+                0.0,
+            )
         recover_material_references_from_descriptions(lines, config)
         base=float(line_item_set_quality(lines))
         arithmetic=[]; noise=0.0; complete=0.0
@@ -4921,11 +5294,21 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
         fee_bonus=min(0.08,len(charges)*0.02)
         noise_penalty=min(0.40,noise/max(1,len(lines))*0.50)
         material_patterns=line_material_pattern_summary(lines, config)
+        total_fit = _line_hypothesis_total_fit_v66(
+            lines, charges, total_target, config
+        )
+        line_coverage = len(lines) / max(1, max_lines)
+        coverage_bonus = float(config.get("layout", {}).get(
+            "line_hypothesis_candidate_coverage_weight", 0.08
+        )) * line_coverage
         return (
             0.30*base + 0.34*arithmetic_score + 0.24*completeness
             + source_bonus + fee_bonus + float(material_patterns["bonus"])
-            - noise_penalty - float(material_patterns["penalty"]),
+            - noise_penalty - float(material_patterns["penalty"])
+            + float(total_fit["adjustment"]) + coverage_bonus,
             material_patterns,
+            total_fit,
+            round(line_coverage, 4),
         )
 
     hypotheses=[("current",po.lines,po.additional_charges,0.0)]
@@ -4948,12 +5331,33 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
             "candidate_lines":len(material_numeric_lines),
             "current_supported_lines":current_pattern_support,
         }
-    evaluated=[(hypothesis_score(ls,ch,sb),name,ls,ch) for name,ls,ch,sb in hypotheses]
+    max_hypothesis_lines=max((len(lines) for _,lines,_,_ in hypotheses),default=1)
+    total_target=next((
+        value for value in (
+            po.totals.total_before_tax,
+            po.totals.total_net,
+            po.totals.subtotal,
+        )
+        if value not in (None, 0)
+    ),None)
+    evaluated=[
+        (
+            hypothesis_score(
+                ls, ch, sb,
+                max_lines=max_hypothesis_lines,
+                total_target=total_target,
+            ),
+            name,ls,ch,
+        )
+        for name,ls,ch,sb in hypotheses
+    ]
     ranked=sorted(((result[0],name,ls,ch) for result,name,ls,ch in evaluated),reverse=True,key=lambda x:x[0])
     parser_diag={
         "selected":"current",
         "scores":{name:round(result[0],4) for result,name,_,_ in evaluated},
         "material_reference_patterns":{name:result[1] for result,name,_,_ in evaluated},
+        "total_reconciliation":{name:result[2] for result,name,_,_ in evaluated},
+        "candidate_line_coverage":{name:result[3] for result,name,_,_ in evaluated},
         "suppressed_hypotheses":suppressed_hypotheses,
     }
     if ranked and ranked[0][2]:

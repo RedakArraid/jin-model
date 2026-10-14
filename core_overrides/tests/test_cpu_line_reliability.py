@@ -3,7 +3,18 @@ from types import SimpleNamespace
 import fitz
 import pytest
 
-from po_ocr.models import AdditionalCharge, PageResult, PurchaseOrderHeader, WordToken, Evidence, ExtractedField, LineItem, Totals
+from po_ocr.models import (
+    AdditionalCharge,
+    DocumentMeta,
+    PageResult,
+    PurchaseOrderHeader,
+    PurchaseOrderResult,
+    WordToken,
+    Evidence,
+    ExtractedField,
+    LineItem,
+    Totals,
+)
 from po_ocr.pdf_native import _needs_hybrid_ocr, _supplement_native_words, extract_native_page
 from po_ocr.extract import (
     all_rows, extract_lines, extract_lines_from_pages, extract_parties,
@@ -13,13 +24,16 @@ from po_ocr.extract import (
 )
 from uda.business import (
     _clean_po_number_v48,
+    _dual_reference_stacked_native_table_items_v67,
     _enhance_order_header_from_page_layout,
     _enhance_inline_transaction_header_v46,
     _enhance_strict_order_number_v47,
     _extract_geometry_table_items_v46,
+    _line_hypothesis_total_fit_v66,
     _material_anchored_split_table_items_v61,
     _material_anchored_numeric_row_items_v61,
     _merge_explicit_page_charges_v63,
+    _native_table_line_items_and_charges,
     _party_from_labeled_zone_v48,
     _repair_scan_currency_suffix_artifacts_v64,
     _repair_legal_footer_validation_v65,
@@ -31,6 +45,7 @@ from uda.business import (
     _summary_table_totals_v48,
     _two_row_erp_table_items,
     _strict_text_totals_v48,
+    enhance_purchase_order_with_native_structure,
 )
 
 
@@ -586,12 +601,114 @@ def test_geometry_recognizes_purchase_price_pa_header_and_free_type_error_total(
     lines, charges = _extract_geometry_table_items_v46([page], {})
     assert charges == []
     assert len(lines) == 2
-    assert lines[0].material_number == "H51094"
+    assert lines[0].material_number == "7716780589"
+    assert lines[0].article_number == "7716780589"
+    assert lines[0].customer_material_number == "H51094"
     assert lines[0].supplier_material_number == "7716780589"
     assert (lines[0].quantity, lines[0].unit_price, lines[0].line_total) == (3, 30, 90)
-    assert lines[1].material_number == "H37381"
+    assert lines[1].material_number == "8733501984"
+    assert lines[1].article_number == "8733501984"
+    assert lines[1].customer_material_number == "H37381"
     assert lines[1].supplier_material_number == "8733501984"
     assert (lines[1].quantity, lines[1].unit_price, lines[1].line_total) == (1, 0, 0)
+
+
+def test_hypothesis_total_fit_rewards_complete_table_and_penalizes_sparse_subset():
+    complete = [
+        LineItem(material_number="7716704752", quantity=9, unit_price=760, line_total=6840),
+        LineItem(material_number="7738111040", quantity=6, unit_price=95.47, line_total=572.82),
+        LineItem(material_number="7738112343", quantity=1, unit_price=41.21, line_total=41.21),
+    ]
+    target = 7454.03
+
+    complete_fit = _line_hypothesis_total_fit_v66(complete, [], target, {})
+    sparse_fit = _line_hypothesis_total_fit_v66(complete[1:], [], target, {})
+
+    assert complete_fit["valid"] is True
+    assert complete_fit["adjustment"] > 0
+    assert sparse_fit["valid"] is False
+    assert sparse_fit["adjustment"] < 0
+    assert sparse_fit["document_sum"] == 614.03
+
+
+def test_complete_dual_reference_table_beats_sparse_material_anchor_hypothesis():
+    page = _page([
+        (180, [("Code", 30, 53), ("art", 55, 69), ("Reference", 79, 122),
+               ("Designation", 239, 291), ("Qte", 411, 428), ("U", 441, 450),
+               ("P.A", 463, 480), ("HT", 484, 499), ("Montant", 505, 543), ("HT", 545, 560)]),
+        (220, [("H51087", 29, 61), ("7716704752", 68, 119), ("#3p", 122, 143),
+               ("-", 145, 150), ("CHAUDIERE", 152, 220),
+               ("9.000", 411, 434), ("U", 439, 446), ("760.00", 470, 498),
+               ("6840.00", 515, 546)]),
+        (250, [("H55337", 29, 61), ("7738111040", 68, 119), ("BOS", 122, 145),
+               ("REGULATEUR", 150, 220),
+               ("6.000", 411, 434), ("U", 439, 446), ("95.47", 475, 498),
+               ("572.82", 520, 546)]),
+        (280, [("H38621", 29, 61), ("7738112343", 68, 119), ("SONDE", 150, 190),
+               ("1.000", 411, 434), ("U", 439, 446), ("41.21", 475, 498),
+               ("41.21", 523, 546)]),
+        (310, [("H40786", 29, 61), ("7738112714", 68, 119), ("ADAPTATEUR", 150, 220),
+               ("6.000", 411, 434), ("U", 439, 446), ("12.69", 475, 498),
+               ("76.14", 523, 546)]),
+    ])
+    target = 7530.17
+    po = PurchaseOrderResult(
+        document=DocumentMeta(
+            id="dual-reference-test",
+            filename="dual-reference.pdf",
+            extension=".pdf",
+            file_size=1,
+            sha256="0" * 64,
+            page_count=1,
+            is_pdf=True,
+            is_native_pdf=True,
+            has_text_layer=True,
+            processing_timestamp="2026-10-14T00:00:00Z",
+        ),
+        pages=[page],
+        totals=Totals(
+            subtotal=target,
+            total_net=target,
+            total_before_tax=target,
+            currency="EUR",
+        ),
+    )
+
+    result = enhance_purchase_order_with_native_structure(po, [], [page], {})
+
+    assert result.validation.checks["line_parser_hypothesis"]["selected"] == "geometry"
+    assert len(result.lines) == 4
+    assert [line.material_number for line in result.lines] == [
+        "7716704752", "7738111040", "7738112343", "7738112714",
+    ]
+    assert [line.customer_material_number for line in result.lines] == [
+        "H51087", "H55337", "H38621", "H40786",
+    ]
+    assert result.lines[0].description.startswith("#3p - CHAUDIERE")
+    assert result.lines[1].description.startswith("BOS REGULATEUR")
+    assert sum(line.line_total for line in result.lines) == pytest.approx(target)
+
+
+def test_geometry_types_customer_code_right_of_supplier_reference():
+    page = _page([
+        (180, [("Reference", 25, 70), ("Adressage", 115, 160),
+               ("Designation", 170, 225), ("Quantite", 385, 425),
+               ("PU", 435, 447), ("net", 450, 463),
+               ("Montant", 502, 536), ("HT", 539, 551)]),
+        (220, [("7733701564", 22, 72), ("Z43-08", 116, 145),
+               ("UNITE", 169, 195), ("INTERIEURE", 198, 251),
+               ("2.00", 400, 422), ("104.00", 474, 501),
+               ("208.00", 526, 553)]),
+    ])
+
+    lines, charges = _extract_geometry_table_items_v46([page], {})
+
+    assert charges == []
+    assert len(lines) == 1
+    assert lines[0].material_number == "7733701564"
+    assert lines[0].supplier_material_number == "7733701564"
+    assert lines[0].customer_material_number == "Z43-08"
+    assert (lines[0].quantity, lines[0].unit_price, lines[0].line_total) == (2, 104, 208)
 
 
 def test_material_pattern_reassembles_split_product_and_environmental_fee_rows():
@@ -1038,6 +1155,139 @@ def test_final_normalizer_moves_bare_port_code_out_of_products():
     assert po.additional_charges[0].amount == 20
     assert po.totals.total_shipping == 20
     assert counts == {"shipping": 1}
+
+
+def _native_table(headers, row, page=1):
+    return SimpleNamespace(
+        data=[headers, row],
+        source=SimpleNamespace(page=page),
+        confidence=0.98,
+    )
+
+
+def test_dual_reference_stacked_table_uses_supplier_reference_and_extracts_port_charge():
+    table = _native_table(
+        ["Reference", "Ref Four", "Nombre", "Designation", "Quantite",
+         "P.P. HT", "Rem", "Prix HT", "Montant HT"],
+        [
+            "36 451\n19 424\n346",
+            "8718585342\n8718584806\nPORTA",
+            "1PCE\n1PCE\n1PCE",
+            "Commande par le depot :\nAgence Commerciale / 03\n81 63 00 33\n"
+            "Pour stock\nVEILLEUSE AE BUDERUS\n(IONISATION) SUR G124\n"
+            "G224 G234 G334 G434\nINJECTEUR DE VEILLEUSE\n"
+            "PORT/ACHATS -\nREFACTURE\nFOURNISSEUR",
+            "1,000PCE\n1,000PCE\n1,000PCE",
+            "170,00\n25,00\n20,00",
+            "46,00\n46,00",
+            "91,80\n13,50\n20,00",
+            "91,80\n13,50\n20,00",
+        ],
+    )
+
+    lines = _dual_reference_stacked_native_table_items_v67(table)
+
+    assert len(lines) == 3
+    assert [line.customer_material_number for line in lines] == ["36 451", "19 424", "346"]
+    assert [line.material_number for line in lines] == ["8718585342", "8718584806", "PORTA"]
+    assert [line.supplier_material_number for line in lines] == ["8718585342", "8718584806", "PORTA"]
+    assert lines[0].description == "VEILLEUSE AE BUDERUS (IONISATION) SUR G124 G224 G234 G334 G434"
+    assert lines[1].description == "INJECTEUR DE VEILLEUSE"
+    assert lines[2].description == "PORT/ACHATS - REFACTURE FOURNISSEUR"
+
+    native_lines, native_charges = _native_table_line_items_and_charges([table])
+    assert [line.material_number for line in native_lines] == ["8718585342", "8718584806"]
+    assert [line.customer_material_number for line in native_lines] == ["36 451", "19 424"]
+    assert len(native_charges) == 1
+    assert native_charges[0].charge_type == "shipping"
+    assert native_charges[0].code == "PORTA"
+
+    po = SimpleNamespace(
+        lines=lines,
+        additional_charges=[],
+        totals=Totals(total_net=125.3, currency="EUR"),
+    )
+    po, counts = _separate_additional_charge_lines_v62(po, {})
+
+    assert [line.material_number for line in po.lines] == ["8718585342", "8718584806"]
+    assert counts == {"shipping": 1}
+    assert po.additional_charges[0].code == "PORTA"
+    assert po.additional_charges[0].amount == 20
+
+
+def test_dual_reference_stacked_table_aligns_missing_supplier_cell_after_port_charge():
+    table = _native_table(
+        ["Reference", "Ref Four", "Nombre", "Designation", "Quantite",
+         "P.P. HT", "Rem", "Prix HT", "Montant HT"],
+        [
+            "346\n217 773",
+            "87168542240",
+            "1PCE\n1PCE",
+            "Commande par le depot :\nTrevenans / 03 84 27 28 28\nPour stock\n"
+            "PORT/ACHATS -\nREFACTURE\nFOURNISSEUR\n"
+            "Pour CHAPUIS ENT / Cmde\n496 678 / Ref: BOSCH\nCABLE HT",
+            "1,000PCE\n1,000PCE",
+            "20,00\n64,00",
+            "40,00",
+            "20,00\n38,40",
+            "20,00\n38,40",
+        ],
+    )
+
+    lines = _dual_reference_stacked_native_table_items_v67(table)
+
+    assert len(lines) == 2
+    assert lines[0].material_number == "346"
+    assert lines[0].supplier_material_number is None
+    assert lines[0].description == "PORT/ACHATS - REFACTURE FOURNISSEUR"
+    assert lines[1].customer_material_number == "217 773"
+    assert lines[1].supplier_material_number == "87168542240"
+    assert lines[1].material_number == "87168542240"
+    assert lines[1].description == "CABLE HT"
+
+    native_lines, native_charges = _native_table_line_items_and_charges([table])
+    assert len(native_lines) == 1
+    assert native_lines[0].material_number == "87168542240"
+    assert native_lines[0].customer_material_number == "217 773"
+    assert native_lines[0].description == "CABLE HT"
+    assert len(native_charges) == 1 and native_charges[0].amount == 20
+
+    po = SimpleNamespace(
+        lines=lines,
+        additional_charges=[],
+        totals=Totals(total_net=58.4, currency="EUR"),
+    )
+    po, counts = _separate_additional_charge_lines_v62(po, {})
+    assert [line.material_number for line in po.lines] == ["87168542240"]
+    assert counts == {"shipping": 1}
+    assert po.additional_charges[0].amount == 20
+
+
+def test_compact_deee_reference_is_environmental_fee_attached_to_previous_product():
+    product = LineItem(
+        line_number="3", material_number="8719999999", description="PRODUIT",
+        quantity=1, unit_price=646.19, line_total=646.19, currency="EUR", page=1,
+    )
+    environmental_fee = LineItem(
+        line_number="4", material_number="DEEE7.69", article_number="DEEE7.69",
+        description="DEEE7.69", quantity=1, unit_price=7.69, line_total=7.69,
+        currency="EUR", page=1, raw_text="DEEE7.69 | 1.00p. | 7.69p. | 7.69",
+    )
+    po = SimpleNamespace(
+        lines=[product, environmental_fee],
+        additional_charges=[],
+        totals=Totals(total_net=653.88, currency="EUR"),
+    )
+
+    po, counts = _separate_additional_charge_lines_v62(po, {})
+
+    assert [line.material_number for line in po.lines] == ["8719999999"]
+    assert counts == {"environmental_fee": 1}
+    charge = po.additional_charges[0]
+    assert charge.code == "DEEE7.69"
+    assert charge.amount == 7.69
+    assert charge.parent_line_number == "3"
+    assert charge.parent_material_number == "8719999999"
 
 
 def _compact_header_page(prefix="CF", title="COMMANDE FOURNISSEUR", label=None):

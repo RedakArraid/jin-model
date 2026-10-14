@@ -278,6 +278,15 @@ layout:
   material_reference_pattern_min_score: 0.74
   material_reference_pattern_hypothesis_weight: 0.14
   material_reference_pattern_hypothesis_penalty: 0.18
+  # Rank already-detected line hypotheses using document-level completeness.
+  # A small pristine subset must not beat a complete table that reconciles with
+  # an explicitly printed net total.
+  line_hypothesis_total_min_amount_coverage: 0.80
+  line_hypothesis_total_match_bonus: 0.42
+  line_hypothesis_total_undercoverage_penalty: 0.38
+  line_hypothesis_total_mismatch_penalty_cap: 0.38
+  line_hypothesis_total_mismatch_penalty_weight: 0.24
+  line_hypothesis_candidate_coverage_weight: 0.08
   # The aggregate profile calibrates confidence on an already extracted line.
   # It never creates a row and never performs an exact master-data lookup.
   material_reference_line_confidence: true

@@ -1,1 +1,1 @@
-__version__ = "5.16.2-stacked-reference-net-price"
+__version__ = "5.16.4-stacked-dual-reference-charges"

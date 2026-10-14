@@ -7,3 +7,11 @@ corpus/
 *.zip
 **/__pycache__/
 **/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/*.pyc
+**/*.pyo
+**/.coverage
+**/.coverage.*
+**/coverage.xml
+**/htmlcov/

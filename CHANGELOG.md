@@ -1,5 +1,22 @@
 # Changelog
 
+## 5.16.4-stacked-dual-reference-charges
+
+- Parse ERP tables that stack several logical order lines in one physical row while exposing separate customer `RÃ©fÃ©rence` and supplier `Ref Four` columns.
+- Keep the buyer's internal code in `customer_material_number` and promote the printed supplier reference to the primary material/article fields.
+- Align missing supplier-reference cells semantically so a freight row cannot shift the supplier reference onto the wrong product.
+- Remove document-routing preambles from stacked descriptions while preserving wrapped product descriptions.
+- Recognize `PORT/ACHATS` as shipping and compact environmental-fee codes such as `DEEE7.69` as typed additional charges.
+- Add regression coverage for both stacked dual-reference variants, `PORTA`, and compact DEEE rows.
+
+## 5.16.3-complete-line-hypotheses
+
+- Rank competing line-table parsers with document-level evidence: candidate coverage and reconciliation with an explicitly printed net total.
+- Prevent a small set of individually clean rows from outranking a complete, arithmetically valid product table.
+- In explicit `Code art` plus `Reference` layouts, retain the customer code in `customer_material_number` and promote the supplier reference to the primary article fields before scoring.
+- Keep early description tokens out of supplier references even when the physical description starts to the left of its printed column header.
+- Add regression coverage for dual-reference tables and the supplied Wendel order `CF332267`, whose 19 product lines reconcile exactly to `10,151.54 EUR`.
+
 ## 5.16.2-stacked-reference-net-price
 
 - Preserve product words such as `SOUPAPE` by matching legal-footer acronyms (`APE`, `NAF`, etc.) only as complete tokens.
