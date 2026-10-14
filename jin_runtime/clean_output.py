@@ -244,6 +244,14 @@ def _clean_department(value: Any) -> str | None:
     text = _clean_party_name(value)
     if not text:
         return None
+    text = re.split(
+        r"\s*/\s*(?=(?:DEVISE|CURRENCY|MONNAIE|TYPE\s+LIVRAISON|MODE\s+LIVRAISON)\b)",
+        text,
+        maxsplit=1,
+        flags=re.I,
+    )[0].strip(" /|,;-")
+    if not text:
+        return None
     key = _name_key(text)
     if (
         len(text.split()) > 10
@@ -385,6 +393,16 @@ def _address_components(source: dict[str, Any]) -> dict[str, Any]:
         components["department"] = _clean_department(components["department"])
     city = components.get("city")
     postal_code = components.get("postal_code")
+    # Defensive contract repair for older/core payloads where a routing number
+    # was stored as postal code and the true postal code was prefixed to city.
+    if city and postal_code:
+        shifted = re.match(r"^\s*(\d{5})\s+(.+)$", str(city))
+        if shifted and re.fullmatch(r"\d{5}", str(postal_code)):
+            components.setdefault("postal_routing_code", str(postal_code))
+            components["postal_code"] = shifted.group(1)
+            components["city"] = shifted.group(2).strip()
+            city = components["city"]
+            postal_code = components["postal_code"]
     if city and postal_code:
         city = re.sub(
             rf"^\s*{re.escape(str(postal_code))}\s+",
@@ -394,6 +412,24 @@ def _address_components(source: dict[str, Any]) -> dict[str, Any]:
         ).strip()
         components["city"] = city or None
     return _compact(components)
+
+
+def _clean_party_code(value: Any) -> Any:
+    """Apply a numeric OCR mask only to a labelled alphanumeric party code."""
+    raw = "".join(str(value or "").upper().split())
+    if not raw or not re.fullmatch(r"[A-Z0-9]{5,16}", raw):
+        return value
+    translations = str.maketrans({"O": "0", "I": "1", "L": "1", "Z": "2", "S": "5", "B": "8"})
+    candidates: list[tuple[int, str]] = []
+    for split in range(2, len(raw) - 2):
+        prefix, suffix = raw[:split], raw[split:]
+        if (
+            re.fullmatch(r"[A-Z]{2,8}", prefix)
+            and re.fullmatch(r"[0-9OILZSB]{3,12}", suffix)
+            and re.fullmatch(r"\d{3,12}", suffix.translate(translations))
+        ):
+            candidates.append((split, prefix + suffix.translate(translations)))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else value
 
 
 def _party(source: dict[str, Any]) -> dict[str, Any]:
@@ -414,7 +450,7 @@ def _party(source: dict[str, Any]) -> dict[str, Any]:
     ):
         contact.pop("name", None)
     return _compact({
-        "id": source.get("id"), "code": source.get("code"),
+        "id": source.get("id"), "code": _clean_party_code(source.get("code")),
         "customer_agency_code": source.get("customer_agency_code"),
         "name": name, "legal_name": legal_name,
         "department": _clean_department(source.get("department")), "contact": contact,
@@ -1288,6 +1324,56 @@ def _reconcile_clean_parties(
     return {role: party for role, party in parties.items() if party}
 
 
+def _align_party_addresses(
+    parties: dict[str, dict[str, Any]],
+    addresses: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Publish the best structured address for each already-resolved role."""
+    for role, party in parties.items():
+        candidates = [item for item in addresses if item.get("role") == role]
+        if not candidates:
+            continue
+        party_name = _party_display_name(party)
+        matching = [
+            item for item in candidates
+            if not party_name
+            or not item.get("party_name")
+            or _same_party(party_name, item.get("party_name"))
+        ]
+        if not matching:
+            continue
+        candidate = max(
+            matching,
+            key=lambda item: sum(
+                (item.get("components") or {}).get(key) not in (None, "")
+                for key in ADDRESS_FIELDS
+            ),
+        )
+        components = {
+            key: value for key, value in (candidate.get("components") or {}).items()
+            if key in ADDRESS_FIELDS and value not in (None, "")
+        }
+        if not components:
+            continue
+        current = dict(party.get("address") or {})
+        current_score = sum(current.get(key) not in (None, "") for key in ADDRESS_FIELDS)
+        candidate_score = sum(components.get(key) not in (None, "") for key in ADDRESS_FIELDS)
+        current_has_street = any(current.get(key) for key in (
+            "street", "street_name", "house_number", "po_box", "industrial_zone",
+        ))
+        candidate_has_street = any(components.get(key) for key in (
+            "street", "street_name", "house_number", "po_box", "industrial_zone",
+        ))
+        if (
+            candidate_score > current_score
+            or (candidate_has_street and not current_has_street)
+            or not current.get("postal_code")
+            or not current.get("city")
+        ):
+            party["address"] = components
+    return parties
+
+
 def _align_primary_delivery_party(
     primary_delivery: dict[str, Any] | None,
     parties: dict[str, dict[str, Any]],
@@ -1487,7 +1573,7 @@ def _business_address(source: dict[str, Any]) -> dict[str, Any]:
         "party_name": _clean_party_name(
             clean_components.get("recipient") or party_name
         ),
-        "party_code": source.get("party_code"),
+        "party_code": _clean_party_code(source.get("party_code")),
         "department": _clean_department(
             clean_components.get("department") or department
         ),
@@ -1518,9 +1604,16 @@ def _business_address(source: dict[str, Any]) -> dict[str, Any]:
 
 def _line(source: dict[str, Any]) -> dict[str, Any]:
     refs = {key: source.get(key) for key in REFERENCE_FIELDS}
+    description = source.get("description")
+    if description:
+        description = re.sub(
+            r"(?<![A-Z0-9])(\d{1,4})\s*[Xx×]\s*[Zz]\s*(\d{1,4})(?=(?:\s*(?:MM|CM|M))?\b)",
+            lambda match: f"{match.group(1)}X2{match.group(2)}",
+            str(description),
+        )
     return _compact({
         "line_number": source.get("line_number"), "references": refs,
-        "description": source.get("description"),
+        "description": description,
         "product_family": source.get("product_family") or source.get("category"),
         "quantity": _first(source.get("quantity"), source.get("ordered_quantity")),
         "unit": source.get("uom"),
@@ -1577,6 +1670,7 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
     delivery_addresses = [item for item in addresses if item.get("role") == "ship_to"]
     primary_delivery = delivery_addresses[0] if len(delivery_addresses) == 1 else None
     parties = _reconcile_clean_parties(parties, primary_delivery, payload)
+    parties = _align_party_addresses(parties, addresses)
     primary_delivery = _align_primary_delivery_party(primary_delivery, parties)
     for address in addresses:
         _publish_address_value_contract(address)

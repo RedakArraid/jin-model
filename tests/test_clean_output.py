@@ -5,6 +5,60 @@ from jin_runtime.delivery_addresses import enrich_delivery_addresses
 
 
 class CleanOutputTests(unittest.TestCase):
+    def test_verney_style_codes_addresses_departments_and_dimensions_are_cleaned(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "business_extractions": {"purchase_order": {
+                "buyer": {
+                    "name": "VERNEY SA",
+                    "address": {"postal_code": "77605", "city": "21076 DIJON CEDEX"},
+                },
+                "supplier": {"name": "ELM LEBLANC", "code": "ELOOL"},
+                "ship_to": {
+                    "name": "VERNEY SA",
+                    "department": "Dépôt Dijon / Devise E / i",
+                },
+                "business_addresses": [
+                    {
+                        "address_id": "buyer-address", "role": "buyer",
+                        "party_name": "VERNEY SA",
+                        "address": {
+                            "house_number": "28", "street": "Rue de Mayence",
+                            "industrial_zone": "ZAE Capnord",
+                            "postal_routing_code": "77605",
+                            "postal_code": "21076", "city": "DIJON", "cedex": True,
+                        },
+                    },
+                    {
+                        "address_id": "delivery-address", "role": "ship_to",
+                        "party_name": "VERNEY SA",
+                        "department": "Dépôt Dijon / Devise E / i",
+                        "clean_address": {
+                            "one_line": "VERNEY SA, 28 RUE DE MAYENCE, 21076 DIJON CEDEX",
+                            "lines": ["VERNEY SA", "28 RUE DE MAYENCE", "21076 DIJON CEDEX"],
+                            "components": {
+                                "recipient": "VERNEY SA", "department": "Dépôt Dijon / Devise E / i",
+                                "house_number": "28", "street": "Rue de Mayence",
+                                "postal_code": "21076", "city": "DIJON", "cedex": True,
+                            },
+                        },
+                    },
+                ],
+                "lines": [{
+                    "line_number": 1, "material_number": "87168241780",
+                    "description": "SOUPAPE DE SECURITE 3BARS 15XZ1 FEM", "quantity": 2,
+                }],
+            }},
+        }
+
+        order = build_clean_output(payload)["order"]
+        self.assertEqual(order["parties"]["supplier"]["code"], "EL001")
+        self.assertEqual(order["parties"]["ship_to"]["department"], "Dépôt Dijon")
+        self.assertEqual(order["parties"]["buyer"]["address"]["postal_routing_code"], "77605")
+        self.assertEqual(order["parties"]["buyer"]["address"]["postal_code"], "21076")
+        self.assertEqual(order["parties"]["buyer"]["address"]["city"], "DIJON")
+        self.assertEqual(order["line_items"][0]["description"], "SOUPAPE DE SECURITE 3BARS 15X21 FEM")
+
     def test_contract_is_compact_grouped_and_keeps_zeroes(self):
         payload = {
             "document": {"primary_document_type": "purchase_order", "page_count": 1},

@@ -495,6 +495,7 @@ layout:
   ordered_by_block_recovery_v48: true
   party_anchor_address_recovery_v48: true
   party_address_sanitization_v48: true
+  repair_numeric_dimension_ocr_v5166: true
   role_resolution_v48: true
   party_name_repair_threshold: 0.35
   party_name_promotion_threshold: 0.62

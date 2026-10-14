@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.16.6-contextual-ocr-normalization
+
+- Re-read compact scanned order headers with two independent OCR layouts and full-glyph padding, correcting ambiguous series characters only when both readings agree.
+- Repair digit-like OCR characters in explicitly labelled supplier/customer codes through a constrained alphabetic-prefix plus numeric-suffix mask.
+- Separate postal routing or PO-box numbers from the actual postal code and align clean party addresses with their normalized role-specific address records.
+- Remove adjacent currency/form metadata from department names and repair `Z`/`2` OCR confusion only inside numeric product dimensions.
+- Add regression coverage for the two supplied VERNEY orders and the generalized normalization guards.
+
 ## 5.16.5-semantic-text-table-recovery
 
 - Recover scanned order lines when OCR preserves row order but table geometry is unreliable, using semantic headers and strict quantity × unit-price = amount validation.

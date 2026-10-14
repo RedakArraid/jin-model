@@ -140,8 +140,15 @@ def compact_transaction_header_candidate(page: PageResult) -> dict | None:
         return None
     rows = all_rows([page], y_factor=0.50)
     title_rows = [row for row in rows if row.bbox and row.bbox[1] < page.height * 0.16]
-    if not any(re.search(r"\b(?:bon\s+de\s+commande|commande\s+fournisseur|purchase\s+order)\s*$",
-                         ascii_fold(row.text).lower()) and row.text == row.text.upper() for row in title_rows):
+    def is_order_title(row: TextRow) -> bool:
+        match = re.search(
+            r"\b(?:bon\s+de\s+commande|commande\s+fournisseur|purchase\s+order)\b",
+            ascii_fold(row.text),
+            flags=re.I,
+        )
+        return bool(match and match.group(0) == match.group(0).upper())
+
+    if not any(is_order_title(row) for row in title_rows):
         return None
     candidates = []
     for row in rows:
@@ -151,6 +158,13 @@ def compact_transaction_header_candidate(page: PageResult) -> dict | None:
                  and parse_date(word.text)]
         for date in dates:
             left = [word for word in row.words if word.bbox[2] < date.bbox[0]]
+            # In compact ERP headers the explicit DATE caption sits between the
+            # order number and its date.  It is a column label, not part of the
+            # identifier neighborhood (``N CF 0315792 DATE 01/03/24``).
+            while left and ascii_fold(left[-1].text).lower().strip(" .:#-()[]") in {
+                "date", "datum", "fecha",
+            }:
+                left.pop()
             if len(left) < 2 or len(left) > 4:
                 continue
             prefix, number = left[-2:]
@@ -181,14 +195,26 @@ def verify_compact_header_number(page: PageResult, image, ocr_cfg: dict) -> None
     if not candidate or not any(word.source == "ocr" for word in candidate["words"]):
         return
     x0, y0, x1, y1 = candidate["bbox"]
-    padding = max(4, (y1 - y0) * 0.45)
+    # A tight crop can clip the top horizontal stroke of ``F`` and turn the
+    # printed ``CF`` series into ``CE``.  Keep roughly one character-height of
+    # context on every side so the independent reads see complete glyphs.
+    padding = max(12, (y1 - y0) * 1.20)
     crop = image.crop((max(0, int(x0-padding)), max(0, int(y0-padding)),
                        min(image.width, int(x1+padding)), min(image.height, int(y1+padding))))
-    cfg = {**ocr_cfg, "languages": ["eng"], "min_word_confidence": 0,
-           "timeout_seconds": 5, "single_pass_timeout_seconds": 5}
+    cfg = {
+        **ocr_cfg,
+        "languages": ["eng"],
+        "char_whitelist": "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+        "min_word_confidence": 0,
+        "timeout_seconds": 5,
+        "single_pass_timeout_seconds": 5,
+    }
     readings = []
     errors = []
-    for psm in (7, 13):
+    # PSM 13 treats the whole crop as a single glyph and is prone to appending
+    # a border fragment as ``1``.  PSM 7 (single line) and PSM 11 (sparse text)
+    # are deliberately different while preserving the token boundary.
+    for psm in (7, 11):
         try:
             read = _tesseract_single(crop, page.page, cfg, psm=psm)
             text = " ".join(word.text for word in read.words).strip()
@@ -200,10 +226,19 @@ def verify_compact_header_number(page: PageResult, image, ocr_cfg: dict) -> None
             errors.append(str(exc))
     values = [reading["value"] for reading in readings]
     confirmed = len(values) == 2 and values[0] is not None and values[0] == values[1]
+    raw_confidence = statistics.fmean(
+        [reading["confidence"] for reading in readings]
+    ) if readings else 0.0
+    # Exact agreement across two materially different segmentation modes is
+    # stronger than either engine score in isolation.  Keep the result below a
+    # native-text certainty ceiling while avoiding the former minimum-score
+    # collapse caused by one conservative PSM confidence.
+    consensus_confidence = min(0.98, max(raw_confidence, 0.86)) if confirmed else raw_confidence
     page.ocr_diagnostics["compact_header_number"] = {
         "original": candidate["raw_text"], "bbox": candidate["bbox"],
         "confirmed": confirmed, "value": values[0] if confirmed else None,
-        "confidence": min((reading["confidence"] for reading in readings), default=0.0),
+        "confidence": consensus_confidence,
+        "raw_mean_confidence": raw_confidence,
         "readings": readings, "errors": errors,
     }
 

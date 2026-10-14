@@ -5590,28 +5590,101 @@ def _sanitize_party_addresses_v48(po, config:dict):
         party.address.line2=out[1] if len(out)>1 else None
         party.address.line3=out[2] if len(out)>2 else None
         joined=" ".join(out)
+        # A routing/PO-box number can be printed immediately before the real
+        # delivery postal code (``77605 21076 DIJON CEDEX``).  Treating the
+        # first five digits as the postal code shifts every following component.
+        routed_postal=None
+        for v in out:
+            rm=re.match(
+                r"^\s*(?:(?:B\.?\s*P\.?|CS|TSA)\s*)?(\d{5})\s+(\d{5})\s+"
+                r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9 .'-]{1,60})$",
+                v,
+                flags=re.I,
+            )
+            if rm:
+                city=rm.group(3).strip()
+                cedex=bool(re.search(r"\bCEDEX\b",city,flags=re.I))
+                city=re.sub(r"\s+CEDEX(?:\s+\d+)?\s*$","",city,flags=re.I).strip()
+                party.address.postal_routing_code=rm.group(1)
+                party.address.postal_code=rm.group(2)
+                party.address.city=city
+                if cedex: party.address.cedex=True
+                routed_postal=rm
+                break
         explicit_pc=None
         city_pc=None
-        for v in out:
-            em=re.match(r"^\s*(\d{5})\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9 .'-]{1,60})$",v)
-            if em and not re.match(r"^(?:CS|TSA|BP)\s",v,re.I): explicit_pc=em; break
-            cm=re.match(r"^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .'-]{2,60})[, ]+([0-9]{5})$",v)
-            if cm: city_pc=cm
-        if explicit_pc:
-            party.address.postal_code=explicit_pc.group(1); party.address.city=explicit_pc.group(2).strip()
-        elif city_pc:
-            party.address.city=city_pc.group(1).strip(); party.address.postal_code=city_pc.group(2)
-        else:
-            m=re.search(r"(?<!CS )(?<!BP )(?<!TSA )(\d{5})\s+([A-Za-zÀ-ÿ0-9 .'-]{2,})",joined,flags=re.I)
-            if m:
-                party.address.postal_code=m.group(1)
-                city=re.split(r"\b(?:TEL|FAX|EMAIL|MAIL)\b",m.group(2),maxsplit=1,flags=re.I)[0].strip(" ,-;")
-                party.address.city=city
+        if not routed_postal:
+            for v in out:
+                em=re.match(r"^\s*(\d{5})\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9 .'-]{1,60})$",v)
+                if em and not re.match(r"^(?:CS|TSA|BP)\s",v,re.I): explicit_pc=em; break
+                cm=re.match(r"^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .'-]{2,60})[, ]+([0-9]{5})$",v)
+                if cm: city_pc=cm
+            if explicit_pc:
+                party.address.postal_code=explicit_pc.group(1); party.address.city=explicit_pc.group(2).strip()
+            elif city_pc:
+                party.address.city=city_pc.group(1).strip(); party.address.postal_code=city_pc.group(2)
+            else:
+                m=re.search(r"(?<!CS )(?<!BP )(?<!TSA )(\d{5})\s+([A-Za-zÀ-ÿ0-9 .'-]{2,})",joined,flags=re.I)
+                if m:
+                    party.address.postal_code=m.group(1)
+                    city=re.split(r"\b(?:TEL|FAX|EMAIL|MAIL)\b",m.group(2),maxsplit=1,flags=re.I)[0].strip(" ,-;")
+                    party.address.city=city
+        # Stop neighboring form fields from becoming part of a department.
+        for holder in (party, party.contact):
+            department=getattr(holder,"department",None)
+            if not department: continue
+            department=re.split(
+                r"\s*/\s*(?=(?:devise|currency|monnaie|type\s+livraison|mode\s+livraison)\b)",
+                department,
+                maxsplit=1,
+                flags=re.I,
+            )[0].strip(" /|,;-")
+            setattr(holder,"department",department or None)
     # If buyer and bill-to are the same legal entity, the invoice address is a strong
     # address source for buyer; keep buyer contact metadata separate.
     if po.buyer and po.bill_to and _fold(po.buyer.name)==_fold(po.bill_to.name) and po.bill_to.address.line1:
         po.buyer.address=po.bill_to.address.model_copy(deep=True)
     return po
+
+
+def _normalize_labeled_party_code_v5166(value: str | None) -> str | None:
+    """Repair OCR-confusable digits only in an explicitly labelled party code."""
+    import re
+    raw="".join(str(value or "").upper().split())
+    if not raw or not re.fullmatch(r"[A-Z0-9]{5,16}",raw):
+        return value
+    translations=str.maketrans({"O":"0","I":"1","L":"1","Z":"2","S":"5","B":"8"})
+    candidates=[]
+    for split in range(2,len(raw)-2):
+        prefix,suffix=raw[:split],raw[split:]
+        if not re.fullmatch(r"[A-Z]{2,8}",prefix):
+            continue
+        if not re.fullmatch(r"[0-9OILZSB]{3,12}",suffix):
+            continue
+        repaired=suffix.translate(translations)
+        if re.fullmatch(r"\d{3,12}",repaired):
+            candidates.append((split,prefix+repaired))
+    return max(candidates,key=lambda item:item[0])[1] if candidates else value
+
+
+def _repair_dimension_ocr_v5166(po, config: dict):
+    """Repair a Z/2 confusion inside numeric product dimensions only."""
+    import re
+    if not config.get("layout",{}).get("repair_numeric_dimension_ocr_v5166",True):
+        return po,0
+    repaired_count=0
+    pattern=re.compile(r"(?<![A-Z0-9])(\d{1,4})\s*([Xx×])\s*[Zz]\s*(\d{1,4})(?=(?:\s*(?:MM|CM|M))?\b)")
+    for line in po.lines:
+        description=str(line.description or "")
+        repaired=pattern.sub(lambda m:f"{m.group(1)}X2{m.group(3)}",description)
+        if repaired == description:
+            continue
+        line.description=repaired
+        warning="numeric_dimension_ocr_z_repaired_to_2"
+        if warning not in line.warnings:
+            line.warnings.append(warning)
+        repaired_count += 1
+    return po,repaired_count
 
 def _recover_roles_v48(po,tables,pages,config:dict):
     """Resolve explicit buyer/bill-to/ship-to zones and instruction-vs-party confusions."""
@@ -5809,6 +5882,7 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     )
     parser_diag["supplier_role_enrichments"] = enrich_supplier_material_roles(po.lines, config)
     po.lines, parser_diag["semantic_line_rejections"] = _sanitize_non_product_lines_v61(po.lines, config)
+    po, parser_diag["numeric_dimension_ocr_repairs"] = _repair_dimension_ocr_v5166(po, config)
     reference_confidence = calibrate_line_material_confidence(po.lines, config)
     po = _sanitize_legal_footer_lines_v48(po, config)
     # Fill parent line ids after deduplication assigned stable sequence numbers.
@@ -5850,6 +5924,7 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     )
     po = _sanitize_double_counted_shipping_v47(po, config)
     po = _sanitize_internal_reference_v47(po)
+    po.supplier.code = _normalize_labeled_party_code_v5166(po.supplier.code)
     # Refresh normalized address-role records after structural party corrections.
     po.business_addresses = build_business_addresses(po, pages, config)
     # Re-run validation/confidence after structural corrections.

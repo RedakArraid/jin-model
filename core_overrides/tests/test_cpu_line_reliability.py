@@ -34,7 +34,9 @@ from uda.business import (
     _material_anchored_numeric_row_items_v61,
     _merge_explicit_page_charges_v63,
     _native_table_line_items_and_charges,
+    _normalize_labeled_party_code_v5166,
     _party_from_labeled_zone_v48,
+    _repair_dimension_ocr_v5166,
     _repair_scan_currency_suffix_artifacts_v64,
     _repair_legal_footer_validation_v65,
     _separate_additional_charge_lines_v62,
@@ -1430,7 +1432,7 @@ def test_compact_scan_number_requires_agreeing_crop_readings(monkeypatch):
                                confidence=.96)
     monkeypatch.setattr(ocr, "_tesseract_single", read_crop)
     verify_compact_header_number(page, Image.new("RGB", (600,842), "white"), {})
-    assert calls == [7, 13]
+    assert calls == [7, 11]
     po = SimpleNamespace(purchase_order=PurchaseOrderHeader())
     _enhance_strict_order_number_v47(po, [page], {})
     field = po.purchase_order.number
@@ -1459,6 +1461,43 @@ def test_disagreeing_or_missing_crop_confirmation_never_promotes_scan_number(mon
     assert page.ocr_diagnostics["compact_header_number"]["confirmed"] is False
     _enhance_strict_order_number_v47(po, [page], {})
     assert po.purchase_order.number.value is None
+
+
+def test_compact_header_accepts_parenthesized_title_with_trailing_glyph():
+    page = _page([
+        (20, [("(COMMANDE FOURNISSEUR à", 300, 570)]),
+        (170, [("N", 10, 20), ("CE", 70, 88), ("001234567", 100, 175),
+               ("DATE", 185, 220), ("26/03/26", 230, 290), ("1", 320, 325)]),
+    ])
+    for word in page.words:
+        word.source = "ocr"
+    candidate = compact_transaction_header_candidate(page)
+    assert candidate is not None
+    assert candidate["value"] == "CE001234567"
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("ELOOL", "EL001"),
+    ("ABC00I", "ABC001"),
+    ("EL001", "EL001"),
+    ("BOSCH", "BOSCH"),
+    ("DEPOT", "DEPOT"),
+])
+def test_labeled_party_code_repairs_only_trailing_numeric_mask(raw, expected):
+    assert _normalize_labeled_party_code_v5166(raw) == expected
+
+
+def test_numeric_dimension_repair_is_narrow_and_traceable():
+    lines = [
+        LineItem(description="SOUPAPE 3BARS 15XZ1 FEM"),
+        LineItem(description="MODELE XZ1 STANDARD"),
+    ]
+    po = SimpleNamespace(lines=lines)
+    po, count = _repair_dimension_ocr_v5166(po, {})
+    assert count == 1
+    assert po.lines[0].description == "SOUPAPE 3BARS 15X21 FEM"
+    assert "numeric_dimension_ocr_z_repaired_to_2" in po.lines[0].warnings
+    assert po.lines[1].description == "MODELE XZ1 STANDARD"
 
 
 @pytest.mark.parametrize("title,label,prefix", [
