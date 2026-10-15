@@ -68,6 +68,93 @@ def _vat_equivalent_to_source(value: Any, candidate: Any) -> bool:
     )
 
 
+def _valid_luhn(value: str) -> bool:
+    if not value.isdigit():
+        return False
+    total = 0
+    parity = len(value) % 2
+    for index, char in enumerate(value):
+        digit = int(char)
+        if index % 2 == parity:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
+
+
+def _candidate_registration(candidate: dict[str, Any]) -> str | None:
+    direct = _norm(
+        candidate.get("siret")
+        or candidate.get("siren")
+        or candidate.get("registration_number")
+    )
+    if re.fullmatch(r"\d{9}|\d{14}", direct):
+        return direct
+    evidence = candidate.get("evidence") or {}
+    source = str(evidence.get("source_text") or "")
+    match = re.search(
+        r"\b(?:SIRET|SIREN)\s*(?:N\s*(?:[°ºO]|UMERO)?\s*)?[:#.-]?\s*"
+        r"((?:\d[ .-]*){8}\d(?:[ .-]*\d){0,5})(?!\d)",
+        source,
+        flags=re.I,
+    )
+    if not match:
+        return None
+    number = re.sub(r"\D", "", match.group(1))
+    return number if len(number) in {9, 14} else None
+
+
+def _trusted_derived_vat_candidate(candidate: dict[str, Any] | None) -> bool:
+    if not isinstance(candidate, dict) or not _valid_french_vat(candidate.get("value")):
+        return False
+    status = str(candidate.get("validation_status") or "")
+    evidence = candidate.get("evidence") or {}
+    method = str(evidence.get("extraction_method") or "")
+    if not (status.startswith("DERIVED_FROM_VALID_") or "vat_derived_from_valid" in method):
+        return False
+    registration = _candidate_registration(candidate)
+    if not registration:
+        return False
+    siren = registration[:9]
+    if not (_valid_luhn(registration) and _valid_luhn(siren)):
+        return False
+    key = (12 + 3 * (int(siren) % 97)) % 97
+    return _norm(candidate.get("value")) == f"FR{key:02d}{siren}"
+
+
+def _preferred_vat_candidate(model: dict[str, Any]) -> dict[str, Any] | None:
+    candidates = [
+        candidate for candidate in model.get("vat_candidates") or []
+        if isinstance(candidate, dict) and candidate.get("value")
+    ]
+    if model.get("vat_number"):
+        current = {
+            "value": _scalar(model.get("vat_number")),
+            "score": model.get("vat_score"),
+            "evidence": model.get("vat_evidence") or {},
+            "validation_status": model.get("vat_validation_status"),
+            "siren": model.get("vat_siren"),
+            "siret": model.get("vat_siret"),
+            "registration_number": model.get("vat_registration_number"),
+        }
+        if not any(_norm(item.get("value")) == _norm(current["value"]) for item in candidates):
+            candidates.append(current)
+    if not candidates:
+        return None
+
+    def rank(candidate: dict[str, Any]) -> tuple[int, float, int]:
+        derived = _trusted_derived_vat_candidate(candidate)
+        valid = _valid_french_vat(candidate.get("value"))
+        score = float(candidate.get("score") or -1)
+        # A checksum-valid derivation and a checksum-valid extraction are on
+        # the same trust tier. Confidence decides; a printed value only wins
+        # an exact tie because it carries direct source evidence.
+        return (2 if valid else 0, score, 0 if derived else 1)
+
+    return max(candidates, key=rank)
+
+
 def _write_csv(
     path: Path,
     rows: list[dict[str, Any]],
@@ -287,9 +374,10 @@ def _field_statuses(item: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
         address_status = "CONTENU_A_VERIFIER"
         reasons.append("CONTENU_ADRESSE_A_VERIFIER")
 
-    vat = _scalar(model.get("vat_number"))
+    vat_candidate = _preferred_vat_candidate(model)
+    vat = _scalar(vat_candidate.get("value")) if vat_candidate else None
     source_vat = item.get("source_vat_candidates") or []
-    vat_evidence = model.get("vat_evidence") or {}
+    vat_evidence = (vat_candidate or {}).get("evidence") or {}
     vat_evidence_text = str(vat_evidence.get("source_text") or "")
     if vat and (
         _norm(vat) in compact_text
@@ -298,6 +386,13 @@ def _field_statuses(item: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
         vat_status = "SUPPORTEE_PAR_SOURCE"
     elif vat and vat_evidence_text and _norm(vat) in _norm(vat_evidence_text):
         vat_status = "SUPPORTEE_PAR_PREUVE"
+    elif vat and _trusted_derived_vat_candidate(vat_candidate):
+        registration = _candidate_registration(vat_candidate or {}) or ""
+        vat_status = (
+            "CALCULEE_DEPUIS_SIRET_VALIDE"
+            if len(registration) == 14
+            else "CALCULEE_DEPUIS_SIREN_VALIDE"
+        )
     elif vat:
         vat_status = "NON_RETROUVEE_DANS_SOURCE"
         reasons.append("TVA_NON_RETROUVEE_DANS_SOURCE")
@@ -325,7 +420,8 @@ def _row(item: dict[str, Any], origin: str, batch: int | None, global_index: int
     else:
         verdict = "SUPPORTE_PAR_SOURCE"
     review_reasons = model.get("review_reasons") or []
-    vat_score = model.get("vat_score")
+    vat_candidate = _preferred_vat_candidate(model)
+    vat_score = (vat_candidate or {}).get("score")
     if vat_score is None:
         candidate_scores = [
             candidate.get("score")
@@ -357,7 +453,7 @@ def _row(item: dict[str, Any], origin: str, batch: int | None, global_index: int
         "score_adresse_livraison": model.get("delivery_address_score"),
         "statut_ban": model.get("delivery_ban_status"),
         "ban_verifiee": model.get("delivery_ban_verified"),
-        "numero_tva": _scalar(model.get("vat_number")),
+        "numero_tva": _scalar((vat_candidate or {}).get("value")),
         "score_numero_tva": vat_score,
         "decision_modele": model.get("decision"),
         **statuses,

@@ -91,6 +91,65 @@ def _norm(value: Any) -> str:
     return re.sub(r"[^A-Z0-9]+", "", text)
 
 
+def _valid_luhn(value: str) -> bool:
+    if not value.isdigit():
+        return False
+    total = 0
+    parity = len(value) % 2
+    for index, char in enumerate(value):
+        digit = int(char)
+        if index % 2 == parity:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
+
+
+def _valid_french_vat(value: Any) -> bool:
+    compact = _norm(value)
+    if not re.fullmatch(r"FR\d{11}", compact):
+        return False
+    siren = compact[4:]
+    key = (12 + 3 * (int(siren) % 97)) % 97
+    return compact[2:4] == f"{key:02d}"
+
+
+def _trusted_derived_vat(candidate: dict[str, Any] | None) -> bool:
+    if not isinstance(candidate, dict) or not _valid_french_vat(candidate.get("value")):
+        return False
+    status = str(candidate.get("validation_status") or "")
+    evidence = candidate.get("evidence") or {}
+    method = str(evidence.get("extraction_method") or "")
+    if not (status.startswith("DERIVED_FROM_VALID_") or "vat_derived_from_valid" in method):
+        return False
+    registration = _norm(
+        candidate.get("siret")
+        or candidate.get("siren")
+        or candidate.get("registration_number")
+    )
+    if not re.fullmatch(r"\d{9}|\d{14}", registration):
+        return False
+    siren = registration[:9]
+    if not (_valid_luhn(registration) and _valid_luhn(siren)):
+        return False
+    expected_key = (12 + 3 * (int(siren) % 97)) % 97
+    return _norm(candidate.get("value")) == f"FR{expected_key:02d}{siren}"
+
+
+def _vat_candidate_sort_key(candidate: dict[str, Any]) -> tuple[int, float, int]:
+    valid = _valid_french_vat(candidate.get("value"))
+    derived = _trusted_derived_vat(candidate)
+    status = str(candidate.get("validation_status") or "")
+    trusted = derived or (valid and status in {
+        "CHECKSUM_VALID", "CHECKSUM_AND_REGISTRATION_MATCH",
+    })
+    score = float(candidate.get("score") or -1)
+    # A checksum-valid calculated VAT is a real identifier, not a fallback.
+    # Prefer a printed checksum-valid value only when confidence is otherwise equal.
+    return (2 if trusted else 1 if valid else 0, score, 0 if derived else 1)
+
+
 def _po(payload: dict[str, Any]) -> dict[str, Any]:
     business = payload.get("business_extractions") or {}
     return business.get("purchase_order") or business.get("purchase_order_with_terms") or {}
@@ -138,14 +197,34 @@ def _model_vat_candidates(value: Any, path: str = "") -> list[dict[str, Any]]:
         for key, child in value.items():
             child_path = f"{path}.{key}" if path else key
             if key.lower() in VAT_KEY_NAMES and _value(child) not in (None, ""):
+                evidence = (
+                    child.get("evidence")
+                    if isinstance(child, dict)
+                    else value.get("evidence")
+                ) or {}
+                validation_status = (
+                    child.get("validation_status") or child.get("status")
+                    if isinstance(child, dict)
+                    else value.get("validation_status") or value.get("status")
+                )
                 found.append({
                     "path": child_path,
                     "value": _value(child),
                     "score": _confidence(child) if isinstance(child, dict) else _confidence(value),
-                    "evidence": (
-                        child.get("evidence")
-                        if isinstance(child, dict)
-                        else value.get("evidence")
+                    "evidence": evidence,
+                    "validation_status": validation_status,
+                    "siren": (
+                        child.get("siren") if isinstance(child, dict) else None
+                    ) or value.get("siren"),
+                    "siret": (
+                        child.get("siret") if isinstance(child, dict) else None
+                    ) or value.get("siret"),
+                    "registration_number": (
+                        child.get("registration_number") if isinstance(child, dict) else None
+                    ) or value.get("registration_number"),
+                    "derived": bool(
+                        str(validation_status or "").startswith("DERIVED_FROM_VALID_")
+                        or "vat_derived_from_valid" in str(evidence.get("extraction_method") or "")
                     ),
                 })
             found.extend(_model_vat_candidates(child, child_path))
@@ -204,15 +283,14 @@ def _extract_model(payload: dict[str, Any]) -> dict[str, Any]:
     ship_to = parties.get("ship_to") or {}
     ship_to_contact = ship_to.get("contact") or {}
     vat = _model_vat_candidates(po)
-    if not vat:
-        vat = _model_vat_candidates(payload.get("document_tax_identifiers") or [])
+    vat.extend(_model_vat_candidates(payload.get("document_tax_identifiers") or []))
     vat_by_value: dict[str, dict[str, Any]] = {}
     for candidate in vat:
         key = _norm(candidate.get("value"))
         previous = vat_by_value.get(key)
-        if previous is None or float(candidate.get("score") or -1) > float(previous.get("score") or -1):
+        if previous is None or _vat_candidate_sort_key(candidate) > _vat_candidate_sort_key(previous):
             vat_by_value[key] = candidate
-    vat = list(vat_by_value.values())
+    vat = sorted(vat_by_value.values(), key=_vat_candidate_sort_key, reverse=True)
     generic_number = (payload.get("document_references") or {}).get("customer_order_number") or {}
     if not _value(number) and _value(generic_number):
         number = generic_number
@@ -315,6 +393,11 @@ def _extract_model(payload: dict[str, Any]) -> dict[str, Any]:
         "vat_number": vat[0]["value"] if vat else None,
         "vat_score": vat[0].get("score") if vat else None,
         "vat_evidence": vat[0].get("evidence") if vat else None,
+        "vat_validation_status": vat[0].get("validation_status") if vat else None,
+        "vat_siren": vat[0].get("siren") if vat else None,
+        "vat_siret": vat[0].get("siret") if vat else None,
+        "vat_registration_number": vat[0].get("registration_number") if vat else None,
+        "vat_derived": bool(vat and _trusted_derived_vat(vat[0])),
         "decision": (payload.get("extraction_decision") or {}).get("status"),
         "review_reasons": (payload.get("extraction_decision") or {}).get("reasons") or [],
     }
@@ -417,6 +500,10 @@ def _automatic_checks(model: dict[str, Any], text: str, source_vat: list[str]) -
 
     model_vat = model.get("vat_number")
     vat_evidence = model.get("vat_evidence") or {}
+    selected_vat = next((
+        candidate for candidate in model.get("vat_candidates") or []
+        if _norm(candidate.get("value")) == _norm(model_vat)
+    ), None)
     if model_vat and any(_norm(model_vat) == _norm(value) for value in source_vat):
         vat_check = "BON"
     elif (
@@ -425,6 +512,12 @@ def _automatic_checks(model: dict[str, Any], text: str, source_vat: list[str]) -
         and _norm(model_vat) in _norm(vat_evidence.get("source_text"))
     ):
         vat_check = "BON_PREUVE"
+    elif model_vat and _trusted_derived_vat(selected_vat):
+        vat_check = (
+            "BON_CALCULEE_SIRET"
+            if selected_vat.get("siret")
+            else "BON_CALCULEE_SIREN"
+        )
     elif model_vat:
         vat_check = "A_VERIFIER"
     elif source_vat:

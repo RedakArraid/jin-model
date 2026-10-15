@@ -223,6 +223,76 @@ class CampaignSourceAuditTests(unittest.TestCase):
         self.assertEqual(statuses["controle_tva_source"], "SUPPORTEE_PAR_PREUVE")
         self.assertNotIn("TVA_NON_RETROUVEE_DANS_SOURCE", reasons)
 
+    def test_checksum_valid_derived_vat_is_accepted_without_literal_vat_in_source(self):
+        statuses, reasons = _field_statuses({
+            "model": {
+                "is_order": True,
+                "order_number": "CF123456",
+                "vat_number": "FR46444768550",
+                "vat_score": 0.99,
+                "vat_candidates": [{
+                    "value": "FR46444768550",
+                    "score": 0.99,
+                    "validation_status": "DERIVED_FROM_VALID_SIRET",
+                    "siren": "444768550",
+                    "siret": "44476855000485",
+                    "registration_number": "44476855000485",
+                    "evidence": {
+                        "source_text": "Siret : 444 768 550 00485",
+                        "extraction_method": "vat_derived_from_valid_french_registration_v1",
+                    },
+                }],
+            },
+            "source_text": "BON DE COMMANDE CF123456\nSiret : 444 768 550 00485",
+            "automatic_checks": {"type": "BON"},
+        })
+
+        self.assertEqual(
+            statuses["controle_tva_source"],
+            "CALCULEE_DEPUIS_SIRET_VALIDE",
+        )
+        self.assertNotIn("TVA_NON_RETROUVEE_DANS_SOURCE", reasons)
+
+    def test_legacy_campaign_prefers_calculated_vat_over_invalid_ocr_candidate(self):
+        statuses, reasons = _field_statuses({
+            "model": {
+                "is_order": True,
+                "order_number": "CF123456",
+                "vat_number": "FR0K352747018",
+                "vat_score": 0.86,
+                "vat_candidates": [
+                    {
+                        "value": "FR0K352747018",
+                        "score": 0.86,
+                        "evidence": {
+                            "source_text": "TVA FR 0K 352 747 018",
+                            "extraction_method": "generic_vat_regex_checksum_v1",
+                        },
+                    },
+                    {
+                        "value": "FR69352747018",
+                        "score": 0.94,
+                        "evidence": {
+                            "source_text": "SIRET 352 747 018 00013",
+                            "extraction_method": "vat_derived_from_valid_french_registration_v1",
+                        },
+                    },
+                ],
+            },
+            "source_text": (
+                "BON DE COMMANDE CF123456\n"
+                "TVA FR 0K 352 747 018\nSIRET 352 747 018 00013"
+            ),
+            "source_vat_candidates": ["FR0K352747018"],
+            "automatic_checks": {"type": "BON"},
+        })
+
+        self.assertEqual(
+            statuses["controle_tva_source"],
+            "CALCULEE_DEPUIS_SIRET_VALIDE",
+        )
+        self.assertNotIn("TVA_NON_RETROUVEE_DANS_SOURCE", reasons)
+
     def test_natural_language_sentence_is_not_a_valid_order_number(self):
         statuses, reasons = _field_statuses({
             "model": {

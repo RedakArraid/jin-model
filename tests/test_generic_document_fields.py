@@ -19,10 +19,98 @@ class GenericDocumentFieldsTests(unittest.TestCase):
         self.assertEqual(identifier["vat_number"], "FR71775708373")
         self.assertEqual(identifier["siret"], "77570837300011")
         self.assertEqual(identifier["validation_status"], "DERIVED_FROM_VALID_SIRET")
+        self.assertEqual(identifier["confidence"], 0.99)
+        self.assertTrue(identifier["derived"])
+        self.assertEqual(
+            identifier["calculation"]["algorithm"],
+            "french_vat_key_from_siren_v1",
+        )
         self.assertIn("derived", identifier["warnings"][0])
         buyer = out["business_extractions"]["purchase_order"]["buyer"]
         self.assertEqual(buyer["vat_number"], "FR71775708373")
         self.assertEqual(buyer["company_registration_number"], "77570837300011")
+
+    def test_structured_checksum_valid_siret_derives_vat_when_text_stream_missed_it(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{"page": 1, "text": "BON DE COMMANDE"}],
+            "business_extractions": {"purchase_order_with_terms": {
+                "buyer": {"company_registration_number": "352 747 018 00013"},
+                "supplier": {},
+                "lines": [],
+            }},
+        }
+
+        out = enrich_generic_document_fields(payload)
+
+        identifier = out["document_tax_identifiers"][0]
+        self.assertEqual(identifier["vat_number"], "FR69352747018")
+        self.assertEqual(identifier["role"], "buyer")
+        self.assertEqual(identifier["confidence"], 0.98)
+        self.assertEqual(identifier["validation_status"], "DERIVED_FROM_VALID_SIRET")
+        self.assertEqual(
+            identifier["evidence"]["extraction_method"],
+            "vat_derived_from_valid_french_registration_v1",
+        )
+        order = out["business_extractions"]["purchase_order_with_terms"]
+        self.assertEqual(order["buyer"]["vat_number"], "FR69352747018")
+        self.assertEqual(order["tax_identifiers"][0]["vat_number"], "FR69352747018")
+
+    def test_structured_registration_with_invalid_checksum_does_not_derive_vat(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "business_extractions": {"purchase_order": {
+                "buyer": {"company_registration_number": "35274701800014"},
+                "supplier": {},
+                "lines": [],
+            }},
+        }
+
+        out = enrich_generic_document_fields(payload)
+
+        self.assertNotIn("document_tax_identifiers", out)
+
+    def test_checksum_valid_siren_alone_derives_vat(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{"page": 1, "text": "Acheteur ACME - SIREN 444 768 550"}],
+        }
+
+        out = enrich_generic_document_fields(payload)
+
+        identifier = out["document_tax_identifiers"][0]
+        self.assertEqual(identifier["vat_number"], "FR46444768550")
+        self.assertEqual(identifier["siren"], "444768550")
+        self.assertIsNone(identifier["siret"])
+        self.assertEqual(identifier["validation_status"], "DERIVED_FROM_VALID_SIREN")
+
+    def test_valid_derived_vat_precedes_malformed_label_supported_ocr_value(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{
+                "page": 1,
+                "text": (
+                    "No Intra Communautaire : FR0K352747018\n"
+                    "SIRET : 352 747 018 00013"
+                ),
+            }],
+            "business_extractions": {"purchase_order": {
+                "buyer": {}, "supplier": {}, "lines": [],
+            }},
+        }
+
+        out = enrich_generic_document_fields(payload)
+
+        identifiers = out["document_tax_identifiers"]
+        self.assertEqual(
+            [identifier["vat_number"] for identifier in identifiers],
+            ["FR69352747018", "FR0K352747018"],
+        )
+        self.assertEqual(identifiers[0]["validation_status"], "DERIVED_FROM_VALID_SIRET")
+        self.assertEqual(
+            out["business_extractions"]["purchase_order"]["tax_identifiers"][0]["vat_number"],
+            "FR69352747018",
+        )
 
     def test_printed_vat_is_corroborated_by_matching_siren_without_duplication(self):
         payload = {

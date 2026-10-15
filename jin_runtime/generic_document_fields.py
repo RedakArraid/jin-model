@@ -3,7 +3,8 @@
 The core business extractor intentionally focuses on purchase orders.  Some
 adjacent documents, especially order confirmations, still carry a customer
 order reference and VAT identifiers that consumers need.  This module exposes
-only explicitly printed, narrowly matched values and keeps their evidence.
+only narrowly matched values with traceable evidence.  A French VAT number may
+also be derived deterministically from a checksum-valid SIREN/SIRET.
 """
 from __future__ import annotations
 
@@ -86,9 +87,29 @@ def _valid_luhn(value: str) -> bool:
     return total % 10 == 0
 
 
+def _valid_french_registration(value: str) -> bool:
+    """Accept only checksum-valid SIREN/SIRET values suitable for VAT derivation."""
+    if not re.fullmatch(r"\d{9}|\d{14}", value):
+        return False
+    return _valid_luhn(value) and _valid_luhn(value[:9])
+
+
 def _vat_from_siren(siren: str) -> str:
     key = (12 + 3 * (int(siren) % 97)) % 97
     return f"FR{key:02d}{siren}"
+
+
+def _tax_identifier_sort_key(identifier: dict[str, Any]) -> tuple[int, float, int]:
+    value = str(identifier.get("vat_number") or "")
+    status = str(identifier.get("validation_status") or "")
+    valid = _valid_french_vat(value)
+    trusted = valid and (
+        status in {"CHECKSUM_VALID", "CHECKSUM_AND_REGISTRATION_MATCH"}
+        or status.startswith("DERIVED_FROM_VALID_")
+    )
+    confidence = float(identifier.get("confidence") or 0.0)
+    resolved_role = int(identifier.get("role") in {"buyer", "supplier"})
+    return (2 if trusted else 1 if valid else 0, confidence, resolved_role)
 
 
 def _page_texts(payload: dict[str, Any]) -> list[tuple[int, str]]:
@@ -181,7 +202,8 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
         or document.get("document_type")
     )
 
-    for page_number, page_text in _page_texts(payload):
+    page_texts = _page_texts(payload)
+    for page_number, page_text in page_texts:
         lines = page_text.splitlines()
         for line_index, raw_line in enumerate(lines):
             line = " ".join(raw_line.split())
@@ -197,11 +219,9 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
                 registration_type = match.group("type").upper()
                 number = re.sub(r"\D", "", match.group("number"))
                 expected_length = 14 if registration_type == "SIRET" else 9
-                if len(number) != expected_length or not _valid_luhn(number):
+                if len(number) != expected_length or not _valid_french_registration(number):
                     continue
                 siren = number[:9]
-                if not _valid_luhn(siren):
-                    continue
                 role = _party_role(context)
                 candidate = {
                     "registration_type": registration_type.lower(),
@@ -308,6 +328,49 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
                             },
                         }
 
+    # The core extractor can already have resolved an explicitly labelled
+    # company registration even when the generic text stream split the label
+    # and number across visual rows.  Accept that structured value only from a
+    # resolved buyer/supplier role and only after both the SIREN and the full
+    # SIRET (when present) pass their checksums.
+    business = payload.get("business_extractions") or {}
+    purchase_order = business.get("purchase_order")
+    if not isinstance(purchase_order, dict):
+        purchase_order = business.get("purchase_order_with_terms")
+    if not isinstance(purchase_order, dict):
+        purchase_order = {}
+    if isinstance(purchase_order, dict):
+        for role in ("buyer", "supplier"):
+            party = purchase_order.get(role)
+            if not isinstance(party, dict):
+                continue
+            raw_registration = party.get("company_registration_number")
+            number = re.sub(r"\D", "", str(raw_registration or ""))
+            if not _valid_french_registration(number):
+                continue
+            siren = number[:9]
+            registration_type = "SIRET" if len(number) == 14 else "SIREN"
+            candidate = {
+                "registration_type": registration_type.lower(),
+                "registration_number": number,
+                "siren": siren,
+                "siret": number if registration_type == "SIRET" else None,
+                "role": role,
+                "confidence": 0.98,
+                "validation_status": "CHECKSUM_VALID",
+                "evidence": {
+                    "source_text": str(raw_registration),
+                    "extraction_method": "structured_party_registration_checksum_v2",
+                },
+            }
+            existing_registration = registrations_by_siren.get(siren)
+            if (
+                existing_registration is None
+                or (candidate.get("siret") and not existing_registration.get("siret"))
+                or float(candidate["confidence"]) > float(existing_registration.get("confidence") or 0)
+            ):
+                registrations_by_siren[siren] = candidate
+
     # A valid, explicitly labelled SIREN/SIRET can deterministically corroborate
     # or derive the French VAT number. Derived values remain clearly identified as
     # such; they are never presented as text printed verbatim in the document.
@@ -326,6 +389,7 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
             if existing.get("role") == "unknown" and registration.get("role") != "unknown":
                 existing["role"] = registration["role"]
             continue
+        derivation_confidence = min(0.995, float(registration.get("confidence") or 0.0))
         tax_by_value[value] = {
             "type": "vat",
             "vat_number": value,
@@ -334,8 +398,16 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
             "siren": siren,
             "siret": registration.get("siret"),
             "registration_number": registration["registration_number"],
-            "confidence": 0.94 if registration.get("siret") else 0.92,
+            # The formula is deterministic.  Its confidence is therefore the
+            # confidence of the checksum-valid source registration itself,
+            # rather than an arbitrary penalty for not printing the VAT value.
+            "confidence": derivation_confidence,
             "validation_status": "DERIVED_FROM_VALID_SIRET" if registration.get("siret") else "DERIVED_FROM_VALID_SIREN",
+            "derived": True,
+            "calculation": {
+                "algorithm": "french_vat_key_from_siren_v1",
+                "formula": "(12 + 3 * (SIREN mod 97)) mod 97",
+            },
             "evidence": {
                 **support,
                 "extraction_method": "vat_derived_from_valid_french_registration_v1",
@@ -344,9 +416,12 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
     if tax_by_value:
-        payload["document_tax_identifiers"] = list(tax_by_value.values())
-        business = payload.get("business_extractions") or {}
-        purchase_order = business.get("purchase_order")
+        ordered_identifiers = sorted(
+            tax_by_value.values(),
+            key=_tax_identifier_sort_key,
+            reverse=True,
+        )
+        payload["document_tax_identifiers"] = ordered_identifiers
         if isinstance(purchase_order, dict):
             core_identifiers = {
                 item.get("vat_number"): item
@@ -354,8 +429,12 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
                 if isinstance(item, dict) and item.get("vat_number")
             }
             core_identifiers.update(tax_by_value)
-            purchase_order["tax_identifiers"] = list(core_identifiers.values())
-            for item in tax_by_value.values():
+            purchase_order["tax_identifiers"] = sorted(
+                core_identifiers.values(),
+                key=_tax_identifier_sort_key,
+                reverse=True,
+            )
+            for item in ordered_identifiers:
                 role = item.get("role")
                 if role not in {"buyer", "supplier"}:
                     continue

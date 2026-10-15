@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.16.7-trusted-derived-vat
+
+- Treat a French VAT number deterministically calculated from a checksum-valid SIREN or SIRET as a trusted tax identifier, with the same confidence as its validated source registration.
+- Reuse checksum-valid buyer/supplier registration identifiers already resolved by the structured extractor when page text layout prevents the generic registration regex from seeing them.
+- Preserve calculation provenance, source registration, validation status and confidence through batch audit reports.
+- Prefer a correct calculated VAT over a malformed OCR VAT candidate, while keeping checksum-valid printed and calculated VAT values on the same trust tier.
+- Stop source-audit finalization from flagging calculated VAT values as missing merely because the calculated value is not printed verbatim in the PDF.
+
 ## 5.16.6-contextual-ocr-normalization
 
 - Re-read compact scanned order headers with two independent OCR layouts and full-glyph padding, correcting ambiguous series characters only when both readings agree.

@@ -1,4 +1,4 @@
-from scripts.audit_random_orders import _extract_model
+from scripts.audit_random_orders import _automatic_checks, _extract_model
 
 
 def test_extract_model_reads_public_delivery_value_contract():
@@ -97,3 +97,45 @@ def test_extract_model_keeps_article_reference_confidence_for_batch_audits():
     assert model["line_reference_mean_confidence"] == 0.5
     assert model["line_reference_severe_count"] == 1
     assert model["lines"][1]["reference"] == "CARTER DU BLOC"
+
+
+def test_checksum_valid_derived_vat_outranks_invalid_ocr_and_passes_audit():
+    payload = {
+        "document": {"primary_document_type": "purchase_order"},
+        "business_extractions": {
+            "purchase_order": {
+                "tax_identifiers": [{
+                    "type": "vat",
+                    "vat_number": "FR0K352747018",
+                    "confidence": 0.86,
+                    "validation_status": "LABEL_SUPPORTED",
+                    "evidence": {
+                        "source_text": "TVA FR 0K 352 747 018",
+                        "extraction_method": "generic_vat_regex_checksum_v1",
+                    },
+                }],
+            },
+        },
+        "document_tax_identifiers": [{
+            "type": "vat",
+            "vat_number": "FR69352747018",
+            "confidence": 0.98,
+            "validation_status": "DERIVED_FROM_VALID_SIRET",
+            "derived": True,
+            "siren": "352747018",
+            "siret": "35274701800013",
+            "registration_number": "35274701800013",
+            "evidence": {
+                "source_text": "SIRET 352 747 018 00013",
+                "extraction_method": "vat_derived_from_valid_french_registration_v1",
+            },
+        }],
+    }
+
+    model = _extract_model(payload)
+
+    assert model["vat_number"] == "FR69352747018"
+    assert model["vat_validation_status"] == "DERIVED_FROM_VALID_SIRET"
+    assert model["vat_derived"] is True
+    checks = _automatic_checks(model, "TVA FR 0K 352 747 018", ["FR0K352747018"])
+    assert checks["vat"] == "BON_CALCULEE_SIRET"
