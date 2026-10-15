@@ -99,6 +99,62 @@ class HeaderFieldReconciliationTests(unittest.TestCase):
             header["order_date_original"]["disqualified_reason"],
             "EXPLICIT_ORDER_DU_DATE_OVERRIDES_OTHER_DATE",
         )
+
+    def test_requested_delivery_date_is_recovered_after_runtime_order_promotion(self):
+        doc = payload("18995254", [])
+        doc["pages"] = [{
+            "page": 1,
+            "text": (
+                "Date de commande: 13.04.2026\n"
+                "Date de livraison estimée: 04.05.2026 1 PC"
+            ),
+        }]
+
+        reconcile_header_fields(doc)
+
+        order = doc["business_extractions"]["purchase_order"]
+        requested = order["purchase_order"]["expected_delivery_date"]
+        self.assertEqual(requested["value"], "2026-05-04")
+        self.assertEqual(order["logistics"]["requested_delivery_date"], "2026-05-04")
+        self.assertEqual(
+            requested["evidence"]["extraction_method"],
+            "explicit_requested_delivery_date_runtime_v5169",
+        )
+
+    def test_delivery_by_our_care_label_is_supported(self):
+        doc = payload("260807 / BF", [])
+        doc["pages"] = [{
+            "page": 1,
+            "text": (
+                "LIVRAISON PAR VOS SOINS LE 18/03/2026\n"
+                "Date commande : 16/03/2026 Livraison : semaine 12"
+            ),
+        }]
+
+        reconcile_header_fields(doc)
+
+        order = doc["business_extractions"]["purchase_order"]
+        self.assertEqual(
+            order["purchase_order"]["expected_delivery_date"]["value"],
+            "2026-03-18",
+        )
+
+    def test_delivery_policy_prose_does_not_create_requested_date(self):
+        doc = payload("CF-28-1059184", [])
+        doc["pages"] = [{
+            "page": 1,
+            "text": (
+                "La date de livraison indiquée correspond à la date souhaitée.\n"
+                "Sans avis contraire sous 48h, elle sera acceptée."
+            ),
+        }]
+
+        reconcile_header_fields(doc)
+
+        order = doc["business_extractions"]["purchase_order"]
+        self.assertNotIn("expected_delivery_date", order["purchase_order"])
+        self.assertNotIn("logistics", order)
+
     def test_piece_column_outranks_neighboring_our_reference(self):
         doc = payload("219928", [
             block("Date", [40, 228, 62, 239]),

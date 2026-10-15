@@ -15,6 +15,7 @@ from po_ocr.models import (
     LineItem,
     Totals,
 )
+from po_ocr.config import load_config
 from po_ocr.pdf_native import _needs_hybrid_ocr, _supplement_native_words, extract_native_page
 from po_ocr.extract import (
     all_rows, extract_lines, extract_lines_from_pages, extract_parties,
@@ -25,6 +26,8 @@ from po_ocr.extract import (
 from uda.business import (
     _clean_po_number_v48,
     _dual_reference_stacked_native_table_items_v67,
+    _dual_reference_receipt_date_items_v5169,
+    _enhance_requested_delivery_date_v5169,
     _enhance_order_header_from_page_layout,
     _enhance_inline_transaction_header_v46,
     _enhance_strict_order_number_v47,
@@ -39,6 +42,7 @@ from uda.business import (
     _repair_dimension_ocr_v5166,
     _repair_scan_currency_suffix_artifacts_v64,
     _repair_legal_footer_validation_v65,
+    _reconcile_requested_delivery_dates_v5169,
     _separate_additional_charge_lines_v62,
     _sanitize_legal_footer_lines_v48,
     _sanitize_non_product_lines_v61,
@@ -58,6 +62,119 @@ def _page(rows, number=1):
     return PageResult(page=number, width=600, height=842, source_type="native_pdf",
                       text="\n".join(" ".join(t for t, _, _ in cells) for _, cells in rows),
                       words=words, confidence=1.0)
+
+
+def test_dual_reference_receipt_date_table_recovers_lines_dates_and_descriptions():
+    page = _page([
+        (300, [("N°", 4, 14), ("Référence", 25, 72), ("fournisseur", 76, 125),
+               ("N°", 183, 193), ("Quantité", 291, 330), ("Code", 334, 355),
+               ("Date", 370, 391), ("P.", 427, 438), ("Unit", 440, 460),
+               ("P.", 477, 488), ("Unit", 490, 510), ("Montant", 526, 565)]),
+        (311, [("ligne", 4, 24), ("unité", 334, 357), ("réception", 370, 410),
+               ("brut", 442, 463), ("Net", 494, 510)]),
+        (350, [("30002244", 25, 66), ("504265200", 187, 233), ("4", 326, 332),
+               ("PC", 339, 351), ("16/02/26", 368, 407), ("191,00", 427, 458),
+               ("95,9775", 486, 522), ("383,91", 535, 566)]),
+        (360, [("1", 4, 9)]),
+        (370, [("CDE", 25, 46), ("A", 49, 56), ("DISTANCE", 59, 98), ("BFU", 101, 120)]),
+        (390, [("7716701550", 25, 76), ("504201498", 187, 233), ("1", 326, 332),
+               ("PC", 339, 351), ("03/03/26", 368, 407), ("1@346,00", 421, 463),
+               ("1@346", 484, 516), ("1@346,00", 525, 568)]),
+        (400, [("2", 4, 9)]),
+        (410, [("Egalis", 25, 55), ("ballon", 58, 88), ("Icondens", 91, 130),
+               ("GVD", 133, 153), ("IC", 156, 167), ("24", 170, 182)]),
+        (430, [("TOTAL", 420, 455), ("HT", 459, 473), ("1729,91", 525, 568)]),
+    ])
+
+    lines = _dual_reference_receipt_date_items_v5169(
+        [page], load_config(None), "EUR"
+    )
+
+    assert len(lines) == 2
+    assert lines[0].line_number == "1"
+    assert lines[0].supplier_material_number == "30002244"
+    assert lines[0].customer_material_number == "504265200"
+    assert lines[0].description == "CDE A DISTANCE BFU"
+    assert lines[0].requested_delivery_date == "2026-02-16"
+    assert lines[0].gross_unit_price == 191.0
+    assert lines[0].net_unit_price == 95.9775
+    assert lines[0].line_total == 383.91
+    assert lines[1].line_number == "2"
+    assert lines[1].description == "Egalis ballon Icondens GVD IC 24"
+    assert lines[1].requested_delivery_date == "2026-03-03"
+    assert lines[1].net_unit_price == 1346.0
+    assert lines[1].line_total == 1346.0
+
+
+def test_uniform_line_delivery_date_is_promoted_but_mixed_dates_are_not():
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    po.lines = [
+        LineItem(material_number="7716701550", requested_delivery_date="2026-03-03", confidence=.97),
+        LineItem(material_number="7716705075", requested_delivery_date="2026-03-03", confidence=.96),
+    ]
+
+    _reconcile_requested_delivery_dates_v5169(po)
+
+    assert po.purchase_order.expected_delivery_date.value == "2026-03-03"
+    assert po.logistics.requested_delivery_date == "2026-03-03"
+    assert po.purchase_order.expected_delivery_date.evidence.extraction_method == (
+        "uniform_line_requested_delivery_date_v5169"
+    )
+
+    mixed = PurchaseOrderResult(document=po.document)
+    mixed.lines = [
+        LineItem(material_number="A12345", requested_delivery_date="2026-03-03"),
+        LineItem(material_number="B12345", requested_delivery_date="2026-03-04"),
+    ]
+    _reconcile_requested_delivery_dates_v5169(mixed)
+    assert mixed.purchase_order.expected_delivery_date.value is None
+    assert mixed.logistics.requested_delivery_date is None
+
+
+def test_explicit_requested_delivery_date_uses_date_after_label_not_order_date():
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    page = _page([
+        (100, [("Date", 20, 40), ("commande", 43, 85), ("07/04/2026", 90, 145),
+               ("Commande", 180, 225), ("Date", 230, 250), ("de", 253, 265),
+               ("livraison", 268, 315), ("souhaitée", 318, 365),
+               (":", 368, 371), ("13/04/2026", 375, 430)]),
+    ])
+
+    _enhance_requested_delivery_date_v5169(po, [page], load_config(None))
+
+    assert po.purchase_order.expected_delivery_date.value == "2026-04-13"
+    assert po.logistics.requested_delivery_date == "2026-04-13"
+    assert (
+        po.purchase_order.expected_delivery_date.evidence.extraction_method
+        == "explicit_requested_delivery_date_v5169"
+    )
+
+
+def test_requested_delivery_date_ignores_delivery_policy_prose_without_date():
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    page = _page([
+        (100, [("La", 20, 30), ("date", 33, 53), ("de", 56, 68),
+               ("livraison", 71, 118), ("indiquée", 121, 160),
+               ("correspond", 163, 215), ("au", 218, 230),
+               ("site", 233, 255), ("sous", 258, 280), ("48h", 283, 300)]),
+    ])
+
+    _enhance_requested_delivery_date_v5169(po, [page], load_config(None))
+
+    assert po.purchase_order.expected_delivery_date.value is None
+    assert po.logistics.requested_delivery_date is None
 
 
 def test_standalone_delivery_label_keeps_centered_address_block_full_width():

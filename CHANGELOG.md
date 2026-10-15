@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.16.9-requested-delivery-dates
+
+- Extract explicitly labelled requested delivery dates, including French desired, requested and estimated variants and `à livrer le` wording, without confusing an earlier order date on the same row.
+- Preserve requested delivery dates in clean order output, line items, the web UI and random-campaign audit artifacts.
+- Recover dual-reference ERP lines whose header is split across rows and whose net unit prices carry three or four decimal places.
+- Keep supplier and customer article references separate, validate quantity × net price against amount and classify quote/order annotations as notes rather than product descriptions.
+- Add a delivery-date campaign auditor with source evidence, order/line scope and false-positive review categories.
+
 ## 5.16.8-customer-registration-role
 
 - Attribute unqualified SIREN/SIRET identifiers on purchase orders to the customer issuer when no stronger supplier evidence exists.

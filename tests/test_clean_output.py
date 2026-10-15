@@ -165,6 +165,23 @@ class CleanOutputTests(unittest.TestCase):
         self.assertEqual(order["requested_delivery_date"]["value"], "2026-10-08")
         self.assertEqual(order["customer_agency_code"]["value"], "AG02")
 
+    def test_line_requested_delivery_date_is_published_in_clean_contract(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "business_extractions": {"purchase_order": {
+                "lines": [{
+                    "line_number": "10",
+                    "material_number": "7716701550",
+                    "quantity": 1,
+                    "requested_delivery_date": "2026-03-03",
+                }],
+            }},
+        }
+
+        line = build_clean_output(payload)["order"]["line_items"][0]
+
+        self.assertEqual(line["delivery"]["date"], "2026-03-03")
+
     def test_clean_delivery_label_is_used_without_losing_source_value(self):
         payload = {
             "document": {"primary_document_type": "purchase_order"},

@@ -249,6 +249,9 @@ def _normalize_explicit_date(value: str) -> str | None:
         "%d.%m.%y",
         "%d-%m-%Y",
         "%d-%m-%y",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%Y.%m.%d",
     ):
         try:
             return datetime.strptime(raw, fmt).date().isoformat()
@@ -316,6 +319,120 @@ def _date_field(
     }
 
 
+_REQUESTED_DELIVERY_LABEL_RE = re.compile(
+    r"\b(?:"
+    r"DATE\s+(?:DE\s+)?LIVRAISON(?:\s+(?:SOUHAITEE?|DEMANDEE?|REQUISE?|ESTIMEE?|PREVUE?))?"
+    r"|LIVRAISON\s+(?:SOUHAITEE?|DEMANDEE?|REQUISE?|ESTIMEE?|PREVUE?)(?:\s+LE)?"
+    r"|LIVRAISON\s+PAR\s+(?:VOS|NOS)\s+SOINS\s+LE"
+    r"|(?:A\s+)?LIVRER\s+(?:POUR\s+)?LE"
+    r"|REQUESTED\s+DELIVERY\s+DATE|DELIVERY\s+DATE|REQUIRED\s+DATE"
+    r"|LIEFERDATUM|LIEFERTERMIN"
+    r")\b",
+    re.I,
+)
+_REQUESTED_DELIVERY_DATE_RE = re.compile(
+    r"(?<!\d)(?:[0-3]?\d[/.-](?:0?\d|1[0-2])[/.-](?:\d{2}|\d{4})|"
+    r"(?:19|20)\d{2}[/.-](?:0?\d|1[0-2])[/.-][0-3]?\d)(?!\d)"
+)
+
+
+def _fold_delivery_text(value: Any) -> str:
+    """Accent-fold delivery prose while preserving date separators."""
+    text = "".join(
+        char for char in unicodedata.normalize("NFKD", str(value or ""))
+        if not unicodedata.combining(char)
+    ).upper()
+    return " ".join(text.split())
+
+
+def _explicit_requested_delivery_date(
+    payload: dict[str, Any],
+) -> tuple[str, str, str, int] | None:
+    """Return one unambiguous date printed after an explicit delivery label."""
+    sources: list[tuple[int, str]] = []
+    pages = payload.get("pages") or []
+    for index, page in enumerate(pages, 1):
+        if not isinstance(page, dict):
+            continue
+        text = str(page.get("text") or "")
+        if text.strip():
+            sources.append((int(page.get("page") or index), text))
+    if not sources and str(payload.get("raw_text") or "").strip():
+        sources.append((1, str(payload.get("raw_text"))))
+
+    candidates: list[tuple[str, str, str, int]] = []
+    for page_number, text in sources:
+        lines = [" ".join(line.split()) for line in text.splitlines()]
+        for index, line in enumerate(lines):
+            folded = _fold_delivery_text(line)
+            label = _REQUESTED_DELIVERY_LABEL_RE.search(folded)
+            if not label:
+                continue
+            probes = [(line, folded[label.end():])]
+            if index + 1 < len(lines):
+                probes.append((
+                    f"{line} | {lines[index + 1]}",
+                    _fold_delivery_text(lines[index + 1]),
+                ))
+            for source_text, suffix in probes:
+                match = _REQUESTED_DELIVERY_DATE_RE.search(suffix)
+                if not match:
+                    continue
+                raw = match.group(0)
+                normalized = _normalize_explicit_date(raw)
+                if normalized:
+                    candidates.append((normalized, raw, source_text, page_number))
+                break
+
+    values = {candidate[0] for candidate in candidates}
+    if len(values) != 1:
+        return None
+    return candidates[0]
+
+
+def _reconcile_requested_delivery_date(
+    payload: dict[str, Any],
+    po: dict[str, Any],
+    header: dict[str, Any],
+) -> None:
+    candidate = _explicit_requested_delivery_date(payload)
+    if not candidate:
+        return
+    value, raw_value, source_text, page = candidate
+    current = header.get("expected_delivery_date")
+    current_value = current.get("value") if isinstance(current, dict) else current
+    current_normalized = _normalize_explicit_date(str(current_value or ""))
+    if current_normalized and current_normalized != value:
+        return
+    if not current_normalized:
+        header["expected_delivery_date"] = _date_field(
+            value,
+            raw_value,
+            source_text,
+            page,
+            "explicit_requested_delivery_date_runtime_v5169",
+        )
+        payload.setdefault("reconciliation_actions", []).append({
+            "action": "promote_requested_delivery_date",
+            "from": current_value,
+            "to": value,
+            "reason": "explicit_delivery_date_label",
+        })
+    logistics_owner = po
+    business = payload.get("business_extractions")
+    if isinstance(business, dict):
+        container = business.get("purchase_order") or business.get(
+            "purchase_order_with_terms"
+        )
+        if isinstance(container, dict) and isinstance(
+            container.get("purchase_order"), dict
+        ):
+            logistics_owner = container
+    logistics = logistics_owner.setdefault("logistics", {})
+    if isinstance(logistics, dict) and not logistics.get("requested_delivery_date"):
+        logistics["requested_delivery_date"] = value
+
+
 def reconcile_header_fields(payload: dict[str, Any]) -> dict[str, Any]:
     """Prefer explicit header cells over a neighboring reference or clipped OCR cell."""
     po = _find_purchase_order(payload)
@@ -324,6 +441,7 @@ def reconcile_header_fields(payload: dict[str, Any]) -> dict[str, Any]:
     header = po.get("purchase_order")
     if not isinstance(header, dict):
         header = po
+    _reconcile_requested_delivery_date(payload, po, header)
     current = header.get("number") or header.get("order_number")
     current_value = current.get("value") if isinstance(current, dict) else current
     explicit_date = _explicit_order_du_date(payload, current_value)

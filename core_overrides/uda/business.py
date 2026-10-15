@@ -968,6 +968,406 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
     return _dedupe_line_items(items), charges
 
 
+def _dual_reference_receipt_date_items_v5169(
+    pages, config: dict, default_currency: str = "EUR"
+):
+    """Recover ERP rows with two references and a requested receipt date.
+
+    A recurring purchase-order layout prints the supplier reference and the
+    customer's internal reference in two left columns. Quantity, unit, requested
+    receipt date, gross price, net price and amount follow on the same visual row;
+    the line number and description are printed immediately below it. Native PDF
+    table detection often misses the layout because the header is split over two
+    physical rows and does not contain a conventional ``Description`` heading.
+
+    Activation deliberately requires the complete semantic header plus repeated
+    dual-reference rows whose net arithmetic is valid. This keeps the recovery
+    generic without turning unrelated numeric text into order lines.
+    """
+    from po_ocr.extract import all_rows
+    from po_ocr.models import LineItem
+    from po_ocr.normalize import normalize_unit, parse_date, parse_number
+    import re
+
+    cfg = config.get("layout", {}) if isinstance(config, dict) else {}
+    if not cfg.get("dual_reference_receipt_date_recovery_v5169", True):
+        return []
+
+    def center(word):
+        return (word.bbox[0] + word.bbox[2]) / 2
+
+    def decimal(text):
+        # Some native PDF generators expose their non-breaking thousands space as
+        # ``@`` (for example ``1@346,00``). It is formatting, not a decimal digit.
+        value = str(text or "").strip().replace("@", "").replace("'", "")
+        value = re.sub(r"\s+", "", value)
+        # The shared parser treats a comma followed by more than two digits as a
+        # thousands separator. Purchase-order unit prices legitimately carry
+        # three or four decimal places (``95,9775``), so preserve the document's
+        # decimal-comma convention inside this explicitly French-style table.
+        if "," in value:
+            if "." in value:
+                if value.rfind(",") > value.rfind("."):
+                    value = value.replace(".", "").replace(",", ".")
+                else:
+                    value = value.replace(",", "")
+            else:
+                parts = value.split(",")
+                value = "".join(parts[:-1]) + "." + parts[-1]
+            try:
+                return float(value)
+            except ValueError:
+                return None
+        return parse_number(value)
+
+    def normalized_description(text):
+        value = " ".join(str(text or "").split())
+        if "@" in value and not re.search(r"\S+@\S+\.\S+", value):
+            value = re.sub(r"@+", " ", value)
+            value = " ".join(value.split())
+        return value.strip()
+
+    items = []
+    date_pattern = re.compile(r"(?:[0-3]?\d)[/.-](?:0?\d|1[0-2])[/.-](?:\d{2}|\d{4})")
+    unit_pattern = re.compile(r"(?:PIEC(?:E|ES)?|PCE|PCS|PC|EA|UN|U|KG|BOX|L|M)", re.I)
+    reference_pattern = re.compile(r"[A-Za-z0-9._/-]{5,30}")
+
+    for page in pages:
+        rows = all_rows([page], y_factor=0.50)
+        header_end = None
+        anchors = None
+        for start in range(len(rows)):
+            for span in range(1, 4):
+                group = rows[start:start + span]
+                if len(group) != span:
+                    continue
+                if _row_center_safe(group[-1]) - _row_center_safe(group[0]) > page.height * 0.035:
+                    continue
+                words = [word for row in group for word in row.words]
+                low = _fold(" ".join(word.text for word in words))
+                if not (
+                    "reference" in low
+                    and "fournisseur" in low
+                    and "quantite" in low
+                    and "date" in low
+                    and "reception" in low
+                    and "net" in low
+                    and "montant" in low
+                ):
+                    continue
+                found = {}
+                number_markers = []
+                for word in words:
+                    token = _fold(word.text).strip(" |[](){}.,:")
+                    if token == "reference" and "reference" not in found:
+                        found["reference"] = center(word)
+                    elif token in {"quantite", "qte", "qty"}:
+                        found["quantity"] = center(word)
+                    elif token in {"unite", "uom", "unit"}:
+                        found["uom"] = center(word)
+                    elif token == "date":
+                        found["date"] = center(word)
+                    elif token == "net":
+                        found["net"] = center(word)
+                    elif token in {"montant", "amount"}:
+                        found["amount"] = center(word)
+                    elif token in {"ligne", "line"}:
+                        found["line_number"] = center(word)
+                    elif token in {"n", "n°", "no", "numero", "number"}:
+                        number_markers.append(center(word))
+                if not all(key in found for key in ("reference", "quantity", "net", "amount")):
+                    continue
+                second_markers = [
+                    value for value in number_markers
+                    if found["reference"] + page.width * 0.08 < value < found["quantity"]
+                ]
+                if not second_markers:
+                    continue
+                found["customer_reference"] = min(second_markers)
+                anchors = found
+                header_end = start + span
+                break
+            if anchors is not None:
+                break
+        if anchors is None or header_end is None:
+            continue
+
+        quantity_x = anchors["quantity"]
+        reference_boundary = quantity_x - max(18.0, page.width * 0.035)
+        line_x = anchors.get("line_number")
+        current = None
+        page_items = []
+
+        for row in rows[header_end:]:
+            low = _fold(row.text)
+            if re.search(r"\btotal\s+(?:ht|net|ttc)\b", low):
+                break
+            if _row_center_safe(row) > page.height * 0.94:
+                break
+
+            left_words = [word for word in row.words if center(word) < reference_boundary]
+            reference_words = []
+            for word in left_words:
+                token = word.text.strip(" |[](){};:,*")
+                if not reference_pattern.fullmatch(token):
+                    continue
+                if sum(char.isdigit() for char in token) < 5:
+                    continue
+                reference_words.append(word)
+
+            unit_word = next((word for word in row.words if unit_pattern.fullmatch(
+                word.text.strip(" |[](){};:,*")
+            )), None)
+            quantity = None
+            if unit_word is not None:
+                numeric_before_unit = [
+                    word for word in row.words
+                    if word.bbox[2] <= unit_word.bbox[0] + 1
+                    and center(word) >= reference_boundary
+                    and decimal(word.text) is not None
+                ]
+                if numeric_before_unit:
+                    quantity = decimal(numeric_before_unit[-1].text)
+
+            date_value = None
+            date_word = next((word for word in row.words if date_pattern.fullmatch(
+                word.text.strip(" |[](){};:,*")
+            )), None)
+            if date_word is not None:
+                date_value = parse_date(date_word.text)
+
+            monetary_words = []
+            monetary_start = date_word.bbox[2] if date_word is not None else (
+                unit_word.bbox[2] if unit_word is not None else reference_boundary
+            )
+            for word in row.words:
+                if word.bbox[0] < monetary_start:
+                    continue
+                token = word.text.strip().replace("@", "")
+                if re.fullmatch(r"[-+]?\d[\d.,']*", token) and decimal(token) is not None:
+                    monetary_words.append(word)
+            monetary_values = [decimal(word.text) for word in monetary_words]
+
+            is_product_row = (
+                len(reference_words) >= 2
+                and quantity is not None
+                and unit_word is not None
+                and len(monetary_values) >= 2
+            )
+            if is_product_row:
+                supplier_word = min(
+                    reference_words,
+                    key=lambda word: abs(center(word) - anchors["reference"]),
+                )
+                customer_candidates = [word for word in reference_words if word is not supplier_word]
+                customer_word = min(
+                    customer_candidates,
+                    key=lambda word: abs(center(word) - anchors["customer_reference"]),
+                )
+                net_price = monetary_values[-2]
+                amount = monetary_values[-1]
+                expected = float(quantity) * float(net_price)
+                tolerance = max(0.04, abs(expected) * 0.006)
+                if abs(float(amount) - expected) > tolerance:
+                    current = None
+                    continue
+                confidence = max(0.0, min(1.0, float(row.confidence) * 0.995))
+                current = LineItem(
+                    line_number=str(len(page_items) + 1),
+                    material_number=supplier_word.text.strip(),
+                    article_number=supplier_word.text.strip(),
+                    supplier_material_number=supplier_word.text.strip(),
+                    customer_material_number=customer_word.text.strip(),
+                    quantity=quantity,
+                    ordered_quantity=quantity,
+                    uom=normalize_unit(unit_word.text),
+                    gross_unit_price=(
+                        monetary_values[-3] if len(monetary_values) >= 3 else None
+                    ),
+                    unit_price=net_price,
+                    net_unit_price=net_price,
+                    line_total=amount,
+                    line_net_amount=amount,
+                    currency=default_currency,
+                    requested_delivery_date=date_value,
+                    raw_text=row.text,
+                    page=page.page,
+                    bbox=row.bbox,
+                    confidence=confidence,
+                )
+                page_items.append(current)
+                continue
+
+            if current is None or not left_words:
+                continue
+            compact = " ".join(word.text for word in left_words).strip()
+            if not compact:
+                continue
+            if (
+                line_x is not None
+                and re.fullmatch(r"\d{1,5}", compact)
+                and abs(center(left_words[0]) - line_x) <= page.width * 0.04
+            ):
+                current.line_number = compact
+                current.raw_text = f"{current.raw_text} | {compact}"
+                continue
+            description = normalized_description(compact)
+            if not description:
+                continue
+            if re.search(r"\b(?:offre|devis)\b|\bcmd(?=\s|[:#./-]|\d)", low):
+                current.notes.append(description)
+            elif not re.search(
+                r"\b(?:page|siret|tva|capital|telephone|telecopie|fax|total)\b", low
+            ):
+                current.description = " ".join(
+                    value for value in (current.description, description) if value
+                ).strip()
+            current.raw_text = f"{current.raw_text} | {description}"
+
+        # A single accidental row is not enough evidence for this specialized
+        # layout. Real tables expose at least two repeated dual-reference rows.
+        if len(page_items) >= 2:
+            items.extend(page_items)
+
+    return _dedupe_line_items(items)
+
+
+def _reconcile_requested_delivery_dates_v5169(po):
+    """Promote a uniform line-level requested date to the order header."""
+    from po_ocr.models import Evidence, ExtractedField
+
+    values = sorted({
+        str(line.requested_delivery_date)
+        for line in po.lines or []
+        if line.requested_delivery_date
+    })
+    if len(values) != 1:
+        return po
+    value = values[0]
+    expected = po.purchase_order.expected_delivery_date
+    if not expected.value:
+        supporting = [line for line in po.lines if line.requested_delivery_date == value]
+        source = supporting[0] if supporting else None
+        confidence = min((line.confidence for line in supporting), default=0.90)
+        po.purchase_order.expected_delivery_date = ExtractedField(
+            value=value,
+            normalized_value=value,
+            raw_value=value,
+            ocr_confidence=confidence,
+            semantic_confidence=0.96,
+            validation_confidence=1.0,
+            final_confidence=confidence,
+            validation_status="VALID",
+            evidence=Evidence(
+                page=getattr(source, "page", None),
+                bbox=getattr(source, "bbox", None),
+                source_text=value,
+                extraction_method="uniform_line_requested_delivery_date_v5169",
+            ),
+        )
+    if not po.logistics.requested_delivery_date:
+        po.logistics.requested_delivery_date = value
+    return po
+
+
+def _enhance_requested_delivery_date_v5169(po, pages, config: dict):
+    """Extract an explicitly labelled order-level requested delivery date.
+
+    The generic header regex predates common French labels such as ``Date de
+    livraison souhaitée`` and ``Date de livraison demandée``.  It can capture
+    the qualifier itself instead of the date.  This geometry-aware pass starts
+    at the delivery label, so a purchase-order date printed earlier on the same
+    row cannot be mistaken for the requested delivery date.
+    """
+    from po_ocr.extract import all_rows
+    from po_ocr.models import Evidence, ExtractedField
+    from po_ocr.normalize import parse_date
+    import re
+
+    layout = config.get("layout", {}) if isinstance(config, dict) else {}
+    if not layout.get("requested_delivery_date_resolution_v5169", True):
+        return po
+
+    explicit_label = re.compile(
+        r"\b(?:"
+        r"date\s+(?:de\s+)?livraison(?:\s+(?:souhaitee?|demandee?|requise?|estimee?|prevue?))?"
+        r"|livraison\s+(?:souhaitee?|demandee?|requise?|prevue?)(?:\s+le)?"
+        r"|livraison\s+par\s+(?:vos|nos)\s+soins\s+le"
+        r"|(?:a\s+)?livrer\s+(?:pour\s+)?le"
+        r"|requested\s+delivery\s+date|delivery\s+date|required\s+date"
+        r"|lieferdatum|liefertermin"
+        r")\b",
+        re.I,
+    )
+    date_token = re.compile(
+        r"(?<!\d)(?:[0-3]?\d[/.-](?:0?\d|1[0-2])[/.-](?:\d{2}|\d{4})|"
+        r"(?:19|20)\d{2}[/.-](?:0?\d|1[0-2])[/.-][0-3]?\d)(?!\d)"
+    )
+    candidates = []
+    for page in pages or []:
+        rows = all_rows([page], y_factor=0.50)
+        for index, row in enumerate(rows):
+            folded = _fold(row.text)
+            label = explicit_label.search(folded)
+            if not label:
+                continue
+            # A bare delivery-date column belongs to the individual line items.
+            # Order metadata labels may share a row with "Commande", but not with
+            # the full reference/quantity/price signature of a product table.
+            if (
+                ("reference" in folded or "article" in folded)
+                and ("quantite" in folded or "qte" in folded)
+                and any(token in folded for token in ("prix", "montant", "net", "amount"))
+            ):
+                continue
+
+            probes = [(row, folded[label.end():])]
+            # Support a label whose value is printed immediately below it.  Keep
+            # the vertical window deliberately tight to avoid unrelated dates.
+            for following in rows[index + 1:index + 3]:
+                if _row_center_safe(following) - _row_center_safe(row) > page.height * 0.045:
+                    break
+                probes.append((following, _fold(following.text)))
+            for evidence_row, suffix in probes:
+                match = date_token.search(suffix)
+                if not match:
+                    continue
+                parsed = parse_date(match.group(0))
+                if parsed:
+                    candidates.append((
+                        parsed, match.group(0), page.page, evidence_row.bbox,
+                        row.text if evidence_row is row else f"{row.text} | {evidence_row.text}",
+                        min(float(row.confidence), float(evidence_row.confidence)),
+                    ))
+                break
+
+    values = {candidate[0] for candidate in candidates}
+    if len(values) != 1:
+        return po
+    value, raw, page_number, bbox, source_text, confidence = candidates[0]
+    existing = po.purchase_order.expected_delivery_date
+    if not existing.value or not parse_date(str(existing.value)):
+        final_confidence = max(0.0, min(1.0, confidence * 0.995))
+        po.purchase_order.expected_delivery_date = ExtractedField(
+            value=value,
+            raw_value=raw,
+            normalized_value=value,
+            ocr_confidence=confidence,
+            semantic_confidence=0.995,
+            validation_confidence=1.0,
+            final_confidence=final_confidence,
+            validation_status="VALID",
+            evidence=Evidence(
+                page=page_number,
+                bbox=bbox,
+                source_text=source_text,
+                extraction_method="explicit_requested_delivery_date_v5169",
+            ),
+        )
+    po.logistics.requested_delivery_date = value
+    return po
+
+
 def _line_hypothesis_total_fit_v66(lines, charges, target, config: dict):
     """Score candidate coverage against an explicitly printed net total.
 
@@ -5738,6 +6138,9 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     po = _enhance_strict_order_number_v47(po, pages, config)
     table_lines, table_charges = _native_table_line_items_and_charges(tables, default_currency=default_currency)
     geometry_lines, geometry_charges = _extract_geometry_table_items_v46(pages, config, default_currency=default_currency)
+    receipt_date_lines = _dual_reference_receipt_date_items_v5169(
+        pages, config, default_currency=default_currency
+    )
     amount_only_lines = _extract_amount_only_geometry_v47(pages, config, default_currency=default_currency)
     quantity_first_lines, quantity_first_charges = _quantity_first_table_items(pages, default_currency)
     price_then_quantity_lines = _price_then_quantity_table_items(pages, default_currency)
@@ -5811,6 +6214,8 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     suppressed_hypotheses={}
     if table_lines: hypotheses.append(("native_table",table_lines,table_charges,0.18))
     if geometry_lines: hypotheses.append(("geometry",geometry_lines,geometry_charges,0.08))
+    if receipt_date_lines:
+        hypotheses.append(("dual_reference_receipt_date",receipt_date_lines,[],0.27))
     if amount_only_lines: hypotheses.append(("amount_only_geometry",amount_only_lines,[],0.11))
     if quantity_first_lines: hypotheses.append(("quantity_first_table",quantity_first_lines,quantity_first_charges,0.12))
     if price_then_quantity_lines: hypotheses.append(("price_then_quantity_table",price_then_quantity_lines,[],0.14))
@@ -5871,6 +6276,8 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
         po.lines=chosen_lines; po.additional_charges=chosen_charges
         parser_diag["selected"]=chosen_name
     po.lines = _dedupe_line_items(po.lines)
+    po = _enhance_requested_delivery_date_v5169(po, pages, config)
+    po = _reconcile_requested_delivery_dates_v5169(po)
     po, parser_diag["reclassified_additional_charges"] = _separate_additional_charge_lines_v62(po, config)
     po, parser_diag["recovered_page_charges"] = _merge_explicit_page_charges_v63(
         po, pages, config

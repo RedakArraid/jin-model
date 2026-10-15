@@ -281,6 +281,13 @@ def _extract_model(payload: dict[str, Any]) -> dict[str, Any]:
     )
     verification = delivery.get("verification") or {}
     order_date = clean_order.get("order_date") or header.get("order_date") or header.get("date") or {}
+    requested_delivery_date = (
+        clean_order.get("requested_delivery_date")
+        or header.get("expected_delivery_date")
+        or header.get("required_date")
+        or (po.get("logistics") or {}).get("requested_delivery_date")
+        or {}
+    )
     agency = (
         clean_order.get("customer_agency_code")
         or header.get("customer_agency_code")
@@ -341,6 +348,11 @@ def _extract_model(payload: dict[str, Any]) -> dict[str, Any]:
             "reference": reference,
             "description": line.get("description"),
             "quantity": line.get("quantity"),
+            "requested_delivery_date": (
+                (line.get("delivery") or {}).get("date")
+                or line.get("requested_delivery_date")
+                or line.get("delivery_date")
+            ),
             "confidence": line.get("confidence"),
             "reference_confidence": confidence,
             "reference_status": status,
@@ -359,6 +371,17 @@ def _extract_model(payload: dict[str, Any]) -> dict[str, Any]:
         "order_date_raw": order_date.get("raw_value") if isinstance(order_date, dict) else None,
         "order_date_score": _confidence(order_date),
         "order_date_evidence": order_date.get("evidence") if isinstance(order_date, dict) else None,
+        "requested_delivery_date": _value(requested_delivery_date),
+        "requested_delivery_date_score": _confidence(requested_delivery_date),
+        "requested_delivery_date_evidence": (
+            requested_delivery_date.get("evidence")
+            if isinstance(requested_delivery_date, dict) else None
+        ),
+        "line_requested_delivery_dates": sorted({
+            str(line.get("requested_delivery_date"))
+            for line in line_summaries
+            if line.get("requested_delivery_date")
+        }),
         "customer_agency_code": _value(agency),
         "customer_agency_site": agency.get("site") if isinstance(agency, dict) else None,
         "customer_agency_score": _confidence(agency),
@@ -568,6 +591,9 @@ def _csv_row(item: dict[str, Any]) -> dict[str, Any]:
         "date_commande": model.get("order_date"),
         "date_commande_source": model.get("order_date_raw"),
         "score_date_commande": model.get("order_date_score"),
+        "date_livraison_souhaitee": model.get("requested_delivery_date"),
+        "score_date_livraison_souhaitee": model.get("requested_delivery_date_score"),
+        "dates_livraison_lignes": " | ".join(model.get("line_requested_delivery_dates") or []),
         "code_agence_client": model.get("customer_agency_code"),
         "site_code_agence": model.get("customer_agency_site"),
         "score_code_agence": model.get("customer_agency_score"),

@@ -153,6 +153,7 @@ function normalizedLine(line) {
     price_unit: line.pricing?.price_unit,
     currency: line.pricing?.currency,
     line_total: line.amounts?.total ?? line.amounts?.net,
+    requested_delivery_date: line.delivery?.date ?? line.requested_delivery_date ?? line.delivery_date,
   };
 }
 
@@ -770,6 +771,7 @@ function render(r) {
     ['Page du n° client',  r.order_number_check?.source_evidence?.page],
     ['Source du n° client', r.order_number_check?.source_evidence?.source_text],
     ['Date commande',     pick(po, ['order_date.value',          'order_date'])],
+    ['Livraison souhaitée', pick(po, ['expected_delivery_date.value', 'required_date.value'], extractedValue(cleanOrder.requested_delivery_date))],
     ['Devise',            pick(po, ['currency.value'],           tot.currency)],
     ['Acheteur',          pick(b,  ['buyer.name'])],
     ['Fournisseur',       pick(b,  ['supplier.name'])],
@@ -954,6 +956,7 @@ function render(r) {
     addTextCell(tr, l.uom);
     addTextCell(tr, unitPriceLabel(l, cur));
     addTextCell(tr, l.line_total != null ? money(l.line_total, l.currency || cur) : null);
+    addTextCell(tr, l.requested_delivery_date);
     addTagCell(tr, [
       { label: 'Devis', values: commercialReferences.quotes },
       { label: 'Dérog.', values: commercialReferences.derogations, className: 'derogation' },
@@ -1015,7 +1018,7 @@ function render(r) {
     ['Mode paiement',       com.payment_method],
     ['Remise %',            com.discount_percent != null ? `${com.discount_percent} %` : null],
     ['Incoterm',            log.incoterm ? `${log.incoterm}${log.incoterm_location ? ' – ' + log.incoterm_location : ''}` : null],
-    ['Livraison demandée',  log.requested_delivery_date],
+    ['Livraison demandée',  log.requested_delivery_date || extractedValue(cleanOrder.requested_delivery_date)],
     ['Mode transport',      log.transport_mode],
     ['Frais port',          money(com.freight_amount ?? com.shipping_cost, cur)],
   ]);

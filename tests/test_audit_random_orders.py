@@ -99,6 +99,38 @@ def test_extract_model_keeps_article_reference_confidence_for_batch_audits():
     assert model["lines"][1]["reference"] == "CARTER DU BLOC"
 
 
+def test_extract_model_keeps_order_and_line_requested_delivery_dates():
+    payload = {
+        "document": {"primary_document_type": "purchase_order"},
+        "normalized_output": {"order": {
+            "requested_delivery_date": {
+                "value": "2026-03-03",
+                "confidence": 0.96,
+                "evidence": {"source_text": "03/03/2026"},
+            },
+            "line_items": [
+                {
+                    "line_number": "1",
+                    "references": {"article_number": "7716701550"},
+                    "delivery": {"date": "2026-03-03"},
+                },
+                {
+                    "line_number": "2",
+                    "references": {"article_number": "7716705075"},
+                    "delivery": {"date": "2026-03-04"},
+                },
+            ],
+        }},
+    }
+
+    model = _extract_model(payload)
+
+    assert model["requested_delivery_date"] == "2026-03-03"
+    assert model["requested_delivery_date_score"] == 0.96
+    assert model["line_requested_delivery_dates"] == ["2026-03-03", "2026-03-04"]
+    assert model["lines"][0]["requested_delivery_date"] == "2026-03-03"
+
+
 def test_checksum_valid_derived_vat_outranks_invalid_ocr_and_passes_audit():
     payload = {
         "document": {"primary_document_type": "purchase_order"},

@@ -1629,7 +1629,11 @@ def _line(source: dict[str, Any]) -> dict[str, Any]:
             "net": source.get("line_net_amount"), "total": source.get("line_total"),
         },
         "delivery": {
-            "date": source.get("delivery_date"),
+            "date": _first(
+                source.get("requested_delivery_date"),
+                source.get("delivery_date"),
+            ),
+            "confirmed_date": source.get("confirmed_delivery_date"),
             "schedule": source.get("delivery_schedule") or source.get("schedule_lines"),
             "site": source.get("delivery_site"),
         },

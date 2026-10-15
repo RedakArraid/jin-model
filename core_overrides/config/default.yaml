@@ -465,6 +465,8 @@ layout:
   - offre
   - devis
   - quote
+  dual_reference_receipt_date_recovery_v5169: true
+  requested_delivery_date_resolution_v5169: true
   strict_total_label_recovery: true
   strict_total_search_next_rows: 2
   strict_total_prefer_rightmost_value: true
