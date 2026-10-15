@@ -1,1 +1,1 @@
-__version__ = "5.16.7-trusted-derived-vat"
+__version__ = "5.16.8-customer-registration-role"

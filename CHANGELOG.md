@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.16.8-customer-registration-role
+
+- Attribute unqualified SIREN/SIRET identifiers on purchase orders to the customer issuer when no stronger supplier evidence exists.
+- Match registration context against buyer, billing, shipping and supplier party names before applying the purchase-order issuer fallback.
+- Prevent a following `INFOS FOURNISSEUR` block from stealing the customer SIRET printed immediately before that heading.
+- Preserve the role, matched party role, role confidence and assignment method through clean output and campaign audit reports.
+- Attach calculated VAT and registration identifiers to the matched customer party, including `bill_to`, while explicit supplier identity remains authoritative.
+
 ## 5.16.7-trusted-derived-vat
 
 - Treat a French VAT number deterministically calculated from a checksum-valid SIREN or SIRET as a trusted tax identifier, with the same confidence as its validated source registration.

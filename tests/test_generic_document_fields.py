@@ -112,6 +112,140 @@ class GenericDocumentFieldsTests(unittest.TestCase):
             "FR69352747018",
         )
 
+    def test_customer_legal_footer_matches_bill_to_and_assigns_buyer_tax_role(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{
+                "page": 1,
+                "text": (
+                    "NET A PAYER 915,65 EUR\n"
+                    "Siège Social : SAS SISCA au capital - Siret : 35274701800013\n"
+                    "INFOS FOURNISSEUR\nELM LEBLANC"
+                ),
+            }],
+            "business_extractions": {"purchase_order": {
+                "buyer": {"name": "SIDV AURILLAC"},
+                "bill_to": {"name": "SISCA", "legal_name": "SISCA"},
+                "supplier": {"name": "ELM LEBLANC"},
+                "lines": [],
+            }},
+        }
+
+        out = enrich_generic_document_fields(payload)
+
+        identifier = out["document_tax_identifiers"][0]
+        self.assertEqual(identifier["role"], "buyer")
+        self.assertEqual(identifier["party_role"], "bill_to")
+        self.assertEqual(identifier["role_confidence"], 0.99)
+        self.assertEqual(
+            identifier["role_assignment"]["method"],
+            "party_name_context_match_v1",
+        )
+        order = out["business_extractions"]["purchase_order"]
+        self.assertEqual(order["bill_to"]["vat_number"], "FR69352747018")
+        self.assertNotIn("vat_number", order["buyer"])
+
+    def test_following_supplier_heading_does_not_steal_customer_siret(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{
+                "page": 1,
+                "text": (
+                    "Email : contact-morlaix@iziconfort.fr\n"
+                    "Siret : 444 768 550 00485\n"
+                    "INFOS FOURNISSEUR\nCOMMANDE Bosch pièces de rechange"
+                ),
+            }],
+            "business_extractions": {"purchase_order": {
+                "buyer": {"name": "IZI by EDF"},
+                "supplier": {"name": "ELM LEBLANC"},
+                "lines": [],
+            }},
+        }
+
+        out = enrich_generic_document_fields(payload)
+
+        identifier = out["document_tax_identifiers"][0]
+        self.assertEqual(identifier["role"], "buyer")
+        self.assertEqual(identifier["party_role"], "buyer")
+        self.assertEqual(identifier["role_confidence"], 0.90)
+        self.assertEqual(
+            identifier["role_assignment"]["method"],
+            "purchase_order_issuer_default_v1",
+        )
+        self.assertIn(
+            "vat_role_inferred_as_customer_purchase_order_issuer",
+            identifier["warnings"],
+        )
+
+    def test_explicit_supplier_identity_overrides_purchase_order_buyer_default(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{
+                "page": 1,
+                "text": "FOURNISSEUR ELM LEBLANC\nSIREN 542 097 944",
+            }],
+            "business_extractions": {"purchase_order": {
+                "buyer": {"name": "CLIENT TEST"},
+                "supplier": {"name": "ELM LEBLANC"},
+                "lines": [],
+            }},
+        }
+
+        out = enrich_generic_document_fields(payload)
+
+        identifier = out["document_tax_identifiers"][0]
+        self.assertEqual(identifier["vat_number"], "FR89542097944")
+        self.assertEqual(identifier["role"], "supplier")
+        self.assertEqual(identifier["party_role"], "supplier")
+        self.assertEqual(
+            identifier["role_assignment"]["method"],
+            "preceding_role_heading_v1",
+        )
+        self.assertEqual(
+            out["business_extractions"]["purchase_order"]["supplier"]["vat_number"],
+            "FR89542097944",
+        )
+
+    def test_unqualified_registration_on_non_order_keeps_unknown_role(self):
+        payload = {
+            "document": {"primary_document_type": "remittance_advice"},
+            "pages": [{"page": 1, "text": "SIREN 444 768 550"}],
+        }
+
+        out = enrich_generic_document_fields(payload)
+
+        identifier = out["document_tax_identifiers"][0]
+        self.assertEqual(identifier["role"], "unknown")
+        self.assertEqual(identifier["role_confidence"], 0.0)
+        self.assertEqual(identifier["role_assignment"]["method"], "unresolved")
+
+    def test_unlabelled_supplier_party_collision_still_defaults_to_customer_issuer(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{
+                "page": 1,
+                "text": (
+                    "Merci de confirmer à achat@eau-vapeur.fr\n"
+                    "Siège Social : SAS au capital - Siret : 67201002200032"
+                ),
+            }],
+            "business_extractions": {"purchase_order": {
+                "buyer": {"name": "Eau et Vapeur LYON"},
+                "ship_to": {"name": "Eau et Vapeur LYON"},
+                # Dense layouts have historically duplicated the customer here.
+                "supplier": {"name": "Eau Et Vapeur"},
+                "lines": [],
+            }},
+        }
+
+        out = enrich_generic_document_fields(payload)
+
+        identifier = out["document_tax_identifiers"][0]
+        self.assertEqual(identifier["vat_number"], "FR23672010022")
+        self.assertEqual(identifier["role"], "buyer")
+        self.assertEqual(identifier["role_assignment"]["method"], "purchase_order_issuer_default_v1")
+
     def test_printed_vat_is_corroborated_by_matching_siren_without_duplication(self):
         payload = {
             "document": {"primary_document_type": "purchase_order"},

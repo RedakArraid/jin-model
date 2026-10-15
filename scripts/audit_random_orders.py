@@ -222,6 +222,18 @@ def _model_vat_candidates(value: Any, path: str = "") -> list[dict[str, Any]]:
                     "registration_number": (
                         child.get("registration_number") if isinstance(child, dict) else None
                     ) or value.get("registration_number"),
+                    "role": (
+                        child.get("role") if isinstance(child, dict) else None
+                    ) or value.get("role"),
+                    "party_role": (
+                        child.get("party_role") if isinstance(child, dict) else None
+                    ) or value.get("party_role"),
+                    "role_confidence": (
+                        child.get("role_confidence") if isinstance(child, dict) else None
+                    ) or value.get("role_confidence"),
+                    "role_assignment": (
+                        child.get("role_assignment") if isinstance(child, dict) else None
+                    ) or value.get("role_assignment"),
                     "derived": bool(
                         str(validation_status or "").startswith("DERIVED_FROM_VALID_")
                         or "vat_derived_from_valid" in str(evidence.get("extraction_method") or "")
@@ -397,6 +409,10 @@ def _extract_model(payload: dict[str, Any]) -> dict[str, Any]:
         "vat_siren": vat[0].get("siren") if vat else None,
         "vat_siret": vat[0].get("siret") if vat else None,
         "vat_registration_number": vat[0].get("registration_number") if vat else None,
+        "vat_role": vat[0].get("role") if vat else None,
+        "vat_party_role": vat[0].get("party_role") if vat else None,
+        "vat_role_confidence": vat[0].get("role_confidence") if vat else None,
+        "vat_role_assignment": vat[0].get("role_assignment") if vat else None,
         "vat_derived": bool(vat and _trusted_derived_vat(vat[0])),
         "decision": (payload.get("extraction_decision") or {}).get("status"),
         "review_reasons": (payload.get("extraction_decision") or {}).get("reasons") or [],

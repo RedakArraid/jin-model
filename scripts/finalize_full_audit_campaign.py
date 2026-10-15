@@ -137,6 +137,10 @@ def _preferred_vat_candidate(model: dict[str, Any]) -> dict[str, Any] | None:
             "siren": model.get("vat_siren"),
             "siret": model.get("vat_siret"),
             "registration_number": model.get("vat_registration_number"),
+            "role": model.get("vat_role"),
+            "party_role": model.get("vat_party_role"),
+            "role_confidence": model.get("vat_role_confidence"),
+            "role_assignment": model.get("vat_role_assignment"),
         }
         if not any(_norm(item.get("value")) == _norm(current["value"]) for item in candidates):
             candidates.append(current)
@@ -455,6 +459,12 @@ def _row(item: dict[str, Any], origin: str, batch: int | None, global_index: int
         "ban_verifiee": model.get("delivery_ban_verified"),
         "numero_tva": _scalar((vat_candidate or {}).get("value")),
         "score_numero_tva": vat_score,
+        "role_numero_tva": (vat_candidate or {}).get("role"),
+        "role_partie_numero_tva": (vat_candidate or {}).get("party_role"),
+        "score_role_numero_tva": (vat_candidate or {}).get("role_confidence"),
+        "methode_role_numero_tva": (
+            ((vat_candidate or {}).get("role_assignment") or {}).get("method")
+        ),
         "decision_modele": model.get("decision"),
         **statuses,
         "verdict_source": verdict,

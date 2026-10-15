@@ -125,6 +125,10 @@ def test_checksum_valid_derived_vat_outranks_invalid_ocr_and_passes_audit():
             "siren": "352747018",
             "siret": "35274701800013",
             "registration_number": "35274701800013",
+            "role": "buyer",
+            "party_role": "bill_to",
+            "role_confidence": 0.99,
+            "role_assignment": {"method": "party_name_context_match_v1"},
             "evidence": {
                 "source_text": "SIRET 352 747 018 00013",
                 "extraction_method": "vat_derived_from_valid_french_registration_v1",
@@ -137,5 +141,9 @@ def test_checksum_valid_derived_vat_outranks_invalid_ocr_and_passes_audit():
     assert model["vat_number"] == "FR69352747018"
     assert model["vat_validation_status"] == "DERIVED_FROM_VALID_SIRET"
     assert model["vat_derived"] is True
+    assert model["vat_role"] == "buyer"
+    assert model["vat_party_role"] == "bill_to"
+    assert model["vat_role_confidence"] == 0.99
+    assert model["vat_role_assignment"]["method"] == "party_name_context_match_v1"
     checks = _automatic_checks(model, "TVA FR 0K 352 747 018", ["FR0K352747018"])
     assert checks["vat"] == "BON_CALCULEE_SIRET"

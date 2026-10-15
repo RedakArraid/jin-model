@@ -162,11 +162,141 @@ def _page_texts(payload: dict[str, Any]) -> list[tuple[int, str]]:
 
 def _party_role(context: str) -> str:
     folded = _fold(context)
-    if any(term in folded for term in ("CLIENT", "ACHETEUR", "BUYER", "DONNEUR D ORDRE")):
+    buyer = any(
+        term in folded
+        for term in ("CLIENT", "ACHETEUR", "BUYER", "DONNEUR D ORDRE")
+    )
+    supplier = any(
+        term in folded
+        for term in ("FOURNISSEUR", "SUPPLIER", "VENDOR")
+    )
+    if buyer and not supplier:
         return "buyer"
-    if any(term in folded for term in ("FOURNISSEUR", "SUPPLIER", "VENDOR")):
+    if supplier and not buyer:
         return "supplier"
     return "unknown"
+
+
+def _contextual_party_role(lines: list[str], line_index: int) -> tuple[str, float, str, str]:
+    """Resolve only labels printed on or before an identifier.
+
+    A heading starting the next block must not own the preceding SIRET.  This
+    matters for layouts where the customer's legal identifier is immediately
+    followed by ``INFOS FOURNISSEUR``.
+    """
+    line = " ".join(lines[line_index].split())
+    direct = _party_role(line)
+    context_lines = lines[max(0, line_index - 5):line_index + 1]
+    context = " ".join(" ".join(item.split()) for item in context_lines if item.strip())
+    if direct != "unknown":
+        return direct, 0.995, "explicit_role_on_identifier_line_v1", context
+    preceding = _party_role(" ".join(context_lines[:-1]))
+    if preceding != "unknown":
+        return preceding, 0.94, "preceding_role_heading_v1", context
+    return "unknown", 0.0, "unresolved", context
+
+
+_PARTY_NAME_STOPWORDS = {
+    "SAS", "SASU", "SARL", "SA", "EURL", "GMBH", "LTD", "LLC",
+    "SOCIETE", "COMPANY", "FRANCE", "CEDEX", "SERVICE", "AGENCE",
+}
+
+
+def _party_name_match_score(name: Any, context: str) -> float:
+    name_folded = re.sub(r"[^A-Z0-9]+", " ", _fold(name)).strip()
+    context_folded = re.sub(r"[^A-Z0-9]+", " ", _fold(context)).strip()
+    if len(name_folded) < 4 or not context_folded:
+        return 0.0
+    if re.search(rf"(?<![A-Z0-9]){re.escape(name_folded)}(?![A-Z0-9])", context_folded):
+        return 0.99
+    tokens = {
+        token for token in name_folded.split()
+        if len(token) >= 4 and token not in _PARTY_NAME_STOPWORDS
+    }
+    if not tokens:
+        return 0.0
+    context_tokens = set(context_folded.split())
+    overlap = tokens.intersection(context_tokens)
+    if len(tokens) == 1 and overlap:
+        return 0.975
+    if len(overlap) >= 2 and len(overlap) / len(tokens) >= 0.6:
+        return 0.97
+    return 0.0
+
+
+def _reconcile_registration_role(
+    registration: dict[str, Any],
+    purchase_order: dict[str, Any],
+    is_purchase_order: bool,
+) -> None:
+    assignment = registration.get("role_assignment") or {}
+    role = str(registration.get("role") or "unknown")
+    candidates: list[tuple[float, int, str, str, str]] = []
+    if role in {"buyer", "supplier"}:
+        method = str(assignment.get("method") or "explicit_role_context_v1")
+        score = float(registration.get("role_confidence") or 0.0)
+        if role == "supplier" and method == "structured_party_registration_v1":
+            # The core party parser can duplicate the customer's legal entity
+            # into supplier on dense purchase-order headers. A bare structured
+            # placement is therefore weaker than the customer-issuer prior;
+            # an explicit supplier heading remains authoritative below.
+            score = min(score, 0.89)
+        candidates.append((
+            score,
+            1,
+            role,
+            str(registration.get("party_role") or role),
+            method,
+        ))
+
+    context = str(
+        (registration.get("evidence") or {}).get("role_context")
+        or (registration.get("evidence") or {}).get("source_text")
+        or ""
+    )
+    for party_role in ("buyer", "bill_to", "ship_to", "supplier"):
+        party = purchase_order.get(party_role)
+        if not isinstance(party, dict):
+            continue
+        business_role = "supplier" if party_role == "supplier" else "buyer"
+        names = (party.get("legal_name"), party.get("name"))
+        score = max((_party_name_match_score(name, context) for name in names), default=0.0)
+        if score:
+            if business_role == "supplier":
+                # An unlabelled legal footer normally belongs to the customer
+                # issuing the purchase order. Supplier identity alone is kept
+                # as supporting evidence but must not overrule that prior.
+                score = min(score, 0.89)
+            priority = 3 if business_role == "buyer" else 2
+            candidates.append((score, priority, business_role, party_role, "party_name_context_match_v1"))
+
+    if is_purchase_order:
+        # A purchase order is normally issued by the customer. An unqualified
+        # SIREN/SIRET in its header or legal footer therefore belongs to the
+        # buyer unless explicit or identity-backed supplier evidence is stronger.
+        candidates.append((0.90, 0, "buyer", "buyer", "purchase_order_issuer_default_v1"))
+
+    if not candidates:
+        registration["role"] = "unknown"
+        registration["role_confidence"] = 0.0
+        registration["role_assignment"] = {"method": "unresolved"}
+        return
+
+    score, _, resolved_role, party_role, method = max(candidates)
+    registration["role"] = resolved_role
+    registration["party_role"] = party_role
+    registration["role_confidence"] = score
+    registration["role_assignment"] = {
+        "method": method,
+        "party_role": party_role,
+        "inferred": method == "purchase_order_issuer_default_v1",
+        "qualification": (
+            "Unqualified French registration on a purchase order is attributed "
+            "to the customer issuer unless stronger supplier evidence exists."
+            if method == "purchase_order_issuer_default_v1"
+            else "Role supported by explicit context or party identity agreement."
+        ),
+    }
 
 
 def _request_for_quotation_reference(line: str) -> str | None:
@@ -201,6 +331,15 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
         or document.get("detected_document_type")
         or document.get("document_type")
     )
+    business = payload.get("business_extractions") or {}
+    purchase_order = business.get("purchase_order")
+    if not isinstance(purchase_order, dict):
+        purchase_order = business.get("purchase_order_with_terms")
+    if not isinstance(purchase_order, dict):
+        purchase_order = {}
+    is_purchase_order = document_type in {
+        "purchase_order", "purchase_order_with_terms", "purchase_order_bundle",
+    } or bool(purchase_order)
 
     page_texts = _page_texts(payload)
     for page_number, page_text in page_texts:
@@ -209,7 +348,6 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
             line = " ".join(raw_line.split())
             if not line:
                 continue
-            context = " ".join(lines[max(0, line_index - 1):line_index + 2])
             folded = _fold(line)
             labelled = any(
                 marker in folded
@@ -222,18 +360,23 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
                 if len(number) != expected_length or not _valid_french_registration(number):
                     continue
                 siren = number[:9]
-                role = _party_role(context)
+                role, role_confidence, role_method, role_context = _contextual_party_role(
+                    lines, line_index
+                )
                 candidate = {
                     "registration_type": registration_type.lower(),
                     "registration_number": number,
                     "siren": siren,
                     "siret": number if registration_type == "SIRET" else None,
                     "role": role,
+                    "role_confidence": role_confidence,
+                    "role_assignment": {"method": role_method},
                     "confidence": 0.99,
                     "validation_status": "CHECKSUM_VALID",
                     "evidence": {
                         "page": page_number,
                         "source_text": line,
+                        "role_context": role_context,
                         "extraction_method": "explicit_french_registration_checksum_v1",
                     },
                 }
@@ -251,17 +394,22 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
                 valid = _valid_french_vat(value)
                 if not labelled and not valid:
                     continue
-                role = _party_role(context)
+                role, role_confidence, role_method, role_context = _contextual_party_role(
+                    lines, line_index
+                )
                 candidate = {
                     "type": "vat",
                     "vat_number": value,
                     "country_code": "FR",
                     "role": role,
+                    "role_confidence": role_confidence,
+                    "role_assignment": {"method": role_method},
                     "confidence": 0.995 if valid and labelled else (0.97 if valid else 0.86),
                     "validation_status": "CHECKSUM_VALID" if valid else "LABEL_SUPPORTED",
                     "evidence": {
                         "page": page_number,
                         "source_text": line,
+                        "role_context": role_context,
                         "extraction_method": "generic_vat_regex_checksum_v1",
                     },
                     "warnings": (["ocr_characters_normalized"] if compact != corrected else [])
@@ -333,12 +481,6 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
     # and number across visual rows.  Accept that structured value only from a
     # resolved buyer/supplier role and only after both the SIREN and the full
     # SIRET (when present) pass their checksums.
-    business = payload.get("business_extractions") or {}
-    purchase_order = business.get("purchase_order")
-    if not isinstance(purchase_order, dict):
-        purchase_order = business.get("purchase_order_with_terms")
-    if not isinstance(purchase_order, dict):
-        purchase_order = {}
     if isinstance(purchase_order, dict):
         for role in ("buyer", "supplier"):
             party = purchase_order.get(role)
@@ -356,6 +498,9 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
                 "siren": siren,
                 "siret": number if registration_type == "SIRET" else None,
                 "role": role,
+                "party_role": role,
+                "role_confidence": 0.995 if role == "buyer" else 0.89,
+                "role_assignment": {"method": "structured_party_registration_v1"},
                 "confidence": 0.98,
                 "validation_status": "CHECKSUM_VALID",
                 "evidence": {
@@ -364,12 +509,25 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
                 },
             }
             existing_registration = registrations_by_siren.get(siren)
-            if (
-                existing_registration is None
-                or (candidate.get("siret") and not existing_registration.get("siret"))
-                or float(candidate["confidence"]) > float(existing_registration.get("confidence") or 0)
-            ):
+            if existing_registration is None:
                 registrations_by_siren[siren] = candidate
+            else:
+                if candidate.get("siret") and not existing_registration.get("siret"):
+                    existing_registration["siret"] = candidate["siret"]
+                    existing_registration["registration_number"] = candidate["registration_number"]
+                    existing_registration["registration_type"] = "siret"
+                if (
+                    existing_registration.get("role") == "unknown"
+                    or float(candidate["role_confidence"])
+                    > float(existing_registration.get("role_confidence") or 0)
+                ):
+                    existing_registration["role"] = role
+                    existing_registration["party_role"] = role
+                    existing_registration["role_confidence"] = candidate["role_confidence"]
+                    existing_registration["role_assignment"] = candidate["role_assignment"]
+
+    for registration in registrations_by_siren.values():
+        _reconcile_registration_role(registration, purchase_order, is_purchase_order)
 
     # A valid, explicitly labelled SIREN/SIRET can deterministically corroborate
     # or derive the French VAT number. Derived values remain clearly identified as
@@ -386,8 +544,15 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
             existing["confidence"] = max(float(existing.get("confidence") or 0), 0.998)
             existing["validation_status"] = "CHECKSUM_AND_REGISTRATION_MATCH"
             existing["supporting_evidence"] = support
-            if existing.get("role") == "unknown" and registration.get("role") != "unknown":
+            if (
+                existing.get("role") == "unknown"
+                or float(registration.get("role_confidence") or 0)
+                > float(existing.get("role_confidence") or 0)
+            ):
                 existing["role"] = registration["role"]
+                existing["party_role"] = registration.get("party_role")
+                existing["role_confidence"] = registration.get("role_confidence")
+                existing["role_assignment"] = registration.get("role_assignment")
             continue
         derivation_confidence = min(0.995, float(registration.get("confidence") or 0.0))
         tax_by_value[value] = {
@@ -395,6 +560,9 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
             "vat_number": value,
             "country_code": "FR",
             "role": registration["role"],
+            "party_role": registration.get("party_role"),
+            "role_confidence": registration.get("role_confidence"),
+            "role_assignment": registration.get("role_assignment"),
             "siren": siren,
             "siret": registration.get("siret"),
             "registration_number": registration["registration_number"],
@@ -412,7 +580,14 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
                 **support,
                 "extraction_method": "vat_derived_from_valid_french_registration_v1",
             },
-            "warnings": ["vat_number_derived_from_registration_identifier_not_printed"],
+            "warnings": [
+                "vat_number_derived_from_registration_identifier_not_printed",
+                *(
+                    ["vat_role_inferred_as_customer_purchase_order_issuer"]
+                    if (registration.get("role_assignment") or {}).get("inferred")
+                    else []
+                ),
+            ],
         }
 
     if tax_by_value:
@@ -438,10 +613,14 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
                 role = item.get("role")
                 if role not in {"buyer", "supplier"}:
                     continue
-                party = purchase_order.get(role)
+                party_role = item.get("party_role") or role
+                party = purchase_order.get(party_role)
                 if not isinstance(party, dict):
                     continue
-                if not party.get("vat_number"):
+                current_vat = re.sub(
+                    r"[^A-Z0-9]", "", str(party.get("vat_number") or "").upper()
+                )
+                if not _valid_french_vat(current_vat):
                     party["vat_number"] = item["vat_number"]
                 registration = item.get("siret") or item.get("siren")
                 if registration and not party.get("company_registration_number"):
