@@ -49,7 +49,7 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "127.0.0.1:8080:80"
+      - "127.0.0.1:${JIN_WEB_PORT:-8080}:80"
     networks:
       - default
       - inference

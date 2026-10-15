@@ -1,0 +1,9 @@
+services:
+  api:
+    networks:
+      - inference
+      - jin-private
+
+networks:
+  jin-private:
+    external: true
