@@ -1,5 +1,14 @@
 # Changelog
 
+## 5.17.0-financial-role-guards
+
+- Interpret source-backed French unit prices with four to six decimal places as decimals instead of thousands and recompute only amounts that were explicitly derived by JIN.
+- Restore an explicit purchase-order header date when it was incorrectly replaced by the requested delivery date.
+- Resolve the purchase-order issuer as buyer and the centred vendor addressee as supplier when explicit billing layout and an unusable supplier candidate independently corroborate the swap.
+- Prevent a product reference from being exposed as an internal order number and reduce confidence on arithmetic-derived lines that still fail document-total reconciliation.
+- Preserve clean source-only delivery complements such as site names during geometry reconciliation while rejecting product, legal, postal and price fragments.
+- Retain multiple offer references separated by a slash after one explicit label.
+
 ## 5.16.9-requested-delivery-dates
 
 - Extract explicitly labelled requested delivery dates, including French desired, requested and estimated variants and `à livrer le` wording, without confusing an earlier order date on the same row.

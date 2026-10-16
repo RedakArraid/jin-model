@@ -1195,6 +1195,52 @@ class WeakFieldReconciliationTests(unittest.TestCase):
         )
         self.assertEqual(selected["department"], "EX.SPBI")
 
+    def test_clean_source_site_complement_survives_geometry_promotion(self):
+        payload = base_payload()
+        existing = address_block(
+            "ship_to", "CCL MONTAUBAN CHAUFFAGE CCL MONTAUBAN CHAUFFAGE",
+            None, "RUE VOLTAIRE", "82000", "MONTAUBAN",
+        )
+        existing["address"]["address_complement"] = "ALBANORD"
+        payload["business_extractions"]["purchase_order"]["business_addresses"] = [existing]
+        candidate = ship_candidate(
+            "CCL MONTAUBAN CHAUFFAGE", None, "RUE", "VOLTAIRE",
+            "82000", "MONTAUBAN",
+        )
+        payload["weak_field_suggestions"]["address_candidates"] = [candidate]
+
+        out = reconcile_weak_fields(payload)
+        selected = next(
+            item for item in out["business_extractions"]["purchase_order"]["business_addresses"]
+            if item["role"] == "ship_to"
+        )
+
+        self.assertEqual(selected["address"]["address_complement"], "ALBANORD")
+
+    def test_product_fragment_is_not_preserved_as_delivery_complement(self):
+        payload = base_payload()
+        existing = address_block(
+            "ship_to", "CCL MONTAUBAN CHAUFFAGE CCL MONTAUBAN CHAUFFAGE",
+            None, "RUE VOLTAIRE", "82000", "MONTAUBAN",
+        )
+        existing["address"]["address_complement"] = (
+            "7716705092 CHAUDIERE PORT PRIX 620,0000"
+        )
+        payload["business_extractions"]["purchase_order"]["business_addresses"] = [existing]
+        candidate = ship_candidate(
+            "CCL MONTAUBAN CHAUFFAGE", None, "RUE", "VOLTAIRE",
+            "82000", "MONTAUBAN",
+        )
+        payload["weak_field_suggestions"]["address_candidates"] = [candidate]
+
+        out = reconcile_weak_fields(payload)
+        selected = next(
+            item for item in out["business_extractions"]["purchase_order"]["business_addresses"]
+            if item["role"] == "ship_to"
+        )
+
+        self.assertNotIn("address_complement", selected["address"])
+
 
 if __name__ == "__main__":
     unittest.main()

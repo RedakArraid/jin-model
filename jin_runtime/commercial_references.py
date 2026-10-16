@@ -26,7 +26,7 @@ _DEROGATION_LABEL_RE = re.compile(
     re.I,
 )
 _REFERENCE_RE = re.compile(r"(?=[A-Z0-9._/-]{3,50}\b)(?=[A-Z0-9._/-]*\d)[A-Z0-9][A-Z0-9._/-]{2,49}", re.I)
-_NEXT_REFERENCE_RE = re.compile(r"^\s*(?:,|;|\+|\bET\b|\bAND\b)\s*(?:N\s*(?:[°º]|O)?\s*)?", re.I)
+_NEXT_REFERENCE_RE = re.compile(r"^\s*(?:,|;|/|\+|\bET\b|\bAND\b)\s*(?:N\s*(?:[°º]|O)?\s*)?", re.I)
 _INVALID_VALUES = {
     "DEVIS", "OFFRE", "PRIX", "NUMERO", "REFERENCE", "REF", "PAGE",
     "EUR", "EURO", "HT", "TTC", "TVA",

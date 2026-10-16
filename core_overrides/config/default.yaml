@@ -467,6 +467,10 @@ layout:
   - quote
   dual_reference_receipt_date_recovery_v5169: true
   requested_delivery_date_resolution_v5169: true
+  native_long_decimal_line_repair_v5170: true
+  order_date_delivery_collision_repair_v5170: true
+  purchase_order_addressee_role_repair_v5170: true
+  unreconciled_derived_line_confidence_v5170: true
   strict_total_label_recovery: true
   strict_total_search_next_rows: 2
   strict_total_prefer_rightmost_value: true

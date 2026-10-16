@@ -5,6 +5,7 @@ import pytest
 
 from po_ocr.models import (
     AdditionalCharge,
+    Address,
     DocumentMeta,
     PageResult,
     PurchaseOrderHeader,
@@ -13,6 +14,7 @@ from po_ocr.models import (
     Evidence,
     ExtractedField,
     LineItem,
+    Party,
     Totals,
 )
 from po_ocr.config import load_config
@@ -40,11 +42,15 @@ from uda.business import (
     _normalize_labeled_party_code_v5166,
     _party_from_labeled_zone_v48,
     _repair_dimension_ocr_v5166,
+    _repair_native_long_decimal_line_prices_v5170,
+    _repair_order_date_delivery_collision_v5170,
+    _repair_purchase_order_party_roles_v5170,
     _repair_scan_currency_suffix_artifacts_v64,
     _repair_legal_footer_validation_v65,
     _reconcile_requested_delivery_dates_v5169,
     _separate_additional_charge_lines_v62,
     _sanitize_legal_footer_lines_v48,
+    _sanitize_internal_reference_v47,
     _sanitize_non_product_lines_v61,
     _price_then_quantity_table_items,
     _quantity_first_table_items,
@@ -52,6 +58,7 @@ from uda.business import (
     _semantic_text_table_items_v68,
     _two_row_erp_table_items,
     _strict_text_totals_v48,
+    _downgrade_unreconciled_derived_lines_v5170,
     enhance_purchase_order_with_native_structure,
 )
 
@@ -175,6 +182,161 @@ def test_requested_delivery_date_ignores_delivery_policy_prose_without_date():
 
     assert po.purchase_order.expected_delivery_date.value is None
     assert po.logistics.requested_delivery_date is None
+
+
+def test_long_native_decimal_price_repairs_inflated_price_and_derived_amount():
+    line = LineItem(
+        material_number="7716705092",
+        description="CHAUD.ACLEA BASNOX CGLM24-7XN",
+        quantity=8,
+        unit_price=6200000.0,
+        net_unit_price=6200000.0,
+        line_total=49600000.0,
+        line_net_amount=49600000.0,
+        raw_text="7716705092 CHAUD.ACLEA BASNOX CGLM24-7XN 8,000 PI 620,0000",
+        warnings=["Line total calculated from printed quantity and unit price; no printed line amount."],
+    )
+
+    repaired = _repair_native_long_decimal_line_prices_v5170(
+        [line], load_config(None)
+    )
+
+    assert repaired == 1
+    assert line.unit_price == 620.0
+    assert line.net_unit_price == 620.0
+    assert line.line_total == 4960.0
+    assert line.line_net_amount == 4960.0
+    assert "unit_price_native_long_decimal_repaired_v5170" in line.warnings
+
+
+def test_long_native_decimal_price_does_not_replace_a_distinct_printed_amount():
+    line = LineItem(
+        material_number="7716705092",
+        quantity=8,
+        unit_price=6200000.0,
+        net_unit_price=6200000.0,
+        line_total=4950.0,
+        line_net_amount=4950.0,
+        raw_text="7716705092 PRODUIT 8,000 PI 620,0000 4.950,00",
+    )
+
+    repaired = _repair_native_long_decimal_line_prices_v5170(
+        [line], load_config(None)
+    )
+
+    assert repaired == 1
+    assert line.unit_price == 620.0
+    assert line.line_total == 4950.0
+    assert line.line_net_amount == 4950.0
+
+
+def test_explicit_header_date_repairs_delivery_date_collision():
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    po.purchase_order.order_date = ExtractedField(value="2024-02-13")
+    po.purchase_order.expected_delivery_date = ExtractedField(value="2024-02-13")
+    po.logistics.requested_delivery_date = "2024-02-13"
+    page = _page([
+        (40, [("BON", 180, 210), ("DE", 214, 230), ("COMMANDE", 234, 300),
+              ("D'ACHAT", 304, 355)]),
+        (70, [("du", 210, 225), ("09/02/2024", 230, 290),
+              ("à", 295, 303), ("11:24:34", 308, 355)]),
+        (120, [("Date", 20, 45), ("de", 50, 60), ("livraison", 65, 115),
+               ("13/02/2024", 120, 180)]),
+    ])
+
+    _, repaired = _repair_order_date_delivery_collision_v5170(
+        po, [page], load_config(None)
+    )
+
+    assert repaired == 1
+    assert po.purchase_order.order_date.value == "2024-02-09"
+    assert po.purchase_order.expected_delivery_date.value == "2024-02-13"
+    assert po.purchase_order.order_date.evidence.extraction_method == (
+        "explicit_order_header_date_v5170"
+    )
+
+
+def test_purchase_order_addressee_is_supplier_and_explicit_bill_to_is_buyer():
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    po.buyer = Party(
+        name="LEBLANC E.L.M.", legal_name="LEBLANC E.L.M.",
+        address=Address(postal_code="93711", city="DRANCY CEDEX"),
+        vat_number="FR07716320619",
+    )
+    po.purchase_order.number = ExtractedField(value="04 - 9240202813")
+    po.supplier = Party(name="N° 04 - 9240202813 NORMALE")
+    po.bill_to = Party(
+        name="COMPTOIR COMMERCIAL DU LANGUEDOC",
+        legal_name="COMPTOIR COMMERCIAL DU LANGUEDOC",
+        address=Address(street="RUE VOLTAIRE", postal_code="82000", city="MONTAUBAN"),
+    )
+    page = _page([
+        (35, [("BON", 180, 210), ("DE", 214, 230), ("COMMANDE", 234, 300),
+              ("D'ACHAT", 304, 355)]),
+        (75, [("LEBLANC", 220, 270), ("E.L.M.", 275, 315)]),
+        (130, [("A", 20, 28), ("Facturer", 32, 80), ("à", 84, 90)]),
+        (145, [("COMPTOIR", 20, 80), ("COMMERCIAL", 85, 150),
+               ("DU", 155, 170), ("LANGUEDOC", 175, 240)]),
+    ])
+
+    _, repaired = _repair_purchase_order_party_roles_v5170(
+        po, [page], load_config(None)
+    )
+
+    assert repaired == 1
+    assert po.buyer.name == "COMPTOIR COMMERCIAL DU LANGUEDOC"
+    assert po.buyer.vat_number == "FR07716320619"
+    assert po.supplier.name == "LEBLANC E.L.M."
+    assert po.supplier.address.postal_code == "93711"
+    assert po.supplier.vat_number is None
+
+
+def test_unreconciled_derived_amount_is_not_left_high_confidence():
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    po.totals.total_before_tax = 4960.0
+    po.lines = [LineItem(
+        material_number="7716705092", quantity=8, unit_price=6200000.0,
+        line_total=49600000.0, confidence=0.97, validation_status="VALID",
+        warnings=["Line total calculated from printed quantity and unit price; no printed line amount."],
+    )]
+
+    _, downgraded = _downgrade_unreconciled_derived_lines_v5170(
+        po, load_config(None)
+    )
+
+    assert downgraded == 1
+    assert po.lines[0].confidence == 0.45
+    assert po.lines[0].validation_status == "REVIEW_REQUIRED"
+
+
+def test_internal_order_number_cannot_duplicate_a_line_article_reference():
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    po.purchase_order.internal_number = ExtractedField(
+        value="7716705092", normalized_value="7716705092", raw_value="7716705092",
+        final_confidence=0.98,
+    )
+    po.lines = [LineItem(material_number="7716705092")]
+
+    _sanitize_internal_reference_v47(po)
+
+    assert po.purchase_order.internal_number.value is None
+    assert po.purchase_order.internal_number.final_confidence == 0.0
 
 
 def test_standalone_delivery_label_keeps_centered_address_block_full_width():

@@ -80,6 +80,20 @@ class CommercialReferenceTests(unittest.TestCase):
             ["DV-100", "DV-200"],
         )
 
+    def test_slash_separated_references_after_one_offer_label_are_preserved(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{"page": 1, "text": "OFFRE DE PRIX 82H328 / SGA-2024-013"}],
+            "business_extractions": {"purchase_order": {"purchase_order": {}, "lines": []}},
+        }
+
+        po = enrich_commercial_references(payload)["business_extractions"]["purchase_order"]
+
+        self.assertEqual(
+            [item["number"] for item in po["quote_references"]],
+            ["82H328", "SGA-2024-013"],
+        )
+
     def test_abbreviated_derogation_label_is_supported(self):
         payload = {
             "pages": [{"page": 1, "text": "Dérog. DER-88"}],

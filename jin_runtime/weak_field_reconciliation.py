@@ -47,13 +47,22 @@ def _address(block: dict[str, Any]) -> dict[str, Any]:
 
 def _street(components: dict[str, Any]) -> str:
     explicit = components.get("street")
-    if explicit:
-        return _norm(explicit)
-    return _norm(" ".join(
+    folded = _norm(explicit) if explicit else _norm(" ".join(
         str(value)
         for value in (components.get("street_type"), components.get("street_name"))
         if value
     ))
+    tokens = folded.split()
+    if tokens:
+        tokens[0] = {
+            "AV": "AVENUE",
+            "BD": "BOULEVARD",
+            "RTE": "ROUTE",
+            "CHE": "CHEMIN",
+            "IMP": "IMPASSE",
+            "PL": "PLACE",
+        }.get(tokens[0], tokens[0])
+    return " ".join(tokens)
 
 
 def _city_tokens(value: Any) -> set[str]:
@@ -1027,6 +1036,29 @@ def _core_ship_is_suspicious(block: dict[str, Any]) -> bool:
     )
 
 
+def _safe_delivery_complement(value: Any) -> bool:
+    """Keep a concise site qualifier when clean geometry replaces an address.
+
+    Geometry reliably restores the postal skeleton but can omit a source-only
+    locality such as ``ALBANORD``.  Preserve that complement only when it is a
+    short, non-postal, non-product value; this deliberately excludes the legal,
+    commercial and line-item fragments that originally motivated promotion.
+    """
+    text = " ".join(str(value or "").split()).strip()
+    folded = _norm(text)
+    if not text or len(text) > 80:
+        return False
+    if re.search(r"(?<!\d)(?:0[1-9]|[1-8]\d|9[0-8])\d{3}(?!\d)", text):
+        return False
+    if re.search(r"\b\d{8,14}\b", text):
+        return False
+    return not any(marker in folded for marker in (
+        "CONDITIONS DE LIVRAISON", "CONDITIONS DE PAIEMENT", "N INTERNE",
+        "SIEGE SOCIAL", "ARTICLE", "POMPE", "CHAUDIERE", "BRULEUR",
+        "PRIX", "TOTAL", "PORT", "TVA", "SIREN", "SIRET", "IBAN",
+    ))
+
+
 def _ensure_order_container(
     payload: dict[str, Any],
     candidate: dict[str, Any],
@@ -1316,6 +1348,14 @@ def reconcile_weak_fields(payload: dict[str, Any]) -> dict[str, Any]:
                         and not _party_name_looks_like_address(existing_party)
                     ):
                         promoted["party_name"] = existing_party
+                    existing_complement = _address(existing_ship).get("address_complement")
+                    promoted_address = _address(promoted)
+                    if (
+                        existing_complement
+                        and not promoted_address.get("address_complement")
+                        and _safe_delivery_complement(existing_complement)
+                    ):
+                        promoted_address["address_complement"] = existing_complement
                     for key in ("department", "contact_name", "contact_phone", "contact_email"):
                         value = existing_ship.get(key)
                         if (

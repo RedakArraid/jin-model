@@ -2793,6 +2793,357 @@ def _parse_native_decimal(value):
     return parse_number(raw)
 
 
+def _repair_native_long_decimal_line_prices_v5170(lines, config: dict | None = None):
+    """Repair French unit prices whose four decimals were read as thousands.
+
+    The generic normalizer deliberately treats a lone comma followed by more
+    than three digits as a grouping separator.  That is useful for prose, but
+    procurement tables commonly print unit prices such as ``620,0000`` or
+    ``95,9775``.  Apply the native-decimal interpretation only when the exact
+    source token reproduces the already extracted (inflated) unit price.  This
+    keeps the repair source-backed and avoids changing ordinary quantities or
+    article references.
+    """
+    from po_ocr.normalize import parse_number
+    import re
+
+    layout = (config or {}).get("layout", {}) if isinstance(config, dict) else {}
+    if not layout.get("native_long_decimal_line_repair_v5170", True):
+        return 0
+
+    long_decimal = re.compile(
+        r"(?<![A-Za-z0-9])[-+]?\d+(?:[ .']\d{3})*,\d{4,6}(?![A-Za-z0-9])"
+    )
+    numeric_token = re.compile(
+        r"(?<![A-Za-z0-9])[-+]?\d+(?:[ .']\d{3})*(?:[,.]\d+)?(?![A-Za-z0-9])"
+    )
+
+    def same_number(left, right):
+        if left is None or right is None:
+            return False
+        try:
+            left, right = float(left), float(right)
+        except (TypeError, ValueError):
+            return False
+        return abs(left - right) <= max(0.01, abs(right) * 0.000001)
+
+    repaired = 0
+    for line in lines or []:
+        raw_text = str(getattr(line, "raw_text", "") or "")
+        current_price = getattr(line, "net_unit_price", None)
+        if current_price is None:
+            current_price = getattr(line, "unit_price", None)
+        if current_price is None or not raw_text:
+            continue
+
+        selected = None
+        for match in long_decimal.finditer(raw_text):
+            token = match.group(0).strip()
+            generic_value = parse_number(token)
+            native_value = _parse_native_decimal(token)
+            if not same_number(current_price, generic_value):
+                continue
+            if native_value is None or same_number(native_value, generic_value):
+                continue
+            ratio = abs(float(generic_value)) / max(abs(float(native_value)), 0.000001)
+            if ratio < 1000:
+                continue
+            selected = (token, float(generic_value), float(native_value))
+            break
+        if not selected:
+            continue
+
+        token, old_price, new_price = selected
+        old_total = getattr(line, "line_total", None)
+        old_net_amount = getattr(line, "line_net_amount", None)
+        for field in ("unit_price", "net_unit_price", "gross_unit_price"):
+            value = getattr(line, field, None)
+            if same_number(value, old_price):
+                setattr(line, field, new_price)
+
+        quantity = getattr(line, "quantity", None)
+        old_calculated = None
+        new_calculated = None
+        if quantity is not None:
+            try:
+                old_calculated = float(quantity) * old_price
+                new_calculated = float(quantity) * new_price
+            except (TypeError, ValueError):
+                pass
+
+        # A value printed elsewhere on the row must not be overwritten merely
+        # because it disagrees with quantity x price.  Recompute only amounts
+        # that were derived by the parser and have no distinct source token.
+        printed_old_total = any(
+            same_number(parse_number(candidate.group(0).strip()), old_total)
+            for candidate in numeric_token.finditer(raw_text)
+            if candidate.group(0).strip() != token
+        )
+        derived_warning = any(
+            "calculated from printed quantity and unit price" in str(warning).casefold()
+            or "no printed line amount" in str(warning).casefold()
+            for warning in (getattr(line, "warnings", None) or [])
+        )
+        if (
+            new_calculated is not None
+            and same_number(old_total, old_calculated)
+            and (derived_warning or not printed_old_total)
+        ):
+            line.line_total = new_calculated
+        if (
+            new_calculated is not None
+            and same_number(old_net_amount, old_calculated)
+            and (derived_warning or not printed_old_total)
+        ):
+            line.line_net_amount = new_calculated
+
+        warning = "unit_price_native_long_decimal_repaired_v5170"
+        if warning not in line.warnings:
+            line.warnings.append(warning)
+        repaired += 1
+    return repaired
+
+
+def _repair_order_date_delivery_collision_v5170(po, pages, config: dict):
+    """Restore an explicit header date when delivery date won order-date scoring."""
+    from po_ocr.extract import all_rows
+    from po_ocr.normalize import parse_date
+    import re
+
+    if not config.get("layout", {}).get(
+        "order_date_delivery_collision_repair_v5170", True
+    ):
+        return po, 0
+    current_field = po.purchase_order.order_date
+    current = parse_date(str(current_field.value or current_field.raw_value or ""))
+    delivery_field = po.purchase_order.expected_delivery_date
+    delivery = parse_date(str(
+        delivery_field.value
+        or getattr(po.logistics, "requested_delivery_date", None)
+        or ""
+    ))
+    if not current or not delivery or current != delivery:
+        return po, 0
+
+    date_token = r"(?:[0-3]?\d[/.-](?:0?\d|1[0-2])[/.-](?:\d{2}|\d{4})|(?:19|20)\d{2}[/.-](?:0?\d|1[0-2])[/.-][0-3]?\d)"
+    explicit_date = re.compile(
+        rf"\b(?:date\s+(?:de\s+)?commande|order\s+date|date\s+du\s+document)\s*[:.\-]?\s*(?P<date>{date_token})\b",
+        re.I,
+    )
+    dated_header = re.compile(
+        rf"\bdu\s+(?P<date>{date_token})\s+a\s+\d{{1,2}}(?:[:h]\d{{2}})?\b",
+        re.I,
+    )
+    candidates = []
+    for page in pages or []:
+        rows = all_rows([page], y_factor=0.50)
+        page_has_order_title = any(
+            _row_center_safe(row) <= page.height * 0.25
+            and re.search(r"\b(?:bon\s+de\s+commande(?:\s+d[' ]?achat)?|purchase\s+order)\b", _fold(row.text))
+            for row in rows
+        )
+        for row in rows:
+            if _row_center_safe(row) > page.height * 0.32:
+                break
+            folded = _fold(row.text)
+            if "livraison" in folded or "delivery" in folded:
+                continue
+            match = explicit_date.search(folded)
+            if not match and page_has_order_title:
+                match = dated_header.search(folded)
+            if not match:
+                continue
+            parsed = parse_date(match.group("date"))
+            if parsed and parsed != delivery:
+                candidates.append((parsed, match.group("date"), page.page, row.bbox))
+
+    values = {candidate[0] for candidate in candidates}
+    if len(values) != 1:
+        return po, 0
+    _, raw, page_number, bbox = candidates[0]
+    po.purchase_order.order_date = _make_spatial_field(
+        raw,
+        page_number,
+        bbox,
+        kind="date",
+        confidence=0.995,
+        method="explicit_order_header_date_v5170",
+    )
+    po.purchase_order.order_date.warnings.append(
+        "delivery_date_collision_repaired_v5170"
+    )
+    return po, 1
+
+
+def _repair_purchase_order_party_roles_v5170(po, pages, config: dict):
+    """Resolve a vendor addressee incorrectly stored as the purchasing buyer.
+
+    On purchase orders addressed to a vendor, the vendor is often centred below
+    the order title while the issuer appears in an explicit ``A facturer a``
+    block.  Core row ordering can call that addressee the buyer.  Swap roles
+    only when all three independent signals agree: purchase-order title,
+    explicit billing block, and an unusable/missing supplier role.
+    """
+    import re
+
+    if not config.get("layout", {}).get(
+        "purchase_order_addressee_role_repair_v5170", True
+    ):
+        return po, 0
+    if not pages or not po.bill_to or not po.bill_to.name:
+        return po, 0
+    buyer_name = str(po.buyer.name or "").strip()
+    bill_name = str(po.bill_to.name or "").strip()
+    if (
+        _company_name_quality_v48(buyer_name) < 0.62
+        or _company_name_quality_v48(bill_name) < 0.62
+        or _fold(buyer_name) == _fold(bill_name)
+    ):
+        return po, 0
+    supplier_name = str(po.supplier.name or "").strip()
+    order_number = str(po.purchase_order.number.value or "").strip()
+    compact_supplier = re.sub(r"[^a-z0-9]+", "", _fold(supplier_name))
+    compact_order = re.sub(r"[^a-z0-9]+", "", _fold(order_number))
+    supplier_is_order_metadata = bool(
+        len(compact_order) >= 5 and compact_order in compact_supplier
+    )
+    supplier_bad = (
+        _bad_party_name(po.supplier.name)
+        or _fold(po.supplier.name) in {
+            "date", "code", "client", "fournisseur", "supplier", "vendor"
+        }
+        or supplier_is_order_metadata
+        or _company_name_quality_v48(po.supplier.name) < 0.35
+    )
+    if not supplier_bad:
+        return po, 0
+
+    page_text = " ".join(_fold(page.text) for page in pages[:1])
+    if not re.search(
+        r"\b(?:bon\s+de\s+commande(?:\s+d[' ]?achat)?|purchase\s+order)\b",
+        page_text,
+    ):
+        return po, 0
+    if not re.search(r"\b(?:a\s+facturer\s+a|facture\s+a|bill\s+to)\b", page_text):
+        return po, 0
+
+    addressee_in_header = False
+    from po_ocr.extract import all_rows
+    for page in pages[:1]:
+        for row in all_rows([page], y_factor=0.50):
+            if _row_center_safe(row) > page.height * 0.34:
+                break
+            folded = _fold(row.text)
+            if _fold(buyer_name) in folded and not any(
+                marker in folded for marker in (
+                    "a facturer", "a livrer", "commande par", "bill to", "ship to"
+                )
+            ):
+                addressee_in_header = True
+                break
+    if not addressee_in_header:
+        return po, 0
+
+    former_buyer = po.buyer.model_copy(deep=True)
+    new_buyer = po.bill_to.model_copy(deep=True)
+    new_supplier = former_buyer.model_copy(deep=True)
+
+    # Registrations already classified as buyer belong to the issuer, even if
+    # the party-name parser attached them to the centred vendor addressee.
+    for field in ("vat_number", "company_registration_number"):
+        value = getattr(former_buyer, field, None)
+        if value and not getattr(new_buyer, field, None):
+            setattr(new_buyer, field, value)
+        setattr(new_supplier, field, None)
+
+    # Channels printed under "Commande par" describe the purchasing contact.
+    # Transfer only values explicitly present in that source block.
+    ordered_blob = ""
+    for page in pages[:1]:
+        rows = all_rows([page], y_factor=0.50)
+        for index, row in enumerate(rows):
+            if re.search(r"\bcommande\s+par\b|\bordered\s+by\b", _fold(row.text)):
+                following = [row.text]
+                anchor = _row_center_safe(row)
+                for candidate in rows[index + 1:]:
+                    if _row_center_safe(candidate) - anchor > page.height * 0.15:
+                        break
+                    if re.search(r"\b(?:a\s+livrer|ship\s+to)\b", _fold(candidate.text)):
+                        break
+                    following.append(candidate.text)
+                ordered_blob = " ".join(following)
+                break
+    ordered_digits = re.sub(r"\D", "", ordered_blob)
+    for field in ("phone", "fax"):
+        value = getattr(former_buyer, field, None)
+        digits = re.sub(r"\D", "", str(value or ""))
+        if value and digits and digits in ordered_digits:
+            if not getattr(new_buyer, field, None):
+                setattr(new_buyer, field, value)
+            if hasattr(new_buyer.contact, field) and not getattr(new_buyer.contact, field, None):
+                setattr(new_buyer.contact, field, value)
+            setattr(new_supplier, field, None)
+            if hasattr(new_supplier.contact, field):
+                setattr(new_supplier.contact, field, None)
+    for field in ("email",):
+        value = getattr(former_buyer, field, None)
+        if value and str(value).casefold() in ordered_blob.casefold():
+            if not getattr(new_buyer, field, None):
+                setattr(new_buyer, field, value)
+            if not new_buyer.contact.email:
+                new_buyer.contact.email = value
+            new_supplier.email = None
+            new_supplier.contact.email = None
+
+    po.buyer = new_buyer
+    po.supplier = new_supplier
+    po = _sanitize_party_addresses_v48(po, config)
+    return po, 1
+
+
+def _downgrade_unreconciled_derived_lines_v5170(po, config: dict):
+    """Do not leave arithmetic-derived rows highly trusted after a total failure."""
+    if not config.get("layout", {}).get(
+        "unreconciled_derived_line_confidence_v5170", True
+    ):
+        return po, 0
+    target = next((
+        value for value in (
+            po.totals.total_before_tax,
+            po.totals.total_net,
+            po.totals.subtotal,
+        ) if value not in (None, 0)
+    ), None)
+    amounts = [line.line_total for line in po.lines if line.line_total is not None]
+    if target in (None, 0) or not amounts:
+        return po, 0
+    document_sum = sum(float(value) for value in amounts) + sum(
+        float(charge.amount or 0.0) for charge in po.additional_charges
+    )
+    target = float(target)
+    relative_error = abs(document_sum - target) / max(abs(target), 0.01)
+    if relative_error < 0.25:
+        return po, 0
+    ratio = max(abs(document_sum) / max(abs(target), 0.01), abs(target) / max(abs(document_sum), 0.01))
+    cap = 0.45 if ratio >= 10 else 0.72
+    count = 0
+    for line in po.lines:
+        derived = any(
+            "calculated from printed quantity and unit price" in str(warning).casefold()
+            or "no printed line amount" in str(warning).casefold()
+            for warning in (line.warnings or [])
+        )
+        if not derived:
+            continue
+        line.confidence = min(float(line.confidence or 0.0), cap)
+        line.validation_status = "REVIEW_REQUIRED"
+        warning = "derived_line_total_does_not_reconcile_with_document_total"
+        if warning not in line.warnings:
+            line.warnings.append(warning)
+        count += 1
+    return po, count
+
+
 def _explicit_charge_kind_v62(text: str | None) -> str | None:
     """Classify rows that are explicitly non-product commercial charges."""
     import re
@@ -5387,7 +5738,22 @@ def _sanitize_double_counted_shipping_v47(po, config: dict):
 def _sanitize_internal_reference_v47(po):
     import re
     val=po.purchase_order.internal_number.value
-    if val and (re.fullmatch(r"\\d{5}\\s+[A-Za-zÀ-ÿ .'-]+",str(val).strip()) or (po.supplier.address.postal_code and str(po.supplier.address.postal_code) in str(val))):
+    line_references={
+        str(value).strip()
+        for line in getattr(po,"lines",[]) or []
+        for value in (
+            getattr(line,"material_number",None),
+            getattr(line,"article_number",None),
+            getattr(line,"supplier_material_number",None),
+            getattr(line,"customer_material_number",None),
+        )
+        if value not in (None,"")
+    }
+    if val and (
+        re.fullmatch(r"\\d{5}\\s+[A-Za-zÀ-ÿ .'-]+",str(val).strip())
+        or (po.supplier.address.postal_code and str(po.supplier.address.postal_code) in str(val))
+        or str(val).strip() in line_references
+    ):
         po.purchase_order.internal_number.value=None;po.purchase_order.internal_number.normalized_value=None;po.purchase_order.internal_number.raw_value=None;po.purchase_order.internal_number.final_confidence=0.0
     return po
 
@@ -6242,6 +6608,11 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
             "candidate_lines":len(material_numeric_lines),
             "current_supported_lines":current_pattern_support,
         }
+    native_decimal_repairs={}
+    for name,candidate_lines,_,_ in hypotheses:
+        repairs=_repair_native_long_decimal_line_prices_v5170(candidate_lines,config)
+        if repairs:
+            native_decimal_repairs[name]=repairs
     max_hypothesis_lines=max((len(lines) for _,lines,_,_ in hypotheses),default=1)
     total_target=next((
         value for value in (
@@ -6270,6 +6641,7 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
         "total_reconciliation":{name:result[2] for result,name,_,_ in evaluated},
         "candidate_line_coverage":{name:result[3] for result,name,_,_ in evaluated},
         "suppressed_hypotheses":suppressed_hypotheses,
+        "native_long_decimal_repairs":native_decimal_repairs,
     }
     if ranked and ranked[0][2]:
         _,chosen_name,chosen_lines,chosen_charges=ranked[0]
@@ -6278,6 +6650,9 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     po.lines = _dedupe_line_items(po.lines)
     po = _enhance_requested_delivery_date_v5169(po, pages, config)
     po = _reconcile_requested_delivery_dates_v5169(po)
+    po,parser_diag["order_date_delivery_collision_repairs"]=(
+        _repair_order_date_delivery_collision_v5170(po,pages,config)
+    )
     po, parser_diag["reclassified_additional_charges"] = _separate_additional_charge_lines_v62(po, config)
     po, parser_diag["recovered_page_charges"] = _merge_explicit_page_charges_v63(
         po, pages, config
@@ -6322,6 +6697,9 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     po = _enhance_native_party_blocks_v47(po, tables, pages, config)
     po = _enhance_column_labeled_parties_v47(po, pages, config)
     po = _recover_roles_v48(po, tables, pages, config)
+    po,parser_diag["purchase_order_party_role_repairs"]=(
+        _repair_purchase_order_party_roles_v5170(po,pages,config)
+    )
     po = _sanitize_summary_totals_v46(po, pages, config, default_currency=default_currency)
     po = _enhance_strict_totals_v47(po, pages, config)
     po = _summary_table_totals_v48(po, tables, config, default_currency=default_currency)
@@ -6349,4 +6727,7 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
         if po.validation.status == "PASS":
             po.validation.status = "WARNING"
     po = score(po, {**config.get("confidence", {}), "manual_review_threshold": config.get("ocr", {}).get("manual_review_threshold", 0.80)})
+    po,parser_diag["unreconciled_derived_line_downgrades"]=(
+        _downgrade_unreconciled_derived_lines_v5170(po,config)
+    )
     return po
