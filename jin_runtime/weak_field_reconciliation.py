@@ -237,7 +237,15 @@ def _source_candidate_crosses_address_columns(candidate: dict[str, Any]) -> bool
         candidate.get("formatted_address_suggestion"),
     ) if value)
     folded = _norm(text)
-    folded = re.sub(r"\b(?:BP|CS|TSA)\s+\d{3,6}\b", " ", folded)
+    # ``_norm`` keeps dots as spaces, therefore ``B.P. 61178`` becomes
+    # ``B P 61178``.  Accept both compact and spaced routing initials before
+    # counting postcode-like numbers; a BP must never make a clean delivery
+    # candidate look as if it crossed two address columns.
+    folded = re.sub(
+        r"\b(?:B\s*P|C\s*S|T\s*S\s*A)\s+\d{3,6}\b",
+        " ",
+        folded,
+    )
     postals = set(re.findall(
         r"(?<!\d)(?:0[1-9]|[1-8]\d|9[0-8])\d{3}(?!\d)",
         folded,

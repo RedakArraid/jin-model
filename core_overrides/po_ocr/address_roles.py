@@ -152,7 +152,11 @@ def _find_evidence(pages: list[PageResult], party: Party, addr: Address) -> Evid
 
 
 ROLE_BLOCK_LABELS = {
-    "bill_to": ["adresse de facturation", "adresse facturation", "billing address", "bill to", "adresse facture", "facture a expedier", "facture a"],
+    "bill_to": [
+        "adresse de facturation", "adresse facturation", "billing address",
+        "bill to", "adresse facture", "facture a expedier", "facture a",
+        "facturer a l'adresse suivante", "merci de facturer a l'adresse suivante",
+    ],
     "ship_to": ["adresse de livraison", "adresse livraison", "adresse destinataire", "shipping address", "ship to", "a livrer", "à livrer", "livrer a", "livrer à", "livraison souhaitée à", "lieu de livraison"],
     "supplier": ["adresse de commande fournisseur", "supplier address", "vendor address", "adresse fournisseur"],
     "buyer": ["adresse acheteur", "buyer address", "ordering address", "adresse donneur d'ordre"],
@@ -162,8 +166,18 @@ _ROLE_STOP_TOKENS = (
     "code client", "n° accord", "no accord", "date de livraison", "mode de règlement", "mode de reglement",
     "communication -", "designation", "désignation", "quantite", "quantité", "prix unitaire", "montant ligne",
     "conditions generales", "conditions générales", "total brut", "total net", "page ",
-    "reliquat", "par vos soins", "livrer le",
+    "reliquat", "par vos soins", "livrer le", "mail /", "siege social",
 )
+
+
+def _is_role_stop_text(value: str) -> bool:
+    """Return true for real block boundaries, not inline page counters."""
+    low = _fold(value)
+    if re.match(r"^page\s+\d+(?:\s*/\s*\d+)?\s*$", low):
+        return True
+    return any(
+        token in low for token in _ROLE_STOP_TOKENS if token != "page "
+    )
 
 _DEPARTMENT_TOKENS = (
     "comptabilite", "comptabilité", "controle factures", "contrôle factures", "service ", "departement", "département",
@@ -197,7 +211,24 @@ def _looks_metadata_line(text: str) -> bool:
 def _choose_party_and_address(lines: list[str]):
     clean=[clean_text(x) for x in lines if clean_text(x)]
     clean=[x for x in clean if not _looks_metadata_line(x)]
+    clean=[x for x in clean if not re.fullmatch(r"[^A-Za-z0-9]+", ascii_fold(x))]
     if not clean: return None,None,[]
+    # Free-form instructions commonly keep the company and first street on
+    # the same baseline: ``SOCIETE CLIENT 21 avenue de Nimes``.  Split only at
+    # an explicit numbered thoroughfare, so the company stays a party and the
+    # postal parser receives a conventional street line.
+    inline = re.match(
+        r"^(?P<party>.+?)\s+(?P<street>\d{1,5}(?:\s*(?:BIS|TER|QUATER|[A-Z]))?\s+"
+        r"(?:RUE|AVENUE|AV\.?|ROUTE|RTE\.?|BOULEVARD|BD\.?|CHEMIN|IMPASSE|ALLEE|PLACE|QUAI)\b.*)$",
+        clean[0],
+        flags=re.I,
+    )
+    if inline:
+        clean = [
+            clean_text(inline.group("party")).strip(" :;-/"),
+            inline.group("street"),
+            *clean[1:],
+        ]
     first_addr=next((i for i,x in enumerate(clean) if _looks_address_line(x)), len(clean))
     pre=clean[:first_addr]
     addr=clean[first_addr:]
@@ -249,7 +280,26 @@ def _explicit_role_anchors(segments):
                 bbox = (min(w.bbox[0] for w in matched), min(w.bbox[1] for w in matched),
                         max(w.bbox[2] for w in matched), max(w.bbox[3] for w in matched))
                 anchors.append((role, {"text": alias, "bbox": bbox, "words": matched}))
-    return anchors
+    # Several aliases can match the same label (for example the full
+    # ``merci de facturer ...`` phrase and its shorter suffix).  Treating
+    # those as adjacent columns clips the inline company/address content.
+    # Keep the longest overlapping match for each role and baseline.
+    deduplicated = []
+    for role, anchor in sorted(
+        anchors,
+        key=lambda item: len(item[1]["words"]),
+        reverse=True,
+    ):
+        word_ids = {id(word) for word in anchor["words"]}
+        if any(
+            existing_role == role
+            and abs(existing["bbox"][1] - anchor["bbox"][1]) <= 3
+            and word_ids & {id(word) for word in existing["words"]}
+            for existing_role, existing in deduplicated
+        ):
+            continue
+        deduplicated.append((role, anchor))
+    return deduplicated
 
 
 _BLOCK_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
@@ -368,7 +418,7 @@ def recover_explicit_role_blocks(result, pages: list[PageResult]):
             stop_candidates=[]
             for seg2 in segments:
                 ystop=seg2["bbox"][1]; low2=_fold(seg2["text"])
-                if ystop > ay1 + 20 and any(tok in low2 for tok in _ROLE_STOP_TOKENS):
+                if ystop > ay1 + 20 and _is_role_stop_text(low2):
                     stop_candidates.append(ystop)
             for _, other in anchors:
                 ox1, oy1, ox2, _ = other["bbox"]
@@ -393,11 +443,19 @@ def recover_explicit_role_blocks(result, pages: list[PageResult]):
                     if sidebar:
                         if y1 < ay1 - 2 * label_height or x1 <= ax2 + 3: continue
                     elif y1 <= ay1 + 6:
-                        continue
+                        # Inline role leads are valid too: ``A facturer a :
+                        # CLIENT 21 rue ...``.  Keep only content clearly to
+                        # the right of the matched label on the same baseline.
+                        same_baseline_content = (
+                            abs(y1 - ay1) <= max(4.0, label_height * 0.6)
+                            and x1 >= ax2 + 2
+                        )
+                        if not same_baseline_content:
+                            continue
                     selected.append(word)
                 if not selected: continue
                 text=clean_text(" ".join(word.text for word in selected)); low=_fold(text)
-                if any(tok in low for tok in _ROLE_STOP_TOKENS):
+                if _is_role_stop_text(low):
                     continue
                 if re.match(r"^en\s+\d+\s+exemplaire", low):
                     continue

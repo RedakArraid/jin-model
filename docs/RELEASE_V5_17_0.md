@@ -28,3 +28,10 @@ following one explicit offer label are kept as separate commercial references.
 Regression coverage includes safe printed-amount preservation, date
 disambiguation, party-role repair, confidence downgrade, internal-reference
 collision, address-complement filtering and slash-separated offers.
+
+The final overlaid core suite passes 212 tests. Replaying the motivating C.C.L.
+order returns a `620.00 EUR` unit price, `4,960.00 EUR` line/document total,
+distinct order and requested-delivery dates, the customer as buyer, ELM as
+supplier, the `ALBANORD` delivery complement and both printed offer references.
+The clean output decision is `CHECKS_PASSED`; this remains a rule-based
+qualification rather than independent ground truth.

@@ -1,6 +1,11 @@
 # JIN runtime setup
 
-This runbook covers the two supported runtime modes.
+This runbook covers the two supported runtime modes for
+`5.17.0-financial-role-guards`. The full image combines the JIN core `5.1.0`,
+the versioned `core_overrides/` layer and the runtime/UI. The clean consumer
+contract is versioned independently as `jin-clean-extraction-v2`.
+
+See [README.md](README.md) for the documentation index and version map.
 
 ## 1. Prerequisites
 
@@ -117,10 +122,26 @@ Then:
 
 ```bash
 python scripts/verify_models.py
-docker compose up --build
+docker compose up -d --build
 ```
 
-The web/API stack is exposed through the existing full Docker Compose setup.
+The full stack exposes only the Nginx frontend on the host:
+
+- UI: `http://localhost:8080/`
+- health: `http://localhost:8080/api/health`
+- full extraction: `POST http://localhost:8080/api/extract`
+- clean extraction: `POST http://localhost:8080/api/extract?view=clean`
+- clean schema: `http://localhost:8080/api/schemas/jin-clean-extraction-v2`
+
+```bash
+curl http://localhost:8080/api/health
+curl -F "file=@commande.pdf" http://localhost:8080/api/extract
+curl -F "file=@commande.pdf" \
+  "http://localhost:8080/api/extract?view=clean"
+```
+
+The API container is intentionally reachable only through the internal Docker
+network in full mode.
 
 ## 5. Optional statistical address memory
 
@@ -168,8 +189,20 @@ python scripts/preflight.py --full
 
 Tests:
 
+Run the complete Python suite on Linux, WSL or in a container; the resource
+benchmark uses the Unix-only standard module `resource`.
+
 ```bash
 python -m unittest discover -s tests -v
+node --test tests/test_web_addresses.js tests/test_web_bbox.js tests/test_web_prices.js
+```
+
+Core regression tests must use the final overlaid image. Install the test-only
+runner in the current container, then execute the suite:
+
+```bash
+docker compose exec -T api pip install --no-cache-dir pytest
+docker compose exec -T api python -m pytest -q /app/tests
 ```
 
 ## 7. Runtime environment variables
@@ -187,6 +220,11 @@ JIN_FIELD_ROUTER_THRESHOLD=0.80
 JIN_FEEDBACK_TOKEN=<random-secret-outside-git>
 JIN_FEEDBACK_RETRAIN_ON_WRITE=0
 ```
+
+The feedback path differs by image layout and is already set by Compose:
+`/app/feedback/learning_feedback.jsonl` in standalone mode and
+`/app/training/feedback/learning_feedback.jsonl` in full mode. Do not copy an
+absolute container path from one mode to the other.
 
 Without `JIN_FEEDBACK_TOKEN`, `POST /feedback` is intentionally disabled. The
 endpoint accepts only the audited v1 contract documented in

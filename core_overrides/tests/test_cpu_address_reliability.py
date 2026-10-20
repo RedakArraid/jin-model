@@ -145,3 +145,63 @@ def test_recipient_label_followed_by_customer_code_is_not_a_numbered_street():
     assert address.street_type is None
     assert address.street_name is None
     assert address.raw_lines[0] == "DESTINATAIRE 9034 SOCIETE EXEMPLE"
+
+
+def test_routing_number_cannot_survive_as_an_inherited_postcode():
+    address, _, warnings = parse_address(Address(
+        line1="462 RUE DE L'INDUSTRIE -ZI-",
+        line2="B.P. 61178",
+        postal_code="61178",
+        city="B.P.",
+    ))
+    assert address.po_box == "BP 61178"
+    assert address.postal_code is None
+    assert address.city is None
+    assert "postal_code_removed_routing_conflict" in warnings
+
+
+def test_delivery_postcode_with_trailing_page_counter_is_kept():
+    page = _page([
+        (100, [(20, "Adresse Livraison:"), (350, "Cd Rglt: 030 J")]),
+        (116, [(20, "PROLIANS BA MONTPELLIER"), (350, "Tel: 0970818643")]),
+        (132, [(20, ".")]),
+        (148, [(20, "462 RUE DE L'INDUSTRIE -ZI-")]),
+        (164, [(20, "B.P. 61178"), (350, "VIREMENT")]),
+        (180, [(20, "MONTPELLIER CEDEX 01")]),
+        (196, [(20, "34009 MONTPELLIER CEDEX 01 PAGE 1")]),
+        (220, [(20, "DESIGNATION QUANTITES DELAI MONTANT")]),
+    ])
+    wrong = Party(
+        name="PROLIANS BA MONTPELLIER",
+        address=Address(
+            line1="462 RUE DE L'INDUSTRIE -ZI-",
+            line2="B.P. 61178",
+            postal_code="61178",
+            city="B.P.",
+        ),
+    )
+    parties = recover_explicit_role_blocks(_parties(ship_to=wrong), [page])
+    address, _, _ = parse_address(parties.ship_to.address)
+    assert parties.ship_to.name == "PROLIANS BA MONTPELLIER"
+    assert parties.ship_to.department is None
+    assert address.po_box == "BP 61178"
+    assert address.postal_code == "34009"
+    assert address.city == "MONTPELLIER"
+    assert address.cedex is True
+
+
+def test_inline_free_form_billing_instruction_splits_company_and_street():
+    page = _page([
+        (100, [(20, "Merci de facturer a l'adresse suivante : Prolians Baures 21 avenue de Nimes")]),
+        (116, [(20, "34000 Montpellier")]),
+        (132, [(20, "MAIL / factures@example.fr")]),
+        (148, [(20, "Siege social : BAURES - 21 Avenue de Nimes BP 31166 34009 MONTPELLIER CEDEX")]),
+    ])
+    parties = recover_explicit_role_blocks(_parties(), [page])
+    address, _, _ = parse_address(parties.bill_to.address)
+    assert parties.bill_to.name == "Prolians Baures"
+    assert address.house_number == "21"
+    assert address.street_type == "AVENUE"
+    assert address.postal_code == "34000"
+    assert address.city == "Montpellier"
+    assert address.po_box is None

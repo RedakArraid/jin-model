@@ -1,5 +1,10 @@
 # Corpus training report - 1,968 purchase-order PDFs
 
+> Historical snapshot: this report describes the first archive received as
+> Git LFS pointers. The later V5.4 campaign materialized and trained on the
+> 1,968 real PDFs; see [V5_4_REAL_PDF_TRAINING.md](V5_4_REAL_PDF_TRAINING.md).
+> The metrics below must not be read as the current runtime qualification.
+
 The supplied corpus contains 1,968 Git LFS pointer files: 1,572 in `test` and 396 in `validation`. The archive also contains `dataset_manifest.csv`, `metadata_classified.csv` and `document_type_audit.csv`, including subject/sender metadata and a 240-character text preview previously extracted from each document.
 
 Because the uploaded ZIP contains LFS pointers rather than PDF binaries, pixel/layout fine-tuning cannot be honestly run from this archive alone. The text-level statistical router can nevertheless be trained from the existing extracted evidence from the same document set.

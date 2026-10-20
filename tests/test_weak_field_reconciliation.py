@@ -74,6 +74,32 @@ def ship_candidate(party, house, street_type, street_name, postal=None, city=Non
 
 
 class WeakFieldReconciliationTests(unittest.TestCase):
+    def test_dotted_bp_number_does_not_veto_complete_delivery_geometry(self):
+        payload = base_payload()
+        candidate = ship_candidate(
+            "PROLIANS BA MONTPELLIER", "462", "RUE", "DE L'INDUSTRIE",
+            "34009", "MONTPELLIER",
+        )
+        candidate["components"].update({
+            "industrial_zone": "-ZI-",
+            "bp": "B.P. 61178",
+        })
+        candidate["formatted_address_suggestion"] = (
+            "462 RUE DE L'INDUSTRIE, -ZI-, B.P. 61178, "
+            "34009 MONTPELLIER CEDEX"
+        )
+        payload["weak_field_suggestions"]["address_candidates"] = [candidate]
+
+        out = reconcile_weak_fields(payload)
+        selected = [
+            item for item in out["business_extractions"]["purchase_order"]["business_addresses"]
+            if item["role"] == "ship_to"
+        ]
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["address"]["postal_code"], "34009")
+        self.assertEqual(selected[0]["address"]["bp"], "B.P. 61178")
+
     def test_kilometre_second_street_is_merged_into_one_delivery_address(self):
         payload = base_payload()
         first = ship_candidate(

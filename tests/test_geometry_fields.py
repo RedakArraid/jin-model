@@ -218,6 +218,21 @@ class GeometryFieldTests(unittest.TestCase):
         self.assertEqual(ship_to["components"]["postal_code"], "03100")
         self.assertEqual(ship_to["components"]["city"], "MONTLUCON")
 
+    def test_line_table_net_ht_header_is_not_a_document_total(self):
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((30, 180), "DESIGNATION QUANTITES DELAI MONTANT")
+        page.insert_text((30, 198), "CODE REFERENCE FOURNISSEUR Sem/Ann P.U NET H.T.")
+        page.insert_text((30, 220), "ARTICLE TEST 2,00 44/26")
+        page.insert_text((30, 238), "476609 7716780595 PIECE 63,82 127,64")
+        data = doc.tobytes()
+        doc.close()
+
+        lines, _ = _extract_first_page_lines(data, "fra+eng+deu")
+        fields = extract_geometry_suggestions(lines)["anchored_fields"]
+
+        self.assertNotIn("total_net", fields)
+
     def test_single_left_delivery_anchor_does_not_absorb_right_supplier_column(self):
         doc = fitz.open()
         page = doc.new_page(width=595, height=842)

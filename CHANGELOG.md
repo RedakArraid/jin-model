@@ -2,6 +2,8 @@
 
 ## 5.17.0-financial-role-guards
 
+- Align the living documentation with runtime 5.17.0, core 5.1.0 and clean schema v2, and distinguish these versions from the independently versioned routing artifacts.
+- Wire the conservative geometry date guards into field reconciliation so dates beside a strong order identifier or in a unique `VILLE LE ...` header are actually emitted.
 - Interpret source-backed French unit prices with four to six decimal places as decimals instead of thousands and recompute only amounts that were explicitly derived by JIN.
 - Restore an explicit purchase-order header date when it was incorrectly replaced by the requested delivery date.
 - Resolve the purchase-order issuer as buyer and the centred vendor addressee as supplier when explicit billing layout and an unusable supplier candidate independently corroborate the swap.
@@ -51,7 +53,7 @@
 
 ## 5.16.4-stacked-dual-reference-charges
 
-- Parse ERP tables that stack several logical order lines in one physical row while exposing separate customer `RÃ©fÃ©rence` and supplier `Ref Four` columns.
+- Parse ERP tables that stack several logical order lines in one physical row while exposing separate customer `Référence` and supplier `Ref Four` columns.
 - Keep the buyer's internal code in `customer_material_number` and promote the printed supplier reference to the primary material/article fields.
 - Align missing supplier-reference cells semantically so a freight row cannot shift the supplier reference onto the wrong product.
 - Remove document-routing preambles from stacked descriptions while preserving wrapped product descriptions.

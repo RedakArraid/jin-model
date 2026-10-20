@@ -357,6 +357,31 @@ class CleanOutputTests(unittest.TestCase):
         self.assertNotIn("department", parties["ship_to"])
         self.assertNotIn("department", parties["ship_to"].get("contact", {}))
 
+    def test_party_view_keeps_same_line_phone_and_fax_on_buyer(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{
+                "text": (
+                    "PROLIANS BAURES\n"
+                    "T\u00e9l.: 04 67 22 70 00 - Fax : 04 67 58 91 15\n"
+                    "COMMANDE FOURNISSEUR ELM LEBLANC\n"
+                ),
+            }],
+            "business_extractions": {"purchase_order": {
+                "buyer": {
+                    "name": "PROLIANS BAURES",
+                    "contact": {"phone": "04 67 22 70 00", "fax": "0000000000"},
+                },
+                "supplier": {
+                    "name": "ELM LEBLANC",
+                    "contact": {"phone": "09 70 81 86 43", "fax": "04 67 58 91 15"},
+                },
+            }},
+        }
+        parties = build_clean_output(payload)["order"]["parties"]
+        self.assertEqual(parties["buyer"]["contact"]["fax"], "04 67 58 91 15")
+        self.assertNotIn("fax", parties["supplier"]["contact"])
+
     def test_party_view_uses_bill_to_contact_when_buyer_role_was_swapped(self):
         payload = {
             "document": {"primary_document_type": "purchase_order"},
@@ -1827,6 +1852,55 @@ class CleanOutputTests(unittest.TestCase):
             {"formatted", "formatted_lines", "source_formatted"}
             & schema["$defs"]["address"]["properties"].keys()
         )
+
+    def test_billing_instruction_does_not_pollute_company_name(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{"text": (
+                "Merci de facturer Ã  l'adresse suivante : "
+                "Prolians Baures 21 avenue de Nimes\n34000 Montpellier"
+            )}],
+            "business_extractions": {"purchase_order": {
+                "buyer": {"name": "PROLIANS BAURÃˆS"},
+                "supplier": {"name": "ELM LEBLANC SAS"},
+                "bill_to": {
+                    "name": "Merci de l'adresse suivante : Prolians Baures 21 avenue de Nimes",
+                },
+            }},
+        }
+
+        parties = build_clean_output(payload)["order"]["parties"]
+
+        self.assertEqual(parties["buyer"]["name"], "PROLIANS BAURÃˆS")
+        self.assertEqual(parties["bill_to"]["name"], "Prolians Baures")
+
+        bill_to = next(
+            item for item in build_clean_output(payload)["order"]["addresses"]
+            if item["role"] == "bill_to"
+        )
+        self.assertEqual(bill_to["components"]["house_number"], "21")
+        self.assertEqual(bill_to["components"]["postal_code"], "34000")
+        self.assertNotIn("po_box", bill_to["components"])
+
+    def test_line_delivery_week_is_kept_in_clean_contract(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "business_extractions": {"purchase_order": {
+                "lines": [{
+                    "line_number": "1",
+                    "material_number": "7716780595",
+                    "description": "ARTICLE TEST",
+                    "quantity": 2,
+                    "delivery_week": "44/26",
+                    "delivery_period": "44/26",
+                }],
+            }},
+        }
+
+        line = build_clean_output(payload)["order"]["line_items"][0]
+
+        self.assertEqual(line["delivery"]["week"], "44/26")
+        self.assertEqual(line["delivery"]["period"], "44/26")
 
 
 if __name__ == "__main__":

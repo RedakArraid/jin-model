@@ -1,7 +1,7 @@
-# JIN runtime 5.16.4 â€” stacked dual references and charges
+# JIN runtime 5.16.4 — stacked dual references and charges
 
 This patch hardens native ERP tables in which several logical order lines are
-stacked inside one physical PDF row. When both `RÃ©fÃ©rence` and `Ref Four` are
+stacked inside one physical PDF row. When both `Référence` and `Ref Four` are
 printed, JIN now treats the first value as the buyer's internal code and the
 second as the supplier article reference. The supplier reference becomes the
 primary material/article identifier and the internal code remains available in

@@ -804,6 +804,16 @@ def _anchored_fields_v3(rows):
         # single-token heuristic, especially for numeric and spaced values.
         out["order_number"] = explicit_order_number
 
+        # These candidates are deliberately gated by the same strong order
+        # identifier.  They must be wired here: merely defining the helpers
+        # leaves source-backed header dates invisible to reconciliation.
+        explicit_order_date = _adjacent_order_date_v3(
+            rows,
+            explicit_order_number,
+        ) or _top_location_date_v3(rows, explicit_order_number)
+        if explicit_order_date:
+            out["order_date"] = explicit_order_date
+
     # Explicit offer metadata. Do not expose an offer date as an order date.
     for row in rows:
         text = _deaccent(row["text"]).upper()
@@ -905,9 +915,29 @@ def _anchored_fields_v3(rows):
     for row in rows:
         norms = row["norms"]
         tokens = row["tokens"]
+        header_window = rows[max(0, row["index"] - 2) : row["index"] + 1]
+        header_norms = {
+            norm
+            for candidate_row in header_window
+            for norm in candidate_row["norms"]
+        }
+        line_table_markers = {
+            "DESIGNATION", "QUANTITE", "QUANTITES", "CODE", "REFERENCE",
+            "FOURNISSEUR", "DELAI", "PU", "SEMANN", "ARTICLE",
+        }
+        is_line_table_header = (
+            "NET" in norms
+            and "HT" in norms
+            and len(header_norms & line_table_markers) >= 3
+        )
         mappings = []
         for index, norm in enumerate(norms):
-            if norm == "NET" and index + 1 < len(norms) and norms[index + 1] == "HT":
+            if (
+                not is_line_table_header
+                and norm == "NET"
+                and index + 1 < len(norms)
+                and norms[index + 1] == "HT"
+            ):
                 mappings.append(("total_net", (tokens[index]["bbox"][0] + tokens[index + 1]["bbox"][2]) / 2, 3))
             # Some PDF text layers join adjacent summary headers (TTCNET),
             # or clip TOTAL TTC to TOTAL T at the right page edge. Accept

@@ -118,6 +118,16 @@ def _postal_source_lines(lines: list[str]) -> list[str]:
             drop_following_access_code = bool(re.match(r"^CODE\s+D.?OUVERTURE|^CODE\s+PORTE|^DIGICODE", folded, flags=re.I))
             continue
         value = _NON_POSTAL_TAIL_RE.sub("", value).strip(" |;,-")
+        # Page counters are frequently printed at the far right of the
+        # postcode/city baseline (``34009 MONTPELLIER PAGE 2``).  They belong
+        # to pagination, not to the city, and must not make a valid locality
+        # look like a table/footer boundary.
+        value = re.sub(
+            r"\s+PAGE\s+\d+(?:\s*/\s*\d+)?\s*$",
+            "",
+            value,
+            flags=re.I,
+        ).strip(" |;,-")
         if not value or re.fullmatch(r"B\.?\s*P\.?", ascii_fold(value), flags=re.I):
             continue
         cleaned.append(value)
@@ -243,6 +253,19 @@ def parse_address(addr: Address, *, infer_country: bool = True) -> tuple[Address
 
     # Postal code/city/CEDEX, avoiding routing numbers.
     cp, city, cedex, cedex_number = _extract_postal_city(lines, routing_spans)
+    routing_numbers = set(re.findall(r"\d{2,10}", " ".join(routing_spans)))
+    inherited_postal_conflict = bool(
+        out.postal_code and str(out.postal_code) in routing_numbers
+    )
+    if inherited_postal_conflict and not cp:
+        # Upstream parsers sometimes populate ``61178 B.P.`` from the line
+        # ``B.P. 61178`` before the typed address parser runs.  Never retain a
+        # routing number as a postcode merely because no better locality was
+        # present in that shortened candidate.
+        out.postal_code = None
+        if re.fullmatch(r"\s*(?:B\.?\s*P\.?|C\.?\s*S\.?|T\.?\s*S\.?\s*A\.?)\s*", str(out.city or ""), re.I):
+            out.city = None
+        warnings.append("postal_code_removed_routing_conflict")
     if cp:
         out.postal_code = cp
         conf["postal_code"] = 0.995

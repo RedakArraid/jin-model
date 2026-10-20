@@ -2,6 +2,10 @@
 
 The runtime expects trained artifacts in `data/learning/`.
 
+These artifact names have their own versions (`v3` and `v2`) and do not define
+the application release. The current application runtime is
+`5.17.0-financial-role-guards`; see [the documentation index](../docs/README.md).
+
 Required for the standalone PDF/field API:
 
 - `corpus_text_router.joblib`

@@ -8,7 +8,8 @@ This benchmark compares the current JIN runtime against open-weight document/VLM
 
 These models receive the same rendered document image and the same JSON extraction prompt:
 
-- `jin` — current repository runtime (V5.12 at benchmark creation time);
+- `jin` — current repository runtime (`5.17.0-financial-role-guards` at this
+  documentation revision; record the exact runtime version in every result);
 - `granite_docling_258m` — `ibm-granite/granite-docling-258M`;
 - `glm_ocr` — `zai-org/GLM-OCR`;
 - `paddleocr_vl_1_6` — `PaddlePaddle/PaddleOCR-VL-1.6`;

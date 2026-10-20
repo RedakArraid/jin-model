@@ -78,6 +78,15 @@ def _clean_party_name(value: Any) -> str | None:
         or re.match(r"^\+\s*\d+\b", original)
     ):
         return None
+    # Remove explicit billing prose before validating the party itself.  The
+    # remainder may still contain the first street on the same PDF baseline;
+    # that suffix is handled immediately below.
+    original = re.sub(
+        r"^\s*(?:MERCI\s+DE\s+)?(?:FACTURER\s+\S+\s+)?L.?ADRESSE\s+SUIVANTE\s*[:=]?\s*",
+        "",
+        original,
+        flags=re.I,
+    )
     # A narrow header column is often concatenated with the adjacent phone
     # column (and sometimes with the next party after a table separator).  The
     # mojibake-tolerant spelling also covers ``TÃ©l:`` without depending on the
@@ -99,6 +108,14 @@ def _clean_party_name(value: Any) -> str | None:
     text = _deduplicate_ocr_tokens(original.replace("_", " "))
     if not text or len(text) > 120 or not any(char.isalpha() for char in text):
         return None
+    party_then_numbered_street = re.match(
+        r"^(?P<company>.+?)\s+\d{1,5}(?:\s*(?:BIS|TER|QUATER|[A-Z]))?\s+"
+        r"(?:RUE|AVENUE|AV\.?|ROUTE|RTE\.?|BOULEVARD|BD\.?|CHEMIN|IMPASSE|QUAI|ALLEE|PLACE)\b.*$",
+        text,
+        flags=re.I,
+    )
+    if party_then_numbered_street:
+        text = party_then_numbered_street.group("company").strip(" ,;|:-")
     # Adjacent PDF columns can append the first street line to the legal
     # company name (for example ``REXEL France 1ERE AVENUE``).  Preserve the
     # company prefix when the suffix is unambiguously a thoroughfare.
@@ -271,6 +288,8 @@ def _clean_phone(value: Any) -> str | None:
     if not text:
         return None
     digits = re.sub(r"\D", "", text)
+    if digits and len(set(digits)) == 1:
+        return None
     international = text.lstrip().startswith("+") or digits.startswith("00")
     if international:
         if not 10 <= len(digits) <= 15:
@@ -474,6 +493,30 @@ def _source_text(payload: dict[str, Any]) -> str:
     )
 
 
+def _source_tel_fax_pairs(source: str) -> list[tuple[str, str]]:
+    """Return phone/fax pairs explicitly printed on the same source line."""
+    phone = r"0[1-9](?:[ .-]?\d{2}){4}"
+    pairs: list[tuple[str, str]] = []
+    for raw_line in source.splitlines():
+        line = "".join(
+            char for char in unicodedata.normalize("NFKD", raw_line)
+            if not unicodedata.combining(char)
+        )
+        match = re.search(
+            rf"\bTEL(?:EPHONE)?\.?\s*[:=]?\s*(?P<phone>{phone})"
+            rf"[^\n]{{0,80}}?\bFAX\s*[:=]?\s*(?P<fax>{phone})",
+            line,
+            flags=re.I,
+        )
+        if not match:
+            continue
+        clean_phone = _clean_phone(match.group("phone"))
+        clean_fax = _clean_phone(match.group("fax"))
+        if clean_phone and clean_fax:
+            pairs.append((clean_phone, clean_fax))
+    return pairs
+
+
 def _source_header_parties(payload: dict[str, Any]) -> tuple[str | None, str | None]:
     """Read company names flanking an explicit ``COMMANDE FOURNISSEUR`` title."""
     for line in _source_text(payload).splitlines()[:80]:
@@ -500,6 +543,93 @@ def _source_explicit_billing_party(source: str) -> str | None:
         )
         if match and (name := _clean_party_name(match.group(1))):
             return name
+    return None
+
+
+def _source_explicit_billing_address(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Recover an inline, explicitly labelled billing address from source.
+
+    Free-form purchasing notes often print ``company + street`` after the
+    lead-in and the postcode/city on the next line.  Limiting the recovery to
+    those two adjacent source lines prevents a later legal footer from being
+    merged into the operational billing address.
+    """
+    street_types = (
+        r"RUE|AVENUE|AV\.?|ROUTE|RTE\.?|BOULEVARD|BD\.?|CHEMIN|IMPASSE|"
+        r"ALLEE|PLACE|QUAI"
+    )
+    lead = re.compile(
+        r"(?:MERCI\s+DE\s+)?FACTURER\s+\S+\s+L.?ADRESSE\s+SUIVANTE\s*[:=]\s*(?P<value>.+)$",
+        flags=re.I,
+    )
+    inline = re.compile(
+        rf"^(?P<party>.+?)\s+(?P<house>\d{{1,5}}(?:\s*(?:BIS|TER|QUATER|[A-Z]))?)\s+"
+        rf"(?P<street_type>{street_types})\s+(?P<street_name>.+?)\s*$",
+        flags=re.I,
+    )
+    locality = re.compile(
+        r"^(?P<postal>\d{5})\s+(?P<city>[^\W\d_][\w' .-]{1,60})$",
+        flags=re.I,
+    )
+    pages = [page for page in payload.get("pages") or [] if isinstance(page, dict)]
+    if not pages:
+        pages = [{"text": _source_text(payload)}]
+    for page_number, page in enumerate(pages, 1):
+        lines = [" ".join(str(line).split()) for line in str(page.get("text") or "").splitlines()]
+        for index, line in enumerate(lines[:-1]):
+            lead_match = lead.search(line)
+            if not lead_match:
+                continue
+            street_match = inline.match(lead_match.group("value").strip(" ,;:-"))
+            if not street_match:
+                continue
+            locality_match = locality.match(lines[index + 1].strip(" ,;:-"))
+            if not locality_match:
+                continue
+            party = _clean_party_name(street_match.group("party"))
+            if not party:
+                continue
+            street_type = street_match.group("street_type").rstrip(".")
+            components = {
+                "recipient": party,
+                "house_number": street_match.group("house").strip(),
+                "street_type": street_type.upper(),
+                "street_name": street_match.group("street_name").strip(" ,;:-"),
+                "street": " ".join((
+                    street_type.upper(),
+                    street_match.group("street_name").strip(" ,;:-"),
+                )),
+                "postal_code": locality_match.group("postal"),
+                "city": locality_match.group("city").strip(" ,;:-"),
+                "country": "France",
+                "country_code": "FR",
+            }
+            street_line = " ".join((
+                components["house_number"], components["street"],
+            ))
+            locality_line = f'{components["postal_code"]} {components["city"]}'
+            return {
+                "address_id": "addr_source_explicit_billing",
+                "role": "bill_to",
+                "role_label": "Adresse de facturation",
+                "party_name": party,
+                "clean_address": {
+                    "status": "SOURCE_STRUCTURED",
+                    "one_line": f"{party}, {street_line}, {locality_line}, FRANCE",
+                    "lines": [party, street_line, locality_line, "FRANCE"],
+                    "source_formatted": f"{street_line}, {locality_line}",
+                    "components": components,
+                },
+                "formatted_address": f"{street_line}, {locality_line}",
+                "role_confidence": 0.995,
+                "address_confidence": 0.995,
+                "evidence": {
+                    "page": page_number,
+                    "source_text": f"{line} | {lines[index + 1]}",
+                    "extraction_method": "explicit_inline_billing_address_v1",
+                },
+                "warnings": ["source_structured_explicit_billing_address"],
+            }
     return None
 
 
@@ -1204,6 +1334,35 @@ def _reconcile_clean_parties(
             source, labels=("CONTACT",), stop_phrases=(delivery_name or "",)
         ))
 
+    # A phone and a fax printed on the same line belong to the same party.
+    # Column extraction can keep the phone on the buyer while leaking the fax
+    # into the supplier.  Repair only when the buyer owns the paired phone and
+    # the supplier does not, so genuinely ambiguous shared contacts are left
+    # untouched.
+    for source_phone, source_fax in _source_tel_fax_pairs(source):
+        if not (
+            contact.get("phone")
+            and _name_key(contact["phone"]) == _name_key(source_phone)
+            and supplier_contact.get("fax")
+            and _name_key(supplier_contact["fax"]) == _name_key(source_fax)
+            and (
+                not supplier_contact.get("phone")
+                or _name_key(supplier_contact["phone"]) != _name_key(source_phone)
+            )
+        ):
+            continue
+        contact["fax"] = source_fax
+        supplier = dict(parties.get("supplier") or {})
+        repaired_supplier_contact = dict(supplier.get("contact") or {})
+        repaired_supplier_contact.pop("fax", None)
+        if repaired_supplier_contact:
+            supplier["contact"] = repaired_supplier_contact
+        else:
+            supplier.pop("contact", None)
+        parties["supplier"] = supplier
+        supplier_contact = repaired_supplier_contact
+        break
+
     bill_to_name = _party_display_name(parties.get("bill_to"))
     if (
         buyer_name
@@ -1634,6 +1793,11 @@ def _line(source: dict[str, Any]) -> dict[str, Any]:
                 source.get("delivery_date"),
             ),
             "confirmed_date": source.get("confirmed_delivery_date"),
+            "week": _first(
+                source.get("delivery_week"),
+                source.get("delivery_period"),
+            ),
+            "period": source.get("delivery_period"),
             "schedule": source.get("delivery_schedule") or source.get("schedule_lines"),
             "site": source.get("delivery_site"),
         },
@@ -1671,6 +1835,11 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
 
     parties = {role: _party(po.get(role) or {}) for role in PARTY_ROLES}
     addresses = [_business_address(item) for item in po.get("business_addresses") or []]
+    explicit_billing_address = _source_explicit_billing_address(payload)
+    if explicit_billing_address:
+        addresses = [
+            item for item in addresses if item.get("role") != "bill_to"
+        ] + [_business_address(explicit_billing_address)]
     delivery_addresses = [item for item in addresses if item.get("role") == "ship_to"]
     primary_delivery = delivery_addresses[0] if len(delivery_addresses) == 1 else None
     parties = _reconcile_clean_parties(parties, primary_delivery, payload)

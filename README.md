@@ -1,6 +1,42 @@
-# JIN Model - Universal Document AI V5.7 Cell & Sub-Zone Intelligence
+# JIN Model — Universal Document AI runtime 5.17.0
 
-`RedakArraid/jin-model` contient la couche Docker/UI autour du moteur JIN empaqueté et une nouvelle couche d'apprentissage statistique versionnée.
+`RedakArraid/jin-model` contient la couche Docker/UI autour du moteur JIN
+empaqueté, ses correctifs métier versionnés et les modèles statistiques CPU.
+
+## État actuel
+
+Les numéros ci-dessous versionnent des éléments différents et ne doivent pas
+être confondus :
+
+| Élément | Version actuelle | Rôle |
+| --- | --- | --- |
+| Runtime JIN | `5.17.0-financial-role-guards` | API, UI, réconciliation et contrôle qualité |
+| Cœur empaqueté | `5.1.0` | OCR et extraction structurée de base |
+| Contrat consommateur | `jin-clean-extraction-v2` | JSON stable renvoyé avec `view=clean` |
+| Routeur PDF CPU | `jin-pdf-fusion-router-v3-cpu` | famille documentaire et décision documentaire |
+| Routeur de champs CPU | `jin-field-weak-router-v2-cpu` | suggestions de champs, zones et cellules à revoir |
+
+La version 5.17.0 consolide les évolutions 5.10 à 5.16 :
+
+- le client qui émet le bon de commande est le `buyer`; le destinataire
+  commercial du bon est le `supplier`, avec correction uniquement lorsque
+  plusieurs signaux de mise en page concordent ;
+- la date de commande et la date de livraison souhaitée restent distinctes ;
+- les références article client et fournisseur restent séparées, et une
+  référence produit ne peut plus devenir un numéro de commande interne ;
+- les prix ERP français à quatre à six décimales sont relus depuis leur jeton
+  source et les montants ne sont recalculés que s'ils avaient été dérivés par
+  JIN ;
+- les lignes dérivées qui ne se réconcilient pas avec le total imprimé sont
+  déclassées et soumises à revue ;
+- les compléments d'adresse propres sont conservés, tandis que les fragments
+  de produits, prix, mentions légales et transport sont exclus ;
+- une TVA française calculée depuis un SIREN/SIRET validé conserve sa
+  provenance et peut être utilisée comme identifiant fiscal fiable.
+
+La documentation courante et l'index des documents historiques sont dans
+[docs/README.md](docs/README.md). Les changements détaillés de cette version
+sont dans [RELEASE_V5_17_0.md](docs/RELEASE_V5_17_0.md).
 
 ## Benchmark open-weight d'extraction
 
@@ -67,7 +103,14 @@ Pour le mode complet `/extract`, prépare d'abord le moteur cœur avec `./prepar
 
 Guide complet : [Runtime Setup](docs/RUNTIME_SETUP.md).
 
-JIN commence maintenant à apprendre à partir des documents historiques corrigés au lieu d'évoluer uniquement par accumulation de règles.
+JIN peut apprendre à partir de corrections explicitement revues, en plus des
+modèles CPU préentraînés et des garde-fous déterministes du runtime.
+
+## Historique des capacités spatiales et d'apprentissage
+
+Les sections V5.2 à V5.7 ci-dessous décrivent les étapes historiques qui ont
+construit les routeurs CPU, les zones et les cellules. Elles ne remplacent pas
+le numéro de runtime actuel indiqué plus haut.
 
 ## V5.7 - Cell & Sub-Zone Intelligence
 
@@ -182,7 +225,10 @@ Moteur JIN empaqueté (model/ local)
         v
 jin_runtime.app
   |-- proxy des routes cœur
+  |-- réconciliation déterministe métier 5.17
   |-- enrichissement statistique de /extract
+  |-- contrat propre jin-clean-extraction-v2
+  |-- porte qualité CHECKS_PASSED / REVIEW_REQUIRED
   |-- POST /feedback
   |-- GET /learning/status
         |
@@ -306,12 +352,27 @@ Le workflow GitHub Actions **Train layout vision model** peut préparer les donn
 
 ## Tests
 
+La suite Python complète cible Linux (CI, WSL ou conteneur), notamment parce
+que le benchmark de ressources utilise le module standard Unix `resource`.
+Après installation des dépendances runtime :
+
 ```bash
 pip install -r runtime-requirements.txt
 python -m unittest discover -s tests -v
+node --test tests/test_web_addresses.js tests/test_web_bbox.js tests/test_web_prices.js
 ```
 
-La CI compile aussi les sources Python et valide les scripts shell.
+Après construction du mode complet, la régression du cœur superposé se lance
+dans l'image finale. `pytest` est installé uniquement comme outil de test dans
+le conteneur en cours :
+
+```bash
+docker compose exec -T api pip install --no-cache-dir pytest
+docker compose exec -T api python -m pytest -q /app/tests
+```
+
+La CI compile aussi les sources Python, valide les scripts shell et exécute les
+tests du runtime et de l'interface.
 
 ## Données
 
@@ -348,8 +409,10 @@ produit. `order_number_check` conserve sa preuve page/coordonnées/texte,
 signale les preuves manquantes, les dates suspectes et les candidats
 contradictoires, sans modifier le numéro ni supprimer ses zéros initiaux.
 Les adresses ne sont pas déclarées réelles/vérifiées sans référentiel local
-approprié. Les corrections financières ne remplacent jamais les chiffres
-imprimés. Aucun apprentissage n'est fait sur les prédictions non revues.
+approprié. Les corrections financières n'inventent ni ne remplacent un montant
+imprimé : elles peuvent normaliser un jeton source sans ambiguïté et recalculer
+seulement un montant que JIN avait lui-même dérivé. Aucun apprentissage n'est
+fait sur les prédictions non revues.
 
 ### Référentiel d'adresses local
 
@@ -417,4 +480,6 @@ Les fichiers de résultats et les valeurs client attendues restent dans
 
 ## Version
 
-`5.10.0-header-reliability`
+- Runtime : `5.17.0-financial-role-guards`
+- Cœur : `5.1.0`
+- Contrat propre : `jin-clean-extraction-v2`

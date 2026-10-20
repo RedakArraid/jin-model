@@ -143,7 +143,15 @@ function addTagCell(row, groups) {
 }
 
 function normalizedLine(line) {
-  if (!line.references && !line.pricing && !line.amounts) return line;
+  if (!line.references && !line.pricing && !line.amounts) {
+    return {
+      ...line,
+      requested_delivery_date: line.requested_delivery_date
+        ?? line.delivery_date
+        ?? line.delivery_week
+        ?? line.delivery_period,
+    };
+  }
   return {
     ...line,
     ...(line.references || {}),
@@ -153,7 +161,12 @@ function normalizedLine(line) {
     price_unit: line.pricing?.price_unit,
     currency: line.pricing?.currency,
     line_total: line.amounts?.total ?? line.amounts?.net,
-    requested_delivery_date: line.delivery?.date ?? line.requested_delivery_date ?? line.delivery_date,
+    requested_delivery_date: line.delivery?.date
+      ?? line.requested_delivery_date
+      ?? line.delivery_date
+      ?? line.delivery?.week
+      ?? line.delivery_week
+      ?? line.delivery_period,
   };
 }
 
