@@ -45,6 +45,7 @@ from uda.business import (
     _repair_native_long_decimal_line_prices_v5170,
     _repair_order_date_delivery_collision_v5170,
     _repair_purchase_order_party_roles_v5170,
+    _separate_promotional_continuation_notes_v5171,
     _repair_scan_currency_suffix_artifacts_v64,
     _repair_legal_footer_validation_v65,
     _reconcile_requested_delivery_dates_v5169,
@@ -598,6 +599,50 @@ def test_supplier_role_word_inside_shipping_row_is_not_a_party_label():
     assert (charge.quantity, charge.uom, charge.unit_price, charge.amount) == (
         1, "PCE", 20, 20,
     )
+
+
+def test_promotion_note_is_not_description_and_legal_footer_stops_table():
+    page = _page([
+        (394, [("Reférence", 31, 75), ("-", 77, 80),
+               ("Désignation", 83, 134), ("Quantite", 422, 459),
+               ("Unite", 476, 499), ("Prix", 507, 524),
+               ("Unitaire", 527, 560)]),
+        (415, [("7733701938", 31, 86), ("-", 89, 92),
+               ("CL5000M", 94, 140), ("125/5", 143, 170),
+               ("E", 173, 180), ("PENT", 183, 210),
+               ("6", 451, 456), ("PI", 479, 488),
+               ("1499.7273", 520, 564)]),
+        (430, [("Promo", 94, 125), ("PA", 128, 142),
+               ("n°", 145, 157), ("26085", 160, 188)]),
+        (455, [("Retrouvez", 20, 65), ("l'ensemble", 68, 115),
+               ("de", 118, 128), ("nos", 131, 148),
+               ("activités", 151, 195)]),
+        (470, [("SIREN", 20, 55), ("716320619", 58, 110)]),
+    ])
+
+    lines = extract_lines_from_pages([page])
+
+    assert len(lines) == 1
+    assert lines[0].material_number == "7733701938"
+    assert lines[0].description == "CL5000M 125/5 E PENT"
+    assert lines[0].notes == ["Promo PA n° 26085"]
+    assert "Retrouvez" not in (lines[0].raw_text or "")
+
+
+def test_postprocessor_separates_promotion_continuation_from_description():
+    line = LineItem(
+        material_number="7733701938",
+        description="CL5000M 125/5 E PENT Promo PA n° 26085",
+        quantity=6,
+        unit_price=1499.7273,
+        line_total=8998.3638,
+    )
+
+    moved = _separate_promotional_continuation_notes_v5171([line])
+
+    assert moved == 1
+    assert line.description == "CL5000M 125/5 E PENT"
+    assert line.notes == ["Promo PA n° 26085"]
 
 
 def test_stacked_customer_and_supplier_references_use_net_price_without_losing_rows():

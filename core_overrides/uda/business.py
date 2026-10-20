@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 import uuid
 import statistics
 
@@ -5961,6 +5962,30 @@ def _sanitize_legal_footer_lines_v48(po, config: dict):
     return po
 
 
+def _separate_promotional_continuation_notes_v5171(lines) -> int:
+    """Move an appended promotion row out of the product description."""
+    moved = 0
+    pattern = re.compile(
+        r"\s+(?P<note>promo(?:tion)?\s+pa\s+n(?:[°ºo.]|\^o)?\s*"
+        r"[A-Z0-9][A-Z0-9._/-]*)\s*$",
+        flags=re.I,
+    )
+    for line in lines or []:
+        description = " ".join(str(getattr(line, "description", "") or "").split())
+        match = pattern.search(description)
+        if not match:
+            continue
+        clean_description = description[:match.start()].rstrip(" ,;|/-")
+        if not clean_description:
+            continue
+        note = match.group("note").strip()
+        line.description = clean_description
+        if note not in line.notes:
+            line.notes.append(note)
+        moved += 1
+    return moved
+
+
 def _repair_legal_footer_validation_v65(po, config: dict):
     """Keep final validation aligned with the token-safe footer filter."""
     bad = [
@@ -6489,6 +6514,7 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
         enrich_supplier_material_roles,
         line_material_pattern_summary,
         recover_material_references_from_descriptions,
+        restore_leading_source_material_roles,
     )
     default_currency = config.get("normalization", {}).get("default_currency", "EUR")
     po = _extract_native_table_header_fields(po, tables)
@@ -6520,6 +6546,14 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     material_numeric_lines = _material_anchored_numeric_row_items_v61(
         pages, config, default_currency
     )
+    explicit_supplier_reference_header = any(
+        re.search(
+            r"\b(?:ref(?:erence)?|code)\s+(?:du\s+)?(?:fournisseur|supplier|vendor)\b|"
+            r"\b(?:fournisseur|supplier|vendor)\s+(?:ref(?:erence)?|code)\b",
+            _fold(str(page.text or "")),
+        )
+        for page in pages
+    )
 
     # V4.6 hypothesis competition.  Structural quality alone is not enough: a bad
     # parser can be arithmetically self-consistent while misreading the columns.  We
@@ -6532,6 +6566,11 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
                 _line_hypothesis_total_fit_v66([], charges, total_target, config),
                 0.0,
             )
+        restore_leading_source_material_roles(
+            lines,
+            config,
+            explicit_supplier_header=explicit_supplier_reference_header,
+        )
         recover_material_references_from_descriptions(lines, config)
         base=float(line_item_set_quality(lines))
         arithmetic=[]; noise=0.0; complete=0.0
@@ -6648,6 +6687,9 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
         po.lines=chosen_lines; po.additional_charges=chosen_charges
         parser_diag["selected"]=chosen_name
     po.lines = _dedupe_line_items(po.lines)
+    parser_diag["promotional_continuation_notes"] = (
+        _separate_promotional_continuation_notes_v5171(po.lines)
+    )
     po = _enhance_requested_delivery_date_v5169(po, pages, config)
     po = _reconcile_requested_delivery_dates_v5169(po)
     po,parser_diag["order_date_delivery_collision_repairs"]=(
@@ -6660,6 +6702,10 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     recover_material_references_from_descriptions(po.lines, config)
     parser_diag["description_reference_recoveries"] = sum(
         "material_reference_recovered_from_description" in line.warnings
+        for line in po.lines
+    )
+    parser_diag["leading_source_reference_repairs"] = sum(
+        "material_reference_restored_from_unqualified_leading_source" in line.warnings
         for line in po.lines
     )
     parser_diag["supplier_role_enrichments"] = enrich_supplier_material_roles(po.lines, config)

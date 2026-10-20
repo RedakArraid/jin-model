@@ -90,6 +90,12 @@ def _is_line_table_stop(text: str) -> bool:
     # to appear at the beginning of the reconstructed text row.
     if re.search(r"\bmontant\s+(?:h\.?t\.?\s+)?net\b", low):
         return True
+    if re.match(
+        r"^(?:retrouvez\s+l['\u2019]?ensemble\s+de\s+nos\s+(?:activites|catalogues)|"
+        r".*\bsiege\s+social\s*:|siren\s+\d|.*\bau\s+capital\s+de\b)",
+        low,
+    ):
+        return True
     return bool(re.match(
         r"^(?:\(?\d+\)?\s+)?(?:a\s+livrer\b|adresse\s+de\s+livraison\b|"
         r"delivery\s+address\b|reglement\b|payment\b|poids\b|attention\b|"
@@ -778,7 +784,17 @@ def _merge_continuations(lines: list[LineItem]) -> list[LineItem]:
     for item in lines:
         if result and not item.material_number and item.description and item.quantity is None and item.unit_price is None:
             prev = result[-1]
-            prev.description = clean_text((prev.description or "") + " " + item.description)
+            continuation = clean_text(item.description)
+            if re.match(
+                r"^(?:promo(?:tion)?\s+pa|promotion\b|remise\b)",
+                ascii_fold(continuation or "").lower(),
+            ):
+                if continuation and continuation not in prev.notes:
+                    prev.notes.append(continuation)
+            else:
+                prev.description = clean_text(
+                    (prev.description or "") + " " + (continuation or "")
+                )
             prev.raw_text = clean_text((prev.raw_text or "") + " " + (item.raw_text or ""))
             prev.confidence = min(prev.confidence, item.confidence)
         else:

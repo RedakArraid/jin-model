@@ -145,12 +145,20 @@ def apply_extraction_gate(payload: dict[str, Any]) -> dict[str, Any]:
         if po.get("requires_human_review"):
             reasons.append({"code": "BUSINESS_REVIEW_REQUIRED", "path": "purchase_order"})
         addresses = po.get("business_addresses") or []
-        roles = {str(address.get("role") or "").lower() for address in addresses}
+        active_addresses = [
+            address for address in addresses
+            if not (
+                "superseded_by_geometry_delivery_candidate"
+                in (address.get("warnings") or [])
+                or str(address.get("role_label") or "").lower().startswith("superseded")
+            )
+        ]
+        roles = {str(address.get("role") or "").lower() for address in active_addresses}
         # These roles are required for unattended order handling, not evidence
         # that every source document necessarily contains both addresses.
         for required_role in ("ship_to", "bill_to"):
             require(required_role in roles, "ADDRESS_ROLE_MISSING", f"business_addresses.{required_role}")
-        delivery_addresses = [address for address in addresses
+        delivery_addresses = [address for address in active_addresses
                               if str(address.get("role") or "").lower() == "ship_to"]
         if len(delivery_addresses) > 1:
             reasons.append({"code": "DELIVERY_ADDRESS_AMBIGUOUS", "path": "business_addresses.ship_to"})
@@ -158,7 +166,7 @@ def apply_extraction_gate(payload: dict[str, Any]) -> dict[str, Any]:
             clean_delivery = delivery_addresses[0].get("clean_address") or {}
             if clean_delivery.get("status") == "INCOMPLETE":
                 reasons.append({"code": "DELIVERY_ADDRESS_INCOMPLETE", "path": "business_addresses.ship_to"})
-        for index, address in enumerate(addresses):
+        for index, address in enumerate(active_addresses):
             path = f"business_addresses[{index}]"
             role = str(address.get("role") or "").lower()
             require(bool(role) and role not in {"unknown", "unassigned", "other"}, "ADDRESS_ROLE_UNRESOLVED", path)

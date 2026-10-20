@@ -357,6 +357,23 @@ class CleanOutputTests(unittest.TestCase):
         self.assertNotIn("department", parties["ship_to"])
         self.assertNotIn("department", parties["ship_to"].get("contact", {}))
 
+    def test_party_view_rejects_parallel_billing_caption_as_delivery_department(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "business_extractions": {"purchase_order": {
+                "buyer": {"name": "PLATEFORME LOGISTIQUE CCL"},
+                "supplier": {"name": "ELM LEBLANC"},
+                "ship_to": {
+                    "name": "PLATEFORME LOGISTIQUE CCL",
+                    "department": "à : / A Facturer",
+                },
+            }},
+        }
+
+        ship_to = build_clean_output(payload)["order"]["parties"]["ship_to"]
+
+        self.assertNotIn("department", ship_to)
+
     def test_party_view_keeps_same_line_phone_and_fax_on_buyer(self):
         payload = {
             "document": {"primary_document_type": "purchase_order"},

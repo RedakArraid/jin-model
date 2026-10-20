@@ -274,6 +274,8 @@ def _clean_department(value: Any) -> str | None:
         len(text.split()) > 10
         or (text.count("/") >= 2 and len(re.sub(r"\D", "", text)) >= 10)
         or key.startswith(("AFACTURER", "ALIVRER", "ADRESSEDELIVRAISON"))
+        or "AFACTURER" in key
+        or "ALIVRER" in key
         or any(marker in key for marker in (
             "CATALOGUE", "PLANDEVENTE", "PROCHAINSMOIS",
             "CONDITIONSGENERALES", "MODEDEXPEDITION",

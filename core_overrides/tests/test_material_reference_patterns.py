@@ -9,6 +9,7 @@ from uda.material_references import (
     recover_material_references_from_descriptions,
     reference_signature,
     resolve_material_reference,
+    restore_leading_source_material_roles,
     score_material_reference,
 )
 
@@ -63,6 +64,43 @@ def test_grouped_and_qualified_numeric_notation_uses_the_same_shape_family():
     assert grouped.supported and grouped.normalized == "87034061530"
     assert qualified.supported and qualified.normalized == "7733701936"
     assert trailing_noise.supported and trailing_noise.normalized == "87387029230"
+
+
+def test_unqualified_leading_reference_outranks_model_token_from_designation():
+    line = _line(
+        "CL5000M",
+        description="CL5000M 125/5 E PENT",
+        quantity=6,
+        price=1499.7273,
+        total=8998.3638,
+    )
+    line.supplier_material_number = "CL5000M"
+    line.customer_material_number = "7733701938"
+    line.raw_text = "7733701938 - CL5000M 125/5 E PENT 6 PI 1499.7273"
+
+    repaired = restore_leading_source_material_roles([line], {})
+
+    assert repaired == 1
+    assert line.material_number == "7733701938"
+    assert line.article_number == "7733701938"
+    assert line.supplier_material_number == "7733701938"
+    assert line.customer_material_number is None
+    assert "material_reference_restored_from_unqualified_leading_source" in line.warnings
+
+
+def test_explicit_supplier_reference_header_preserves_printed_role_assignment():
+    line = _line("CL5000M", description="CL5000M 125/5 E PENT")
+    line.supplier_material_number = "CL5000M"
+    line.customer_material_number = "7733701938"
+    line.raw_text = "7733701938 - CL5000M 125/5 E PENT 1 PI 10.00"
+
+    repaired = restore_leading_source_material_roles(
+        [line], {}, explicit_supplier_header=True
+    )
+
+    assert repaired == 0
+    assert line.material_number == "CL5000M"
+    assert line.customer_material_number == "7733701938"
 
 
 def test_material_profile_rejects_common_header_numeric_noise():

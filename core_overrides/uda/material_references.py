@@ -522,6 +522,79 @@ def _leading_reference_candidates(description: object) -> list[tuple[str, str]]:
     return candidates
 
 
+def restore_leading_source_material_roles(
+    lines,
+    config: dict | None = None,
+    *,
+    explicit_supplier_header: bool = False,
+) -> int:
+    """Restore the unqualified reference printed before the designation.
+
+    A spatial parser can promote a model token from the designation as the
+    supplier material and demote the actual ``Reference - Designation`` value
+    to ``customer_material_number``. Without an explicit supplier-reference
+    header, restore the leading value only when its aggregate material shape is
+    strongly supported and the promoted token is materially weaker.
+    """
+    if explicit_supplier_header:
+        return 0
+    layout = (config or {}).get("layout", {})
+    if not layout.get("restore_unqualified_leading_material_reference", True):
+        return 0
+    profile = load_material_reference_profile(config)
+    if not profile:
+        return 0
+    threshold = float(layout.get(
+        "restore_unqualified_leading_material_min_score", 0.86
+    ))
+    minimum_margin = float(layout.get(
+        "restore_unqualified_leading_material_min_margin", 0.12
+    ))
+    repaired = 0
+    for line in lines or []:
+        raw = " ".join(str(getattr(line, "raw_text", "") or "").split()).strip()
+        customer = normalize_reference(
+            getattr(line, "customer_material_number", None)
+        )
+        current = (
+            getattr(line, "supplier_material_number", None)
+            or getattr(line, "material_number", None)
+            or getattr(line, "article_number", None)
+        )
+        current_normalized = normalize_reference(current)
+        if not raw or not customer or not current_normalized:
+            continue
+        # A visible separator proves that the candidate comes from the leading
+        # table cell rather than from an arbitrary number in product prose.
+        separator = re.match(
+            r"^\s*(?P<reference>\d(?:[\d .]*\d)?)\s+[-\u2013\u2014]\s+",
+            raw,
+        )
+        if not separator:
+            continue
+        source_value = separator.group("reference").strip()
+        leading = score_material_reference(
+            source_value, profile, min_score=threshold
+        )
+        if not leading.supported or leading.normalized != customer:
+            continue
+        promoted = score_material_reference(current, profile, min_score=threshold)
+        if (
+            promoted.supported
+            and promoted.score >= leading.score - minimum_margin
+        ):
+            continue
+        line.material_number = source_value
+        line.article_number = source_value
+        line.supplier_material_number = leading.normalized
+        line.customer_material_number = None
+        warning = "material_reference_restored_from_unqualified_leading_source"
+        if warning not in line.warnings:
+            line.warnings.append(warning)
+        repaired += 1
+    return repaired
+
+
 def recover_material_references_from_descriptions(
     lines, config: dict | None = None
 ) -> int:

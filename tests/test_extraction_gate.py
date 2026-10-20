@@ -73,6 +73,20 @@ class ExtractionGateTests(unittest.TestCase):
         out = apply_extraction_gate(payload)
         self.assertIn("ADDRESS_ROLE_UNRESOLVED", {r["code"] for r in out["extraction_decision"]["reasons"]})
 
+    def test_superseded_delivery_candidate_does_not_keep_review_open(self):
+        payload = complete_order()
+        payload["business_extractions"]["purchase_order"]["business_addresses"].append({
+            "role": "unknown",
+            "role_label": "Superseded delivery candidate",
+            "role_confidence": .98,
+            "address": {"postal_code": "31770", "city": "COLOMIERS"},
+            "warnings": ["superseded_by_geometry_delivery_candidate"],
+        })
+
+        reasons = apply_extraction_gate(payload)["extraction_decision"]["reasons"]
+
+        self.assertNotIn("ADDRESS_ROLE_UNRESOLVED", {item["code"] for item in reasons})
+
     def test_missing_delivery_or_billing_address_requires_review(self):
         for roles in ([], ["ship_to"], ["bill_to"]):
             with self.subTest(roles=roles):
