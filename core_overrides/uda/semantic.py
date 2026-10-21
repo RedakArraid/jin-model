@@ -263,6 +263,16 @@ def _contains_any(low: str, terms: tuple[str, ...] | list[str]) -> list[str]:
     return [t for t in terms if t in low]
 
 
+def _contains_document_term(low: str, term: str) -> bool:
+    """Match a document label without confusing it with a longer word.
+
+    For example, the delivery/billing label ``A facturer a`` must not count as
+    evidence that the whole document is an invoice merely because ``facture``
+    is a substring of ``facturer``.
+    """
+    return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", low) is not None
+
+
 def _transaction_title(text: str) -> str | None:
     """Find an anchored document heading, not a document mentioned in prose.
 
@@ -499,7 +509,7 @@ def classify_page(text: str, *, family: str = "pdf", page_number: int | None = N
         "contract": [("contrat", 3.0), ("contract", 3.0), ("agreement", 3.0), ("vertrag", 3.0)],
     }.items():
         for term, pts in terms:
-            if term in low:
+            if _contains_document_term(low, term):
                 add(kind, pts, term)
 
     if title_type:
@@ -592,7 +602,20 @@ def aggregate_page_classifications(page_classifications: list[dict[str, Any]], *
             "confidence": round(sum(float(x.get("confidence", 0.0)) for x in items) / max(1, len(items)), 4),
         })
     primary_items = by_type.get(primary, [])
-    conf = round(sum(float(x.get("confidence", 0.0)) for x in primary_items) / max(1, len(primary_items)), 4)
+    # A page carrying an explicit transactional title establishes the document
+    # identity. Consistent continuation pages without a repeated title enrich
+    # the extraction, but their weaker local evidence must not dilute that
+    # identity confidence.
+    titled_primary_items = [
+        item for item in primary_items
+        if item.get("explicit_document_title") == primary
+    ]
+    confidence_items = titled_primary_items or primary_items
+    conf = round(
+        sum(float(x.get("confidence", 0.0)) for x in confidence_items)
+        / max(1, len(confidence_items)),
+        4,
+    )
     return {
         "detected_document_type": detected,
         "primary_document_type": primary,

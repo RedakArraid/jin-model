@@ -30,6 +30,39 @@ class OrderNumberReliabilityTests(unittest.TestCase):
         del payload["purchase_order"]["number"]["evidence"]["bbox"]
         self.assertIn("ORDER_NUMBER_EVIDENCE_MISSING", check_order_number(payload, {})["issues"])
 
+    def test_exact_same_page_geometry_restores_missing_native_table_location(self):
+        payload = order("CM-00405095", "CM-00405095")
+        evidence = payload["purchase_order"]["number"]["evidence"]
+        del evidence["bbox"]
+        evidence["extraction_method"] = "native_table_anchor"
+        result = check_order_number(payload, {
+            "anchored_fields": {"order_number": {
+                "value": "CM-00405095",
+                "page": 1,
+                "bbox": [71, 328, 153, 342],
+                "source": "geometry_explicit_order_label_v3",
+            }},
+        })
+        self.assertNotIn("ORDER_NUMBER_EVIDENCE_MISSING", result["issues"])
+        self.assertEqual(result["source_evidence"]["bbox"], [71, 328, 153, 342])
+        self.assertEqual(
+            result["source_evidence"]["location_recovered_from"],
+            "geometry_explicit_order_label_v3",
+        )
+
+    def test_different_page_geometry_does_not_restore_missing_location(self):
+        payload = order("CM-00405095", "CM-00405095")
+        del payload["purchase_order"]["number"]["evidence"]["bbox"]
+        result = check_order_number(payload, {
+            "anchored_fields": {"order_number": {
+                "value": "CM-00405095",
+                "page": 2,
+                "bbox": [71, 328, 153, 342],
+                "source": "geometry_explicit_order_label_v3",
+            }},
+        })
+        self.assertIn("ORDER_NUMBER_EVIDENCE_MISSING", result["issues"])
+
     def test_identifier_separators_do_not_allow_truncated_matches(self):
         for text in ("Commande PO-123/2", "Commande PO-123-A", "Commande PO-123.2", "Commande X/PO-123", "Commande X__PO-123"):
             with self.subTest(text=text):

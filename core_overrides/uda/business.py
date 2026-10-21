@@ -219,6 +219,64 @@ def _bbox_union(words):
     return (min(w.bbox[0] for w in words), min(w.bbox[1] for w in words), max(w.bbox[2] for w in words), max(w.bbox[3] for w in words))
 
 
+def _repair_order_number_evidence_bbox_v5172(po, pages) -> int:
+    """Restore a missing PO-number bbox from the native page words.
+
+    Native table reconstruction can retain the exact value, page and source text
+    while losing the cell geometry.  Confidence must not replace source
+    traceability, so locate only an exact contiguous token sequence on the same
+    page and leave ambiguous/unmatched evidence unchanged.
+    """
+    field = getattr(getattr(po, "purchase_order", None), "number", None)
+    evidence = getattr(field, "evidence", None)
+    value = str(getattr(field, "value", None) or "").strip()
+    if not value or evidence is None:
+        return 0
+    bbox = getattr(evidence, "bbox", None)
+    if (
+        isinstance(bbox, (list, tuple))
+        and len(bbox) == 4
+        and all(isinstance(item, (int, float)) for item in bbox)
+        and bbox[2] > bbox[0]
+        and bbox[3] > bbox[1]
+    ):
+        return 0
+    page_number = getattr(evidence, "page", None)
+    if not isinstance(page_number, int) or isinstance(page_number, bool) or page_number <= 0:
+        return 0
+    target = re.sub(r"[^a-z0-9]", "", _fold(value))
+    if len(target) < 5:
+        return 0
+
+    matches = []
+    for page in pages or []:
+        if getattr(page, "page", None) != page_number:
+            continue
+        for row in all_rows([page], y_factor=0.55):
+            words = sorted(
+                list(getattr(row, "words", None) or []),
+                key=lambda word: (word.bbox[0], word.bbox[1]),
+            )
+            for start in range(len(words)):
+                compact = ""
+                for end in range(start, min(len(words), start + 10)):
+                    compact += re.sub(r"[^a-z0-9]", "", _fold(words[end].text))
+                    if compact == target:
+                        window = words[start:end + 1]
+                        candidate_bbox = _bbox_union(window)
+                        if candidate_bbox:
+                            matches.append((len(window), candidate_bbox[2] - candidate_bbox[0], candidate_bbox))
+                        break
+                    if len(compact) > len(target) or not target.startswith(compact):
+                        break
+    if not matches:
+        return 0
+    evidence.bbox = min(matches, key=lambda item: (item[0], item[1]))[2]
+    if not getattr(evidence, "source_text", None):
+        evidence.source_text = value
+    return 1
+
+
 def _enhance_order_header_from_page_layout(po, pages, config: dict):
     """Recover split order identifiers/dates using page geometry.
 
@@ -6739,6 +6797,9 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     po = _enhance_inline_transaction_header_v46(po, pages, config)
     po = _enhance_strict_order_number_v47(po, pages, config)
     po = _clean_po_number_v48(po, config)
+    parser_diag["order_number_evidence_bbox_repairs"] = (
+        _repair_order_number_evidence_bbox_v5172(po, pages)
+    )
     po = _extract_vat_identifiers_v52(po, pages, config)
     po = _enhance_native_party_blocks_v47(po, tables, pages, config)
     po = _enhance_column_labeled_parties_v47(po, pages, config)

@@ -102,6 +102,24 @@ class CleanOutputTests(unittest.TestCase):
         self.assertEqual(out["order"]["delivery_address"]["role"], "ship_to")
         self.assertNotIn("raw_text", out)
 
+    def test_clean_contract_publishes_document_type_with_its_confidence(self):
+        out = build_clean_output({
+            "document": {"primary_document_type": "purchase_order"},
+            "quality": {"classification_confidence": 0.995},
+            "business_extractions": {"purchase_order": {"lines": []}},
+            "extraction_decision": {
+                "status": "CHECKS_PASSED",
+                "requires_review": False,
+            },
+        })
+        self.assertEqual(out["document"]["type"], "purchase_order")
+        self.assertEqual(out["document"]["classification"], {
+            "document_type": "purchase_order",
+            "confidence": 0.995,
+            "source": "jin-model",
+        })
+        self.assertEqual(out["quality"]["classification_confidence"], 0.995)
+
     def test_material_source_prefix_is_explicit_in_clean_references(self):
         payload = {
             "document": {"primary_document_type": "purchase_order"},

@@ -24,6 +24,16 @@
         "sha256": {"type": "string"},
         "mime_type": {"type": "string"},
         "type": {"type": "string"},
+        "classification": {
+          "type": "object",
+          "required": ["document_type", "confidence", "source"],
+          "properties": {
+            "document_type": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "source": {"const": "jin-model"}
+          },
+          "additionalProperties": false
+        },
         "format": {"type": "string"},
         "page_count": {"type": "integer", "minimum": 0},
         "languages": {},
@@ -89,6 +99,7 @@
     "quality": {
       "type": "object",
       "properties": {
+        "classification_confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "decision": {"enum": ["CHECKS_PASSED", "REVIEW_REQUIRED"]},
         "requires_review": {"type": "boolean"},
         "review_reasons": {

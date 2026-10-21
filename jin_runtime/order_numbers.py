@@ -53,6 +53,43 @@ def _location_valid(evidence: dict[str, Any]) -> bool:
     )
 
 
+def _order_number_candidates(suggestions: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = list(
+        (suggestions.get("anchored_field_candidates") or {}).get("order_number") or []
+    )
+    anchored = (suggestions.get("anchored_fields") or {}).get("order_number")
+    if isinstance(anchored, dict):
+        candidates.append(anchored)
+    return candidates
+
+
+def _recover_exact_geometry_location(
+    identifier: str,
+    evidence: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Complete missing native-table geometry with an exact same-page anchor."""
+    if _location_valid(evidence) or not _source_contains(identifier, evidence.get("source_text")):
+        return evidence
+    page = evidence.get("page")
+    if not isinstance(page, int) or isinstance(page, bool) or page <= 0:
+        return evidence
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if not str(candidate.get("source") or "").startswith("geometry_explicit_order_"):
+            continue
+        if normalize_identifier(candidate.get("value")) != identifier:
+            continue
+        if candidate.get("page") != page or not _location_valid(candidate):
+            continue
+        repaired = dict(evidence)
+        repaired["bbox"] = candidate["bbox"]
+        repaired["location_recovered_from"] = candidate.get("source")
+        return repaired
+    return evidence
+
+
 def _plausible_corroborating_candidate(value: Any) -> bool:
     """Reject dates and prose before comparing independent PO candidates."""
     text = " ".join(str(value or "").split()).strip()
@@ -146,7 +183,8 @@ def check_order_number(po: dict[str, Any], suggestions: dict[str, Any]) -> dict[
     field = header.get("number") or header.get("order_number") or {}
     value = field.get("value") if isinstance(field, dict) else field
     identifier = normalize_identifier(value)
-    evidence = (field.get("evidence") or {}) if isinstance(field, dict) else {}
+    evidence = dict(field.get("evidence") or {}) if isinstance(field, dict) else {}
+    candidates = _order_number_candidates(suggestions)
     issues: list[str] = []
     corroboration = []
     if not identifier:
@@ -163,6 +201,8 @@ def check_order_number(po: dict[str, Any], suggestions: dict[str, Any]) -> dict[
             source_supported = _source_contains_reconstructed_separator(
                 identifier, evidence.get("source_text")
             )
+        if source_supported:
+            evidence = _recover_exact_geometry_location(identifier, evidence, candidates)
         if not (_location_valid(evidence) and source_supported):
             issues.append("ORDER_NUMBER_EVIDENCE_MISSING")
         original = header.get("number_original")
@@ -199,10 +239,6 @@ def check_order_number(po: dict[str, Any], suggestions: dict[str, Any]) -> dict[
             and (not original_method or original_method in strong_original_methods)
         ):
             issues.append("ORDER_NUMBER_REPLACED_DIFFERENT_CORE_VALUE")
-        candidates = list((suggestions.get("anchored_field_candidates") or {}).get("order_number") or [])
-        anchored = (suggestions.get("anchored_fields") or {}).get("order_number")
-        if isinstance(anchored, dict):
-            candidates.append(anchored)
         seen = set()
         for candidate in candidates:
             if not isinstance(candidate, dict) or not candidate.get("value"):

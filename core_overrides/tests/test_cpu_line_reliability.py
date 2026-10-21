@@ -44,6 +44,7 @@ from uda.business import (
     _repair_dimension_ocr_v5166,
     _repair_native_long_decimal_line_prices_v5170,
     _repair_order_date_delivery_collision_v5170,
+    _repair_order_number_evidence_bbox_v5172,
     _repair_purchase_order_party_roles_v5170,
     _separate_promotional_continuation_notes_v5171,
     _repair_scan_currency_suffix_artifacts_v64,
@@ -1850,6 +1851,29 @@ def test_preserved_order_candidate_keeps_evidence_and_never_inflates_confidence(
     assert po.purchase_order.number is original
     assert po.purchase_order.number.model_dump() == before
     assert po.purchase_order.customer_reference.value == "OTHER-55555"
+
+
+def test_native_table_order_number_recovers_exact_word_bbox_without_changing_value():
+    page = _page([
+        (100, [("N°", 10, 25), ("Commande", 30, 85), ("Date", 170, 200)]),
+        (120, [("CM-", 70, 90), ("00405095", 90, 155), ("06/07/2026", 170, 230)]),
+    ])
+    po = SimpleNamespace(purchase_order=PurchaseOrderHeader())
+    po.purchase_order.number = ExtractedField(
+        value="CM-00405095",
+        raw_value="CM-00405095",
+        normalized_value="CM-00405095",
+        final_confidence=.99,
+        evidence=Evidence(
+            page=1,
+            source_text="CM-00405095",
+            extraction_method="native_table_anchor",
+        ),
+    )
+    assert _repair_order_number_evidence_bbox_v5172(po, [page]) == 1
+    assert po.purchase_order.number.value == "CM-00405095"
+    assert po.purchase_order.number.evidence.bbox == (70, 120, 155, 130)
+    assert _repair_order_number_evidence_bbox_v5172(po, [page]) == 0
 
 
 def test_piece_header_means_document_number_only_in_compact_transaction_table():

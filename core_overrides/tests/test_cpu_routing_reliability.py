@@ -306,6 +306,37 @@ def test_order_with_separate_conditions_keeps_original_page_roles():
     assert result["detected_document_type"] == "purchase_order_with_terms"
 
 
+def test_billing_address_label_does_not_create_invoice_evidence():
+    page = classify_page(
+        "BON DE COMMANDE\nA Facturer a : SIEGE SOCIAL\n"
+        "Code article Designation Quantite Prix unitaire"
+    )
+    assert page["type"] == "purchase_order"
+    assert page["explicit_document_title"] == "purchase_order"
+    assert "invoice" not in page["scores"]
+    assert page["confidence"] >= 0.95
+
+
+def test_explicit_order_title_confidence_is_not_diluted_by_continuation_page():
+    pages = [
+        {
+            "page": 1,
+            "type": "purchase_order",
+            "confidence": 0.995,
+            "explicit_document_title": "purchase_order",
+        },
+        {
+            "page": 2,
+            "type": "purchase_order",
+            "confidence": 0.6055,
+            "explicit_document_title": None,
+        },
+    ]
+    result = aggregate_page_classifications(pages)
+    assert result["primary_document_type"] == "purchase_order"
+    assert result["confidence"] == 0.995
+
+
 def test_quote_pdf_does_not_emit_a_purchase_order_and_requires_review(tmp_path):
     import fitz
 

@@ -1826,6 +1826,12 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
     po = _find_purchase_order(payload)
     header = po.get("purchase_order") or po if po else {}
     document = payload.get("document") or po.get("document") or {}
+    source_quality = payload.get("quality") or {}
+    document_type = (
+        document.get("primary_document_type")
+        or document.get("detected_document_type")
+        or document.get("document_type")
+    )
     decision = payload.get("extraction_decision") or {}
     output_quality = payload.get("output_quality") or {}
     validation = po.get("validation") or {}
@@ -1888,8 +1894,12 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
         "document": {
             "filename": source_filename or document.get("filename"),
             "sha256": document.get("sha256"), "mime_type": document.get("mime_type"),
-            "type": document.get("primary_document_type")
-                    or document.get("detected_document_type") or document.get("document_type"),
+            "type": document_type,
+            "classification": {
+                "document_type": document_type,
+                "confidence": source_quality.get("classification_confidence"),
+                "source": "jin-model",
+            },
             "format": document.get("format_family") or document.get("format"),
             "page_count": document.get("page_count") or len(po.get("pages") or payload.get("pages") or []),
             "languages": document.get("detected_languages") or document.get("language"),
@@ -1930,6 +1940,7 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
             "tax_identifiers": po.get("tax_identifiers"),
         } if po else None,
         "quality": {
+            "classification_confidence": source_quality.get("classification_confidence"),
             "decision": decision.get("status"), "requires_review": decision.get("requires_review", True),
             "review_reasons": decision.get("reasons"),
             "business_validation": validation,
