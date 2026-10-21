@@ -69,9 +69,20 @@ def _references_after_labels(text: str, kind: str) -> list[str]:
         position = first.end()
         while position < len(tail):
             separator = _NEXT_REFERENCE_RE.match(tail[position:])
-            if not separator:
+            if separator:
+                position += separator.end()
+            elif kind == "derogation":
+                # Native PDF reading order can insert the preceding material
+                # number between the label and the actual derogation ID, for
+                # example ``DEROGATION 7733701567 RBGA-10357941``.  Retain the
+                # adjacent candidate so the material-collision guard can select
+                # the commercial reference instead of the article reference.
+                whitespace = re.match(r"\s+", tail[position:])
+                if not whitespace:
+                    break
+                position += whitespace.end()
+            else:
                 break
-            position += separator.end()
             candidate = _REFERENCE_RE.match(tail[position:])
             if not candidate:
                 break
@@ -151,6 +162,13 @@ def _line_material_keys(line: dict[str, Any]) -> set[str]:
         "customer_material_number", "raw_material_reference",
     )
     return {key for key in (_material_key(line.get(field)) for field in fields) if key}
+
+
+def _without_material_collisions(
+    values: list[str], material_keys: set[str]
+) -> list[str]:
+    """A commercial ID cannot silently reuse an extracted article reference."""
+    return [value for value in values if _material_key(value) not in material_keys]
 
 
 def _header_column(headers: list[Any], *markers: str, excluded: tuple[str, ...] = ()) -> int | None:
@@ -301,6 +319,118 @@ def _apply_table_reference_columns(
     return evidence_by_value
 
 
+def _inline_reference_evidence(
+    payload: dict[str, Any],
+    *,
+    kind: str,
+    value: str,
+    page: Any,
+    source_text: str,
+    table_id: Any,
+    table_row: int,
+) -> dict[str, Any]:
+    evidence: dict[str, Any] = {
+        "page": page,
+        "source_text": source_text,
+        "extraction_method": f"structured_table_inline_{kind}_reference_v2",
+        "table_id": table_id,
+        "table_row": table_row,
+    }
+    label_re = _QUOTE_LABEL_RE if kind == "quote" else _DEROGATION_LABEL_RE
+    normalized_value = _material_key(value)
+    for block in payload.get("blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        block_source = block.get("source") or {}
+        if page not in (None, "") and block_source.get("page") != page:
+            continue
+        block_text = str(block.get("text") or "")
+        if not label_re.search(_fold(block_text)):
+            continue
+        if normalized_value not in _material_key(block_text):
+            continue
+        bbox = block_source.get("bbox")
+        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+            evidence["bbox"] = bbox
+            evidence["block_id"] = block.get("id")
+            break
+    return {key: item for key, item in evidence.items() if item not in (None, "")}
+
+
+def _apply_inline_labeled_table_references(
+    payload: dict[str, Any],
+    po: dict[str, Any],
+) -> dict[tuple[int, str, str], dict[str, Any]]:
+    """Link labeled references printed inside the same table row as a product."""
+    lines = [line for line in (po.get("lines") or []) if isinstance(line, dict)]
+    evidence_by_value: dict[tuple[int, str, str], dict[str, Any]] = {}
+    if not lines:
+        return evidence_by_value
+    all_material_keys = set().union(*(_line_material_keys(line) for line in lines))
+    for table in payload.get("tables") or []:
+        if not isinstance(table, dict):
+            continue
+        page = (table.get("source") or {}).get("page") or table.get("page")
+        for row_index, raw_row in enumerate(table.get("data") or []):
+            if not isinstance(raw_row, (list, tuple)):
+                continue
+            logical_lines = [
+                " ".join(source_line.split())
+                for cell in raw_row
+                for source_line in str(cell or "").splitlines()
+                if " ".join(source_line.split())
+            ]
+            labeled: list[tuple[str, str, str]] = []
+            for source_line in logical_lines:
+                for kind in ("quote", "derogation"):
+                    values = _without_material_collisions(
+                        _references_after_labels(source_line, kind),
+                        all_material_keys,
+                    )
+                    labeled.extend((kind, value, source_line) for value in values)
+            if not labeled:
+                continue
+
+            row_text = "\n".join(logical_lines)
+            row_reference_keys = {
+                _material_key(match.group(0))
+                for match in _REFERENCE_RE.finditer(_fold(row_text))
+            }
+            matched_lines = [
+                index for index, line in enumerate(lines)
+                if _line_material_keys(line) & row_reference_keys
+            ]
+            # Ambiguous merged rows are left document-scoped rather than linked
+            # by position or guesswork.
+            if len(matched_lines) != 1:
+                continue
+            line_index = matched_lines[0]
+            line = lines[line_index]
+            for kind, value, source_text in labeled:
+                singular = f"{kind}_number"
+                plural = f"{kind}_numbers"
+                existing = line.get(plural) or []
+                if isinstance(existing, str):
+                    existing = [existing]
+                merged = list(dict.fromkeys([
+                    *(str(item) for item in existing if item),
+                    value,
+                ]))
+                line[plural] = merged
+                if not line.get(singular) or _material_key(line.get(singular)) in all_material_keys:
+                    line[singular] = merged[0]
+                evidence_by_value[(line_index, kind, value)] = _inline_reference_evidence(
+                    payload,
+                    kind=kind,
+                    value=value,
+                    page=page,
+                    source_text=source_text,
+                    table_id=table.get("id"),
+                    table_row=row_index + 1,
+                )
+    return evidence_by_value
+
+
 def _purchase_order(payload: dict[str, Any]) -> dict[str, Any] | None:
     business = payload.get("business_extractions") or {}
     purchase_order = business.get("purchase_order")
@@ -347,6 +477,12 @@ def enrich_commercial_references(payload: dict[str, Any]) -> dict[str, Any]:
                 record["material_numbers"].append(material_value)
 
     table_evidence = _apply_table_reference_columns(payload, po)
+    table_evidence.update(_apply_inline_labeled_table_references(payload, po))
+    document_material_keys = set().union(*(
+        _line_material_keys(line)
+        for line in (po.get("lines") or [])
+        if isinstance(line, dict)
+    )) if po.get("lines") else set()
 
     # Explicit line evidence is authoritative for the association. Existing
     # parser fields are retained and promoted to plural lists.
@@ -372,6 +508,11 @@ def enrich_commercial_references(payload: dict[str, Any]) -> dict[str, Any]:
                 values.append(str(line[singular]))
             values.extend(_references_after_labels(line_text, kind))
             values = list(dict.fromkeys(value for value in values if _valid_reference(value)))
+            values = [
+                value for value in values
+                if (index - 1, kind, value) in table_evidence
+                or _material_key(value) not in _line_material_keys(line)
+            ]
             if not values:
                 continue
             line[plural] = values
@@ -401,7 +542,11 @@ def enrich_commercial_references(payload: dict[str, Any]) -> dict[str, Any]:
             if not source_text:
                 continue
             for kind in ("quote", "derogation"):
-                for value in _references_after_labels(source_text, kind):
+                values = _without_material_collisions(
+                    _references_after_labels(source_text, kind),
+                    document_material_keys,
+                )
+                for value in values:
                     remember(kind, value, {
                         "page": page_number,
                         "source_text": source_text,
@@ -433,7 +578,8 @@ def enrich_commercial_references(payload: dict[str, Any]) -> dict[str, Any]:
         header[plural] = fields
         current = header.get(singular)
         current_value = current.get("value") if isinstance(current, dict) else current
-        if not current_value:
+        selected_values = {field["value"] for field in fields}
+        if not current_value or str(current_value) not in selected_values:
             header[singular] = fields[0]
 
     combined = [records[key] for key in sorted(records)]

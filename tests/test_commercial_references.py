@@ -104,6 +104,72 @@ class CommercialReferenceTests(unittest.TestCase):
 
         self.assertEqual(po["derogation_references"][0]["number"], "DER-88")
 
+    def test_derogation_after_material_collision_uses_distinct_id_and_links_line(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{
+                "page": 1,
+                "text": (
+                    "756059 7733701567\n"
+                    "DÉROGATION 7733701567 RBGA-10357941"
+                ),
+            }],
+            "blocks": [{
+                "id": "derogation-block",
+                "text": "DÉROGATION 7733701567 RBGA-10357941",
+                "source": {"page": 1, "bbox": [17, 394, 158, 413]},
+            }],
+            "tables": [{
+                "id": "line-table",
+                "source": {"page": 1},
+                "headers": ["DESIGNATION CODE REFERENCE FOURNISSEUR", "QUANTITES"],
+                "data": [[
+                    (
+                        "UNITE EXT MONOSPLIT CLIMATE 3000I 3,5KW R32\n"
+                        "756059 7733701567\n"
+                        "7733701567\n"
+                        "DÉROGATION RBGA-10357941"
+                    ),
+                    "1,00",
+                ]],
+            }],
+            "business_extractions": {"purchase_order": {
+                "purchase_order": {},
+                "lines": [{
+                    "line_number": "1",
+                    "material_number": "7733701567",
+                    "supplier_material_number": "7733701567",
+                    "customer_material_number": "756059",
+                    "description": "UNITE EXT MONOSPLIT CLIMATE 3000I 3,5KW R32",
+                    "quantity": 1,
+                    "page": 1,
+                }],
+            }},
+        }
+
+        out = enrich_commercial_references(payload)
+        po = out["business_extractions"]["purchase_order"]
+        line = po["lines"][0]
+        reference = po["derogation_references"][0]
+
+        self.assertEqual(line["derogation_numbers"], ["RBGA-10357941"])
+        self.assertEqual(reference["number"], "RBGA-10357941")
+        self.assertEqual(reference["scope"], "line")
+        self.assertEqual(reference["line_numbers"], ["1"])
+        self.assertEqual(reference["material_numbers"], ["7733701567"])
+        self.assertEqual(reference["evidence"][0]["bbox"], [17, 394, 158, 413])
+        self.assertNotIn(
+            "7733701567",
+            [item["number"] for item in po["derogation_references"]],
+        )
+        self.assertNotIn("quote_references", po)
+
+        clean = build_clean_output(out)
+        self.assertEqual(
+            clean["order"]["line_items"][0]["references"]["derogation_numbers"],
+            ["RBGA-10357941"],
+        )
+
     def test_quote_column_is_matched_by_material_quantity_and_amount(self):
         payload = {
             "document": {"primary_document_type": "purchase_order"},
