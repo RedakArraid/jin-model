@@ -520,7 +520,12 @@ def _enhance_inline_transaction_header_v46(po, pages, config: dict):
         # Port : Livre is logistics, not a monetary freight amount.
         pm=re.search(r"\bPORT\s*[:.-]?\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9 .'-]{1,40})", text, flags=re.I)
         if pm and not re.search(r"\d+[,.]\d+", pm.group(1)):
-            po.logistics.shipping_method=" ".join(pm.group(1).split())
+            shipping_value=" ".join(pm.group(1).split())
+            # ``Port franco`` is a freight term. On forms with a delivery
+            # address in the same OCR row, a postal code can otherwise be
+            # appended and published as the shipping method.
+            if not re.match(r"franco\b", _fold(shipping_value)):
+                po.logistics.shipping_method=shipping_value
 
     # Landscape purchase orders often place the metadata block below 48% of
     # page height. Scan farther only for the unambiguous full-line Date grammar;
@@ -1353,13 +1358,14 @@ def _enhance_requested_delivery_date_v5169(po, pages, config: dict):
         r"|livraison\s+(?:souhaitee?|demandee?|requise?|prevue?)(?:\s+le)?"
         r"|livraison\s+par\s+(?:vos|nos)\s+soins\s+le"
         r"|(?:a\s+)?livrer\s+(?:pour\s+)?le"
+        r"|delai(?:\s+de\s+livraison)?"
         r"|requested\s+delivery\s+date|delivery\s+date|required\s+date"
         r"|lieferdatum|liefertermin"
         r")\b",
         re.I,
     )
     date_token = re.compile(
-        r"(?<!\d)(?:[0-3]?\d[/.-](?:0?\d|1[0-2])[/.-](?:\d{2}|\d{4})|"
+        r"(?<!\d)(?:[0-3]?\d[ /.-]+(?:0?\d|1[0-2])[ /.-]+(?:\d{2}|\d{4})|"
         r"(?:19|20)\d{2}[/.-](?:0?\d|1[0-2])[/.-][0-3]?\d)(?!\d)"
     )
     candidates = []
@@ -1391,10 +1397,12 @@ def _enhance_requested_delivery_date_v5169(po, pages, config: dict):
                 match = date_token.search(suffix)
                 if not match:
                     continue
-                parsed = parse_date(match.group(0))
+                raw_date = match.group(0)
+                normalized_date = re.sub(r"\s+", "/", raw_date.strip())
+                parsed = parse_date(normalized_date)
                 if parsed:
                     candidates.append((
-                        parsed, match.group(0), page.page, evidence_row.bbox,
+                        parsed, raw_date, page.page, evidence_row.bbox,
                         row.text if evidence_row is row else f"{row.text} | {evidence_row.text}",
                         min(float(row.confidence), float(evidence_row.confidence)),
                     ))
@@ -3158,6 +3166,145 @@ def _repair_purchase_order_party_roles_v5170(po, pages, config: dict):
     po.supplier = new_supplier
     po = _sanitize_party_addresses_v48(po, config)
     return po, 1
+
+
+def _repair_supplier_purchase_order_addressee_v5173(po, pages, config: dict):
+    """Resolve vendor addressee blocks on ``COMMANDE FOURNISSEUR`` forms.
+
+    Some scanned forms identify the vendor through an unlabelled block such as
+    ``ELM LEBLANC / SERVICE ACHATS / COMPTE CLIENT ...``. Generic party parsing
+    can retain only ``COMPTE ...`` as the buyer and a border artefact as supplier.
+    The repair requires the supplier-order title, the purchasing-service/account
+    block and a credible organisation immediately above it. Buyer recovery is
+    performed only when the issuer's e-mail domain also matches the ship-to name.
+    """
+    import re
+    from po_ocr.extract import all_rows
+    from po_ocr.models import Address
+
+    if not config.get("layout", {}).get(
+        "supplier_purchase_order_addressee_repair_v5173", True
+    ):
+        return po, 0
+    if not pages:
+        return po, 0
+    page = pages[0]
+    folded_page = _fold(page.text)
+    if not re.search(r"\bcommande\s+fournisseur\b", folded_page):
+        return po, 0
+
+    rows = all_rows([page], y_factor=0.55)
+    anchor_index = next((
+        index for index, row in enumerate(rows)
+        if re.search(r"\bservice\s+achats?\b|\bcompte\s+client\b", _fold(row.text))
+        and _row_center_safe(row) < page.height * 0.48
+    ), None)
+    if anchor_index is None:
+        return po, 0
+
+    supplier_candidate = None
+    anchor_text = " ".join(rows[anchor_index].text.split()).strip(" -|:;")
+    same_row_prefix = re.split(
+        r"\b(?:service\s+achats?|compte\s+client)\b",
+        anchor_text,
+        maxsplit=1,
+        flags=re.I,
+    )[0].strip(" -|:;")
+    if _company_name_quality_v48(same_row_prefix) >= 0.62:
+        supplier_candidate = same_row_prefix
+    for row in reversed(rows[max(0, anchor_index - 4):anchor_index]):
+        if supplier_candidate:
+            break
+        candidate = " ".join(row.text.split()).strip(" -|:;")
+        folded = _fold(candidate)
+        if (
+            folded in {"service achats", "service achat", "commande fournisseur"}
+            or "compte client" in folded
+            or _company_name_quality_v48(candidate) < 0.62
+        ):
+            continue
+        supplier_candidate = candidate
+        break
+    if not supplier_candidate:
+        return po, 0
+
+    repairs = 0
+    supplier_bad = (
+        _bad_party_name(po.supplier.name)
+        or _company_name_quality_v48(po.supplier.name) < 0.35
+    )
+    if supplier_bad:
+        po.supplier.name = supplier_candidate
+        po.supplier.legal_name = supplier_candidate
+        repairs += 1
+
+    addressee_postal = None
+    addressee_city = None
+    for row in rows[anchor_index:anchor_index + 7]:
+        match = re.search(r"\b(\d{5})\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .'-]{1,40})", row.text)
+        if match:
+            addressee_postal = match.group(1)
+            addressee_city = " ".join(match.group(2).split()).strip(" -|:;")
+            break
+    buyer_address = po.buyer.address.model_copy(deep=True)
+    if addressee_postal and (
+        not po.supplier.address.postal_code
+        or po.supplier.address.postal_code == addressee_postal
+    ):
+        if buyer_address.postal_code == addressee_postal:
+            po.supplier.address = buyer_address.model_copy(deep=True)
+        po.supplier.address.postal_code = addressee_postal
+        po.supplier.address.city = addressee_city
+
+    buyer_name = " ".join(str(po.buyer.name or "").split())
+    if not re.fullmatch(r"(?:compte(?:\s+client)?|client)\s*\d+", _fold(buyer_name)):
+        return po, repairs
+
+    domain_match = re.search(r"@([A-Za-z0-9.-]+)", str(page.text or ""), flags=re.I)
+    if not domain_match:
+        return po, repairs
+    domain_parts = [part for part in domain_match.group(1).strip(".").split(".") if part]
+    if len(domain_parts) < 2:
+        return po, repairs
+    domain_stem = re.sub(r"[^a-z0-9]", "", _fold(domain_parts[-2]))
+    ship_name = " ".join(str(po.ship_to.name or "").split())
+    ship_token = ship_name.split()[0] if ship_name else ""
+    ship_key = re.sub(r"[^a-z0-9]", "", _fold(ship_token))
+    if not domain_stem or ship_key != domain_stem:
+        return po, repairs
+
+    po.buyer.name = ship_token
+    po.buyer.legal_name = ship_token
+    po.buyer.address = Address()
+    issuer_header = " | ".join(
+        row.text for row in rows if _row_center_safe(row) <= page.height * 0.24
+    )
+    address_match = re.search(
+        r"(?<!\d)(\d{1,4}\s+(?:rue|avenue|av\.?|boulevard|bd\.?|route|chemin)\s+"
+        r"[^\d|]{2,80}?)(?:\s*[-–—|]\s*|\s+)(\d{5})\s+"
+        r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’-]{1,}(?:\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’-]{1,}){0,3})\b",
+        issuer_header,
+        flags=re.I,
+    )
+    if address_match:
+        issuer_street = " ".join(address_match.group(1).split()).rstrip(" -–—|:;")
+        issuer_city = " ".join(address_match.group(3).split()).strip(" -|:;")
+        issuer_city = re.split(
+            r"\s+(?:commandez?|tel(?:ephone)?|fax|www|e-?mail|siret|siren|tva)\b",
+            issuer_city,
+            maxsplit=1,
+            flags=re.I,
+        )[0].strip(" -|:;")
+        po.buyer.address = Address(
+            line1=issuer_street,
+            street=issuer_street,
+            postal_code=address_match.group(2),
+            city=issuer_city,
+            country="France",
+            country_code="FR",
+        )
+    repairs += 1
+    return po, repairs
 
 
 def _downgrade_unreconciled_derived_lines_v5170(po, config: dict):
@@ -5556,7 +5703,12 @@ def _merge_explicit_page_charges_v63(po, pages, config: dict):
     return po, dict(sorted(counts.items()))
 
 
-def _material_anchored_numeric_row_items_v61(pages, config: dict, default_currency: str = "EUR"):
+def _material_anchored_numeric_row_items_v61(
+    pages,
+    config: dict,
+    default_currency: str = "EUR",
+    target_total: float | None = None,
+):
     """Recover OCR rows from a strong material anchor and arithmetic columns.
 
     This covers degraded scans where table headers are only partly legible and the
@@ -5567,6 +5719,7 @@ def _material_anchored_numeric_row_items_v61(pages, config: dict, default_curren
     from po_ocr.extract import all_rows
     from po_ocr.models import LineItem
     from uda.material_references import load_material_reference_profile, normalize_reference, score_material_reference
+    from decimal import Decimal, ROUND_HALF_UP
     import re
 
     layout = config.get("layout", {})
@@ -5579,6 +5732,7 @@ def _material_anchored_numeric_row_items_v61(pages, config: dict, default_curren
     unit_re = re.compile(r"^(?:U|UN|UNIT|PIEC(?:E|ES)?|PCE|PCS|EA|KG|BOX|L|M)$", re.I)
     number_re = re.compile(r"[-+]?(?:\d{1,3}(?:[ .']\d{3})+|\d+)(?:[,.]\d+)?")
     out = []
+    incomplete = []
 
     def center(word):
         return (word.bbox[0] + word.bbox[2]) / 2
@@ -5592,10 +5746,18 @@ def _material_anchored_numeric_row_items_v61(pages, config: dict, default_curren
         for index, row in enumerate(rows):
             if _row_center_safe(row) < page.height * 0.18 or _row_center_safe(row) > page.height * 0.80:
                 continue
-            # Table semantics may be split across several OCR rows.
+            # Product rows commonly alternate with a wrapped description and a
+            # secondary discount row. A fixed 12-row look-back therefore lost
+            # the table header after only two products on dense scanned orders.
+            context_rows = max(12, int(layout.get(
+                "material_numeric_header_context_rows", 64
+            )))
+            context_height = float(layout.get(
+                "material_numeric_header_context_height_ratio", 0.30
+            ))
             header_rows = [
-                previous for previous in rows[max(0, index - 12):index]
-                if 0 < row.bbox[1] - previous.bbox[3] <= page.height * 0.10
+                previous for previous in rows[max(0, index - context_rows):index]
+                if 0 < row.bbox[1] - previous.bbox[3] <= page.height * context_height
             ]
             header_text = _fold(" ".join(previous.text for previous in header_rows))
             if not (
@@ -5658,9 +5820,9 @@ def _material_anchored_numeric_row_items_v61(pages, config: dict, default_curren
                         # Prefer the rightmost coherent pair: preceding columns are
                         # commonly list price and discount, followed by net and amount.
                         arithmetic_pairs.append((right, left, price, amount))
-            if not arithmetic_pairs:
-                continue
-            _, _, price, amount = max(arithmetic_pairs)
+            price = amount = None
+            if arithmetic_pairs:
+                _, _, price, amount = max(arithmetic_pairs)
 
             same_row_description = [
                 word.text for word in ordered
@@ -5689,26 +5851,132 @@ def _material_anchored_numeric_row_items_v61(pages, config: dict, default_curren
             if len(re.findall(r"[A-Za-zÀ-ÿ]{2,}", description)) < 2:
                 continue
             bbox_words = row.words + description_words
+            if price is not None and amount is not None:
+                out.append(LineItem(
+                    line_number=str(len(out) + 1),
+                    material_number=reference,
+                    article_number=reference,
+                    supplier_material_number=reference,
+                    description=description,
+                    quantity=quantity,
+                    ordered_quantity=quantity,
+                    uom=uom or None,
+                    unit_price=price,
+                    net_unit_price=price,
+                    line_total=amount,
+                    line_net_amount=amount,
+                    currency=default_currency,
+                    raw_text=" | ".join(x for x in (row.text, description) if x),
+                    page=page.page,
+                    bbox=_bbox_union(bbox_words),
+                    confidence=min(float(row.confidence), 0.95) * 0.97,
+                ))
+                continue
+
+            # A vertical rule can hide the final net/amount cells from OCR while
+            # leaving the list price and discounts intact. Record such a row as
+            # a candidate, but publish it only if its printed discount chain and
+            # the explicit document total independently reconcile.
+            signed_discounts = []
+            discount_words = []
+            for following in rows[index + 1:index + 4]:
+                gap = following.bbox[1] - row.bbox[3]
+                if gap > page.height * 0.035:
+                    break
+                for word in following.words:
+                    word_center = center(word)
+                    if not center(quantity_word) < word_center < page.width * 0.90:
+                        continue
+                    token = str(word.text or "").strip()
+                    if not re.fullmatch(r"\+\s*\d{1,2}(?:[,.]\d+)?\s*%?", token):
+                        continue
+                    value = parsed_number(token)
+                    if value is not None and 0 < float(value) < 100:
+                        signed_discounts.append(float(value))
+                        discount_words.append(word)
+            if not signed_discounts or not after_quantity:
+                continue
+            discount_anchor = max(center(word) for word in discount_words)
+            list_price = float(after_quantity[0][2])
+            primary_discounts = [
+                float(value)
+                for _, word, value in after_quantity[1:]
+                if center(word) <= discount_anchor + page.width * 0.025
+                and 0 < float(value) < 100
+            ]
+            discounts = primary_discounts + signed_discounts
+            if list_price <= 0 or not primary_discounts:
+                continue
+            net_factor = Decimal("1")
+            for discount in discounts:
+                net_factor *= Decimal("1") - Decimal(str(discount)) / Decimal("100")
+            raw_net_price = Decimal(str(list_price)) * net_factor
+            expected_amount = (
+                Decimal(str(quantity)) * raw_net_price
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            incomplete.append({
+                "page": page,
+                "row": row,
+                "reference": reference,
+                "description": description,
+                "quantity": quantity,
+                "uom": uom,
+                "raw_net_price": raw_net_price,
+                "expected_amount": expected_amount,
+                "bbox_words": bbox_words + discount_words,
+            })
+
+    if target_total not in (None, 0) and len(incomplete) == 1 and out:
+        candidate = incomplete[0]
+        known_sum = sum(
+            (Decimal(str(line.line_total)) for line in out if line.line_total is not None),
+            Decimal("0"),
+        )
+        residual = float(
+            (Decimal(str(target_total)) - known_sum).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+        )
+        expected = float(candidate["expected_amount"])
+        tolerance = max(0.05, abs(expected) * 0.006)
+        if residual > 0 and abs(residual - expected) <= tolerance:
+            row = candidate["row"]
             out.append(LineItem(
                 line_number=str(len(out) + 1),
-                material_number=reference,
-                article_number=reference,
-                supplier_material_number=reference,
-                description=description,
-                quantity=quantity,
-                ordered_quantity=quantity,
-                uom=uom or None,
-                unit_price=price,
-                net_unit_price=price,
-                line_total=amount,
-                line_net_amount=amount,
+                material_number=candidate["reference"],
+                article_number=candidate["reference"],
+                supplier_material_number=candidate["reference"],
+                description=candidate["description"],
+                quantity=candidate["quantity"],
+                ordered_quantity=candidate["quantity"],
+                uom=candidate["uom"] or None,
+                unit_price=float(candidate["raw_net_price"].quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )),
+                net_unit_price=float(candidate["raw_net_price"].quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )),
+                line_total=residual,
+                line_net_amount=residual,
                 currency=default_currency,
-                raw_text=" | ".join(x for x in (row.text, description) if x),
-                page=page.page,
-                bbox=_bbox_union(bbox_words),
-                confidence=min(float(row.confidence), 0.95) * 0.97,
+                raw_text=" | ".join(x for x in (row.text, candidate["description"]) if x),
+                page=candidate["page"].page,
+                bbox=_bbox_union(candidate["bbox_words"]),
+                confidence=min(float(row.confidence), 0.95) * 0.90,
+                warnings=[
+                    "net_price_recovered_from_printed_discount_chain",
+                    "line_amount_recovered_from_reconciled_document_residual",
+                ],
             ))
-    return _dedupe_line_items(out)
+
+    result = _dedupe_line_items(out)
+    result.sort(key=lambda line: (
+        int(line.page or 0),
+        float(line.bbox[1]) if line.bbox else float("inf"),
+    ))
+    for number, line in enumerate(result, 1):
+        line.line_number = str(number)
+    return result
 
 
 def _enhance_strict_totals_v47(po, pages, config: dict):
@@ -5783,6 +6051,15 @@ def _sanitize_double_counted_shipping_v47(po, config: dict):
     product line and again as a document-level shipping component.
     """
     if not config.get("layout",{}).get("prevent_shipping_double_count",True): return po
+    commercial=getattr(po,"commercial",None)
+    if "port franco" in _fold(getattr(commercial,"freight_terms",None)):
+        # ``Franco`` explicitly means that no freight is billed to the buyer.
+        # Generic total extraction can otherwise turn the delivery postal code
+        # printed on the same OCR row into a shipping amount.
+        po.totals.total_shipping=None
+        po.totals.total_freight=None
+        commercial.freight_amount=None
+        commercial.shipping_cost=None
     if not po.lines or po.totals.total_net is None: return po
     vals=[x.line_total for x in po.lines if x.line_total is not None]
     if not vals: return po
@@ -6601,8 +6878,19 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     material_split_lines, material_split_charges = _material_anchored_split_table_items_v61(
         pages, config, default_currency
     )
+    material_numeric_target = next((
+        value for value in (
+            po.totals.total_before_tax,
+            po.totals.total_net,
+            po.totals.subtotal,
+        )
+        if value not in (None, 0)
+    ), None)
     material_numeric_lines = _material_anchored_numeric_row_items_v61(
-        pages, config, default_currency
+        pages,
+        config,
+        default_currency,
+        target_total=material_numeric_target,
     )
     explicit_supplier_reference_header = any(
         re.search(
@@ -6806,6 +7094,9 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     po = _recover_roles_v48(po, tables, pages, config)
     po,parser_diag["purchase_order_party_role_repairs"]=(
         _repair_purchase_order_party_roles_v5170(po,pages,config)
+    )
+    po,parser_diag["supplier_purchase_order_addressee_repairs"]=(
+        _repair_supplier_purchase_order_addressee_v5173(po,pages,config)
     )
     po = _sanitize_summary_totals_v46(po, pages, config, default_currency=default_currency)
     po = _enhance_strict_totals_v47(po, pages, config)

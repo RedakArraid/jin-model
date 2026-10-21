@@ -46,12 +46,14 @@ from uda.business import (
     _repair_order_date_delivery_collision_v5170,
     _repair_order_number_evidence_bbox_v5172,
     _repair_purchase_order_party_roles_v5170,
+    _repair_supplier_purchase_order_addressee_v5173,
     _separate_promotional_continuation_notes_v5171,
     _repair_scan_currency_suffix_artifacts_v64,
     _repair_legal_footer_validation_v65,
     _reconcile_requested_delivery_dates_v5169,
     _separate_additional_charge_lines_v62,
     _sanitize_legal_footer_lines_v48,
+    _sanitize_double_counted_shipping_v47,
     _sanitize_internal_reference_v47,
     _sanitize_non_product_lines_v61,
     _price_then_quantity_table_items,
@@ -165,6 +167,23 @@ def test_explicit_requested_delivery_date_uses_date_after_label_not_order_date()
         po.purchase_order.expected_delivery_date.evidence.extraction_method
         == "explicit_requested_delivery_date_v5169"
     )
+
+
+def test_requested_delivery_date_accepts_standalone_delai_with_spaced_date():
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    page = _page([
+        (100, [("DELAI", 20, 55), ("26", 65, 78), ("10", 82, 95),
+               ("26", 99, 112), ("IN", 130, 145), ("2", 150, 156)]),
+    ])
+
+    _enhance_requested_delivery_date_v5169(po, [page], load_config(None))
+
+    assert po.purchase_order.expected_delivery_date.value == "2026-10-26"
+    assert po.logistics.requested_delivery_date == "2026-10-26"
 
 
 def test_requested_delivery_date_ignores_delivery_policy_prose_without_date():
@@ -299,6 +318,45 @@ def test_purchase_order_addressee_is_supplier_and_explicit_bill_to_is_buyer():
     assert po.supplier.name == "LEBLANC E.L.M."
     assert po.supplier.address.postal_code == "93711"
     assert po.supplier.vat_number is None
+
+
+def test_supplier_order_service_block_repairs_vendor_and_generic_account_buyer():
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    po.buyer = Party(
+        name="COMPTE 18030", legal_name="COMPTE 18030",
+        address=Address(postal_code="93711", city="DRANCY CEDEX"),
+    )
+    po.supplier = Party(name="y", legal_name="y")
+    po.ship_to = Party(name="CATRYBAYART PERENCHIES")
+    page = _page([
+        (35, [("COMMANDE", 180, 250), ("FOURNISSEUR", 255, 350)]),
+        (55, [("contact@catrybayart.com", 20, 155)]),
+        (75, [("76", 20, 32), ("rue", 36, 54), ("d'Emmerin", 58, 115),
+              ("-", 118, 122)]),
+        (90, [("59000", 20, 50), ("LILLE", 55, 90),
+              ("Commandez", 105, 165), ("en", 170, 185), ("ligne", 190, 220)]),
+        (180, [("ELM", 200, 225), ("LEBLANC", 230, 280),
+               ("SERVICE", 285, 330), ("ACHATS", 335, 375)]),
+        (200, [("COMPTE", 220, 270), ("CLIENT", 275, 315), ("18030", 320, 355)]),
+        (220, [("93711", 220, 255), ("DRANCY", 260, 310), ("CEDEX", 315, 350)]),
+    ])
+
+    _, repaired = _repair_supplier_purchase_order_addressee_v5173(
+        po, [page], load_config(None)
+    )
+
+    assert repaired == 2
+    assert po.supplier.name == "ELM LEBLANC"
+    assert po.supplier.address.postal_code == "93711"
+    assert po.supplier.address.city == "DRANCY CEDEX"
+    assert po.buyer.name == "CATRYBAYART"
+    assert po.buyer.address.street == "76 rue d'Emmerin"
+    assert po.buyer.address.postal_code == "59000"
+    assert po.buyer.address.city == "LILLE"
 
 
 def test_unreconciled_derived_amount_is_not_left_high_confidence():
@@ -1121,6 +1179,78 @@ def test_material_anchor_recovers_degraded_numeric_row_and_wrapped_description()
     assert line.supplier_material_number == "7716780266"
     assert line.description == "THERMOSTAT D'AMBIANCE FILAIRE TRL"
     assert (line.quantity, line.uom, line.unit_price, line.line_total) == (1, "PCE", 72.36, 72.36)
+
+
+def test_material_anchor_keeps_long_table_context_and_reconciles_one_hidden_amount():
+    rows = [
+        (180, [("Article", 10, 45), ("Désignation", 120, 190),
+               ("unit.", 390, 420), ("Net", 455, 480), ("Montant", 525, 570)]),
+    ]
+    values = [
+        ("7733701997", 5, "242,00", "98,01", "490,05"),
+        ("7733701568", 2, "463,00", "187,52", "375,03"),
+        ("7733701809", 2, "655,00", "265,28", "530,55"),
+        ("7733701935", 2, "2398,00", "971,19", "1942,38"),
+        ("7733701936", 2, "2736,00", "1108,08", "2216,16"),
+        ("7733701937", 2, "3261,00", None, None),
+        ("7733701995", 2, "1118,00", "503,10", "1006,20"),
+        ("7733703059", 1, "410,67", "410,67", "410,67"),
+    ]
+    for index, (reference, quantity, list_price, net_price, amount) in enumerate(values):
+        y = 220 + index * 30
+        cells = [
+            (reference, 20, 85), (f"{quantity},000", 310, 340),
+            ("PIEC", 350, 380), (list_price, 405, 440),
+            ("55,00", 450, 480),
+        ]
+        if net_price and amount:
+            cells.extend([(net_price, 500, 530), (amount, 550, 580)])
+        cells.append(("6", 590, 595))
+        rows.append((y, cells))
+        rows.append((y + 12, [
+            ("PAC", 20, 45), ("CLIMATE", 50, 95),
+            (f"MODELE{index + 1}", 100, 155), ("+10,00", 450, 480),
+        ]))
+    page = _page(rows)
+
+    lines = _material_anchored_numeric_row_items_v61(
+        [page], {}, target_total=9612.45
+    )
+
+    assert len(lines) == 8
+    assert [line.material_number for line in lines] == [value[0] for value in values]
+    assert round(sum(line.line_total for line in lines), 2) == 9612.45
+    recovered = lines[5]
+    assert (recovered.unit_price, recovered.line_total) == (1320.71, 2641.41)
+    assert "net_price_recovered_from_printed_discount_chain" in recovered.warnings
+    assert "line_amount_recovered_from_reconciled_document_residual" in recovered.warnings
+
+
+def test_port_franco_does_not_turn_delivery_postal_code_into_shipping_cost():
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    po.commercial.freight_terms = "Port franco"
+    po.commercial.freight_amount = 59840.0
+    po.commercial.shipping_cost = 59840.0
+    po.totals.total_shipping = 59840.0
+    po.totals.total_freight = 59840.0
+    page = _page([(370, [
+        ("Port", 20, 45), ("franco", 50, 85),
+        ("59840", 300, 335), ("PERENCHIES", 340, 410),
+    ])])
+
+    _enhance_inline_transaction_header_v46(po, [page], {})
+    _sanitize_double_counted_shipping_v47(po, {})
+
+    assert po.logistics.shipping_method is None
+    assert po.commercial.freight_terms == "Port franco"
+    assert po.commercial.freight_amount is None
+    assert po.commercial.shipping_cost is None
+    assert po.totals.total_shipping is None
+    assert po.totals.total_freight is None
 
 
 def test_price_then_quantity_layout_calculates_missing_line_amount():
