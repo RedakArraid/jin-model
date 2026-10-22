@@ -12,7 +12,9 @@ de GenieCommande. L'interface est disponible sur `/studio.html` et son API sous
 - statuts par champ : correct, corrigé, absent, ambigu ou à vérifier ;
 - dessin d'une zone normalisée sur chaque page du PDF ;
 - brouillons et révisions immuables ;
-- validation humaine explicite avec identifiant de l'annotateur ;
+- comptes nominatifs, sessions sécurisées et droits par rôle ;
+- validation humaine explicitement attribuée à l'utilisateur connecté ;
+- journal d'audit des connexions et des opérations sensibles ;
 - création de datasets versionnés depuis les seules annotations validées ;
 - export d'un manifeste et de régions compatibles avec le pipeline layout ;
 - mise en file et exécution isolée d'un entraînement candidat.
@@ -24,21 +26,59 @@ ne migre aucune ancienne correction implicitement.
 ## Configuration
 
 ```text
-JIN_STUDIO_TOKEN=<secret-long-et-aleatoire>
+JIN_STUDIO_SERVICE_TOKEN=<secret-machine-optionnel>
+JIN_STUDIO_PASSWORD_MIN_LENGTH=8
+JIN_STUDIO_SESSION_HOURS=12
+JIN_STUDIO_COOKIE_SECURE=auto
 JIN_STUDIO_DIR=/app/data/studio
 JIN_STUDIO_SHARED_STORAGE=1
 JIN_STUDIO_MIN_TRAINING_DOCUMENTS=20
 JIN_TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 ```
 
-Lorsque `JIN_STUDIO_TOKEN` est vide, le runtime accepte temporairement
-`JIN_FEEDBACK_TOKEN` pour assurer la compatibilité locale. En environnement
-partagé, utiliser deux secrets distincts.
+Les utilisateurs humains ne manipulent plus de jeton. Après authentification,
+le serveur crée une session aléatoire conservée dans SQLite et remet au
+navigateur un cookie `HttpOnly`, `SameSite=Strict`. Les mutations exigent aussi
+un en-tête CSRF propre à la session. En HTTPS, `JIN_STUDIO_COOKIE_SECURE=auto`
+active automatiquement l'attribut `Secure` grâce à `X-Forwarded-Proto`.
 
-Le navigateur conserve le token dans `sessionStorage`, uniquement pour
-l'onglet courant. Il l'envoie dans `Authorization: Bearer ...`; il n'est jamais
-placé dans l'URL. La route et le stockage doivent rester derrière HTTPS et un
-contrôle d'accès réseau.
+`JIN_STUDIO_SERVICE_TOKEN` est facultatif et réservé aux appels
+machine-à-machine, par exemple l'import futur depuis GenieCommande. Il ne donne
+jamais accès à l'administration des utilisateurs. `JIN_STUDIO_TOKEN`, puis
+`JIN_FEEDBACK_TOKEN`, restent des alias temporaires de compatibilité pour les
+anciens clients techniques ; une nouvelle installation doit utiliser le nom
+explicite `JIN_STUDIO_SERVICE_TOKEN`.
+
+## Premier administrateur
+
+La création initiale se fait dans un terminal interactif afin que le mot de
+passe n'apparaisse ni dans Git, ni dans l'historique du shell :
+
+```powershell
+docker compose exec api python -m jin_runtime.studio_admin create-user `
+  --username khadara `
+  --display-name "Khadara" `
+  --role ADMIN
+```
+
+La commande demande deux fois le mot de passe. Les comptes suivants sont créés
+depuis l'onglet **Utilisateurs** de JIN Studio. Les mots de passe sont hachés
+avec `scrypt`; cinq échecs successifs verrouillent le compte pendant quinze
+minutes. Modifier un mot de passe révoque toutes les sessions du compte.
+
+## Rôles
+
+| Rôle | Capacités |
+|---|---|
+| Lecture | Consulter documents, datasets et entraînements |
+| Annotation | Importer et enregistrer des brouillons |
+| Validation | Annoter et valider les données d'apprentissage |
+| Entraînement | Créer les datasets et lancer les entraînements |
+| Administration | Gérer les comptes, les rôles et le journal d'audit |
+
+Un utilisateur peut cumuler plusieurs rôles. Le dernier administrateur actif
+ne peut être désactivé ou rétrogradé. Les droits sont relus à chaque requête :
+une désactivation est donc effective immédiatement.
 
 `JIN_STUDIO_SHARED_STORAGE=1` est activé par Compose pour permettre à l'API et
 au worker, isolés dans deux espaces utilisateurs Docker, d'écrire dans la même
@@ -114,6 +154,11 @@ Avant promotion, un futur incrément doit encore fournir :
 ## API principale
 
 ```text
+GET    /studio/auth/config
+POST   /studio/auth/login
+GET    /studio/auth/me
+POST   /studio/auth/logout
+POST   /studio/auth/change-password
 GET    /studio/status
 GET    /studio/field-catalog
 POST   /studio/documents
@@ -126,6 +171,11 @@ POST   /studio/datasets
 GET    /studio/datasets
 POST   /studio/training-runs
 GET    /studio/training-runs
+GET    /studio/users
+POST   /studio/users
+PATCH  /studio/users/{id}
+POST   /studio/users/{id}/password
+GET    /studio/audit-events
 ```
 
 ## Intégration future avec GenieCommande
@@ -135,6 +185,5 @@ backend pourra créer un document JIN Studio en envoyant le PDF, l'extraction
 JIN originale et le résultat métier corrigé. L'interface GenieCommande
 affichera uniquement « Ouvrir dans JIN Studio ».
 
-Cette liaison devra utiliser une session courte et signée plutôt que transmettre
-le token permanent au navigateur. Elle constitue un incrément séparé afin de
-ne pas fragiliser le parcours ADV existant.
+Cette liaison utilisera `JIN_STUDIO_SERVICE_TOKEN` côté serveurs. Aucun secret
+technique ne devra être transmis au navigateur GenieCommande.

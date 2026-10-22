@@ -15,10 +15,19 @@ test('JIN Studio contains every static DOM id used by its frontend', () => {
   assert.deepEqual(missing, []);
 });
 
-test('JIN Studio keeps credentials out of URLs and sends an authorization header', () => {
-  assert.match(js, /sessionStorage\.setItem\('jinStudioToken'/);
-  assert.match(js, /Authorization: `Bearer \$\{state\.token\}`/);
+test('JIN Studio uses same-origin sessions and CSRF without browser bearer tokens', () => {
+  assert.match(js, /credentials: 'same-origin'/);
+  assert.match(js, /headers\['X-CSRF-Token'\]/);
+  assert.doesNotMatch(js, /jinStudioToken/);
+  assert.doesNotMatch(js, /Authorization: `Bearer/);
   assert.doesNotMatch(js, /[?&](?:token|access_token)=/);
+});
+
+test('JIN Studio exposes role-based user administration', () => {
+  assert.match(html, /id="usersSection"/);
+  assert.match(html, /id="createUserForm"/);
+  assert.match(js, /users\.manage/);
+  assert.match(js, /audit-events/);
 });
 
 test('JIN Studio exposes spatial annotation and explicit human validation', () => {

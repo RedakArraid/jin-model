@@ -36,3 +36,15 @@ ENV JIN_OFFLINE=1 \
 
 EXPOSE 8000
 CMD ["uvicorn", "jin_runtime.app:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# Explicit test target: production images never contain pytest or the test tree.
+FROM runtime AS test
+RUN pip install --no-cache-dir "pytest>=8,<10"
+WORKDIR /workspace
+COPY . /workspace/
+ENV PYTHONPATH=/workspace:/workspace/tests/support:/app
+CMD ["python", "-m", "pytest", "tests", "-q"]
+
+# Keep the default final image minimal even though the reusable test target is
+# declared above it.
+FROM runtime AS production

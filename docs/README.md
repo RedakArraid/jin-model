@@ -3,13 +3,13 @@
 Cette page distingue la documentation opérationnelle actuelle des rapports et
 notes historiques. La source de vérité de version est
 `jin_runtime/__init__.py`; la version active est
-`5.18.0-jin-studio`.
+`5.19.0-studio-identity`.
 
 ## Versions à ne pas confondre
 
 | Élément | Version | Compatibilité |
 | --- | --- | --- |
-| Runtime et UI | `5.18.0-jin-studio` | couche active de ce dépôt |
+| Runtime et UI | `5.19.0-studio-identity` | couche active de ce dépôt |
 | Cœur d'extraction | `5.1.0` | moteur local reçu sous `model/` et superposé par `core_overrides/` |
 | Sortie consommateur | `jin-clean-extraction-v2` | contrat JSON stable et indépendant du numéro du runtime |
 | Routeur PDF | `jin-pdf-fusion-router-v3-cpu` | artefact statistique de routage documentaire |
@@ -33,7 +33,8 @@ spatiale, pas la version actuelle du runtime.
   validation, idempotence et entraînement batch.
 - [JIN Studio](JIN_STUDIO.md) : annotation spatiale, révisions immuables,
   datasets versionnés et entraînements candidats isolés.
-- [Version 5.18.0](RELEASE_V5_18_0.md) : changements de la version active.
+- [Version 5.19.0](RELEASE_V5_19_0.md) : identité, rôles et audit JIN Studio.
+- [Version 5.18.0](RELEASE_V5_18_0.md) : création initiale de JIN Studio.
 - [Version 5.17.0](RELEASE_V5_17_0.md) : garde-fous financiers et rôles métier.
 - [Changelog](../CHANGELOG.md) : historique condensé des versions.
 - Schéma consommateur :

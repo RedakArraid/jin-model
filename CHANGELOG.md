@@ -1,5 +1,20 @@
 # Changelog
 
+## 5.19.0-studio-identity
+
+- Replaced the shared browser bearer token with named JIN Studio accounts and
+  server-side sessions carried by `HttpOnly`, `SameSite=Strict` cookies.
+- Added CSRF protection, `scrypt` password hashing, login throttling and
+  immediate session revocation when an account is disabled or reset.
+- Added cumulative Viewer, Annotator, Validator, Trainer and Administrator
+  roles with backend-enforced permissions.
+- Bound annotation authorship to the authenticated identity instead of a
+  browser-editable reviewer field.
+- Added user administration, immutable audit events and an interactive CLI for
+  creating the first administrator.
+- Kept a separate, optional service bearer token for server-to-server imports;
+  it cannot administer human accounts.
+
 ## 5.18.0-jin-studio
 
 - Add an authenticated JIN Studio UI and API for PDF annotation outside GenieCommande.

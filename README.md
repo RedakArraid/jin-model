@@ -1,4 +1,4 @@
-# JIN Model — Universal Document AI runtime 5.18.0
+# JIN Model — Universal Document AI runtime 5.19.0
 
 `RedakArraid/jin-model` contient la couche Docker/UI autour du moteur JIN
 empaqueté, ses correctifs métier versionnés et les modèles statistiques CPU.
@@ -10,13 +10,14 @@ Les numéros ci-dessous versionnent des éléments différents et ne doivent pas
 
 | Élément | Version actuelle | Rôle |
 | --- | --- | --- |
-| Runtime JIN | `5.18.0-jin-studio` | API, UI, réconciliation, annotation et contrôle qualité |
+| Runtime JIN | `5.19.0-studio-identity` | API, UI, annotation nominative, entraînement et contrôle qualité |
 | Cœur empaqueté | `5.1.0` | OCR et extraction structurée de base |
 | Contrat consommateur | `jin-clean-extraction-v2` | JSON stable renvoyé avec `view=clean` |
 | Routeur PDF CPU | `jin-pdf-fusion-router-v3-cpu` | famille documentaire et décision documentaire |
 | Routeur de champs CPU | `jin-field-weak-router-v2-cpu` | suggestions de champs, zones et cellules à revoir |
 
-La version 5.18.0 ajoute JIN Studio et conserve les garde-fous métier de 5.17 :
+La version 5.19.0 sécurise JIN Studio avec des comptes nominatifs, des rôles et
+un journal d'audit. Elle conserve les garde-fous métier de 5.18 :
 
 - l'annotation humaine des PDF, les révisions immuables et les datasets
   versionnés sont gérés hors de GenieCommande ;
@@ -491,6 +492,6 @@ Les fichiers de résultats et les valeurs client attendues restent dans
 
 ## Version
 
-- Runtime : `5.18.0-jin-studio`
+- Runtime : `5.19.0-studio-identity`
 - Cœur : `5.1.0`
 - Contrat propre : `jin-clean-extraction-v2`

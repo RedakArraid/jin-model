@@ -85,7 +85,7 @@ main { min-height: calc(100vh - 86px); }
 }
 .login-card h2 { margin-bottom: 5px; }
 .login-card p { color: var(--muted); }
-.login-form { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+.login-form { display: grid; grid-template-columns: 1fr 1fr auto; align-items: end; gap: 10px; }
 
 input, select {
   width: 100%;
@@ -181,6 +181,9 @@ input:focus, select:focus { outline: 3px solid rgba(35, 86, 216, .13); border-co
 
 .fields-panel { padding-bottom: 88px; }
 .reviewer-row { display: grid; grid-template-columns: 1fr 1.4fr; gap: 10px; padding: 12px 16px; background: var(--soft); }
+.identity-field { display: grid; gap: 5px; align-content: center; }
+.identity-field span { color: var(--muted); font-size: 12px; font-weight: 650; }
+.identity-field strong { min-height: 38px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; background: #eef2f8; }
 label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 650; }
 .field-list { display: grid; gap: 10px; padding: 14px 16px; }
 .field-card { padding: 13px; border: 1px solid var(--line); border-radius: 10px; background: white; }
@@ -209,7 +212,7 @@ summary { cursor: pointer; font-weight: 650; }
 .inline-notice.error { color: var(--danger); background: #ffeaed; }
 .inline-notice.success { color: var(--success); background: #e4f7ef; }
 
-#datasetsSection, #trainingSection { padding: 24px; }
+#datasetsSection, #trainingSection, .admin-section { padding: 24px; }
 .section-header { margin-bottom: 18px; }
 .section-header h2 { margin-bottom: 4px; }
 .section-header p { margin: 0; color: var(--muted); }
@@ -222,7 +225,40 @@ summary { cursor: pointer; font-weight: 650; }
 .warning-list { padding-left: 18px; color: var(--warning); font-size: 12px; }
 .command { overflow: auto; padding: 9px; border-radius: 7px; color: #d8e6ff; background: #15213b; font: 11px ui-monospace, monospace; }
 
+.user-create-card {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) repeat(3, minmax(160px, 1fr)) minmax(260px, 1.4fr) auto;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: white;
+}
+.user-create-card h3 { margin: 0 0 4px; }
+.user-create-card p { margin: 0; }
+.role-picker { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.role-picker legend { padding: 0 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.role-picker label, .user-actions label { display: flex; grid-template-columns: auto 1fr; align-items: center; gap: 6px; color: var(--ink); white-space: nowrap; }
+.role-picker input, .user-actions input { width: 16px; min-height: 16px; margin: 0; }
+.user-list { display: grid; gap: 10px; }
+.user-card { display: grid; grid-template-columns: minmax(220px, .9fr) minmax(350px, 1.6fr) auto; align-items: center; gap: 18px; padding: 15px; border: 1px solid var(--line); border-radius: 10px; background: white; }
+.user-card.inactive { opacity: .66; background: #f4f5f7; }
+.user-identity { display: grid; gap: 4px; }
+.user-identity input { font-weight: 700; }
+.compact-roles { border: 0; padding: 0; }
+.user-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px; }
+.audit-heading { margin-top: 32px; }
+.audit-list { overflow: auto; max-height: 440px; border: 1px solid var(--line); border-radius: 10px; background: white; }
+.audit-row { display: grid; grid-template-columns: 155px 150px 220px 1fr; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.audit-row:last-child { border-bottom: 0; }
+.audit-row time { color: var(--muted); font-variant-numeric: tabular-nums; }
+
 @media (max-width: 1100px) {
+  .user-create-card { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
+  .user-card { grid-template-columns: 1fr; }
+  .user-actions { justify-content: flex-start; }
   #annotationsSection { grid-template-columns: 245px minmax(0, 1fr); }
   .annotation-workspace { display: block; overflow: auto; }
   .pdf-panel { height: 60vh; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -238,4 +274,7 @@ summary { cursor: pointer; font-weight: 650; }
   .field-heading { align-items: flex-start; }
   .field-status { width: 150px; }
   .section-header { align-items: flex-start; flex-direction: column; }
+  .login-form, .user-create-card { grid-template-columns: 1fr; }
+  .section-tabs { overflow-x: auto; }
+  .audit-row { grid-template-columns: 1fr; gap: 3px; }
 }

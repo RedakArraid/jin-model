@@ -3,11 +3,15 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdfjs-3.11.174/pdf.worker.min.js';
 
 const state = {
-  token: sessionStorage.getItem('jinStudioToken') || '',
+  user: null,
+  csrfToken: '',
+  passwordMinLength: 8,
   catalog: [],
   documents: [],
   datasets: [],
   trainingRuns: [],
+  users: [],
+  auditEvents: [],
   activeDocument: null,
   fields: [],
   selectedField: -1,
@@ -22,7 +26,8 @@ const $ = id => document.getElementById(id);
 const loginPanel = $('loginPanel');
 const studioApp = $('studioApp');
 const loginError = $('loginError');
-const tokenInput = $('tokenInput');
+const usernameInput = $('usernameInput');
+const passwordInput = $('passwordInput');
 const connectionBadge = $('connectionBadge');
 const documentList = $('documentList');
 const documentCount = $('documentCount');
@@ -32,19 +37,28 @@ const fieldList = $('fieldList');
 const annotationCanvas = $('annotationCanvas');
 const pdfCanvas = $('pdfCanvas');
 
-function authHeaders(extra = {}) {
-  return { Authorization: `Bearer ${state.token}`, ...extra };
+function hasPermission(permission) {
+  const permissions = state.user?.permissions || [];
+  return permissions.includes('*') || permissions.includes(permission);
 }
 
 async function api(path, options = {}) {
+  const method = String(options.method || 'GET').toUpperCase();
+  const headers = { ...(options.headers || {}) };
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && state.csrfToken) {
+    headers['X-CSRF-Token'] = state.csrfToken;
+  }
   const response = await fetch(`/api/studio${path}`, {
     ...options,
-    headers: authHeaders(options.headers || {}),
+    credentials: 'same-origin',
+    headers,
   });
   if (!response.ok) {
     let detail = `Erreur HTTP ${response.status}`;
     try { detail = (await response.json()).detail || detail; } catch (_) { /* response is not JSON */ }
-    throw new Error(detail);
+    const error = new Error(detail);
+    error.status = response.status;
+    throw error;
   }
   const type = response.headers.get('content-type') || '';
   return type.includes('application/json') ? response.json() : response;
@@ -156,29 +170,109 @@ function catalogName(label) {
   return state.catalog.find(item => item.label === label)?.name || label;
 }
 
+async function enterStudio(user) {
+  state.user = user;
+  state.csrfToken = user.csrfToken || '';
+  loginPanel.classList.add('hidden');
+  studioApp.classList.remove('hidden');
+  $('logoutButton').classList.remove('hidden');
+  $('changePasswordButton').classList.remove('hidden');
+  connectionBadge.textContent = user.displayName || user.username;
+  connectionBadge.className = 'badge';
+  $('reviewerIdentity').textContent = `${user.displayName || user.username} · ${user.username}`;
+  applyPermissions();
+  const catalog = await api('/field-catalog');
+  state.catalog = catalog.fields || [];
+  await Promise.all([loadDocuments(), loadDatasets(), loadTrainingRuns()]);
+  if (hasPermission('users.manage')) await Promise.all([loadUsers(), loadAuditEvents()]);
+  if (!state.trainingPoll) {
+    state.trainingPoll = window.setInterval(() => {
+      if (!document.hidden && state.user) loadTrainingRuns().catch(() => {});
+    }, 10000);
+  }
+}
+
+function applyPermissions() {
+  const canAnnotate = hasPermission('annotations.draft');
+  $('documentInput').parentElement.classList.toggle('hidden', !hasPermission('documents.write'));
+  $('addFieldButton').classList.toggle('hidden', !canAnnotate);
+  $('confirmAllButton').classList.toggle('hidden', !canAnnotate);
+  $('saveDraftButton').classList.toggle('hidden', !canAnnotate);
+  $('validateButton').classList.toggle('hidden', !hasPermission('annotations.validate'));
+  $('createDatasetButton').classList.toggle('hidden', !hasPermission('datasets.write'));
+  $('usersTab').classList.toggle('hidden', !hasPermission('users.manage'));
+}
+
 async function connect() {
-  state.token = tokenInput.value.trim();
-  if (!state.token) return;
+  const username = usernameInput.value.trim();
+  const password = passwordInput.value;
+  if (!username || !password) return;
   loginError.classList.add('hidden');
   try {
-    await api('/status');
-    sessionStorage.setItem('jinStudioToken', state.token);
-    loginPanel.classList.add('hidden');
-    studioApp.classList.remove('hidden');
-    connectionBadge.textContent = 'Connecté';
-    connectionBadge.className = 'badge';
-    const catalog = await api('/field-catalog');
-    state.catalog = catalog.fields || [];
-    await Promise.all([loadDocuments(), loadDatasets(), loadTrainingRuns()]);
-    if (!state.trainingPoll) {
-      state.trainingPoll = window.setInterval(() => {
-        if (!document.hidden && state.token) loadTrainingRuns().catch(() => {});
-      }, 10000);
-    }
+    const payload = await api('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    passwordInput.value = '';
+    await enterStudio(payload.user);
   } catch (error) {
-    sessionStorage.removeItem('jinStudioToken');
     loginError.textContent = error.message;
     loginError.classList.remove('hidden');
+  }
+}
+
+async function restoreSession() {
+  try {
+    const payload = await api('/auth/me');
+    await enterStudio(payload.user);
+  } catch (_) {
+    state.user = null;
+    state.csrfToken = '';
+    loginPanel.classList.remove('hidden');
+  }
+}
+
+async function logout() {
+  try { await api('/auth/logout', { method: 'POST' }); } catch (_) { /* local cleanup still applies */ }
+  state.user = null;
+  state.csrfToken = '';
+  if (state.trainingPoll) window.clearInterval(state.trainingPoll);
+  state.trainingPoll = null;
+  studioApp.classList.add('hidden');
+  loginPanel.classList.remove('hidden');
+  $('logoutButton').classList.add('hidden');
+  $('changePasswordButton').classList.add('hidden');
+  connectionBadge.textContent = 'Non connecté';
+  connectionBadge.className = 'badge muted';
+  passwordInput.value = '';
+}
+
+async function changeOwnPassword() {
+  const currentPassword = window.prompt('Mot de passe actuel');
+  if (currentPassword == null) return;
+  const newPassword = window.prompt(`Nouveau mot de passe (${state.passwordMinLength} caractères minimum)`);
+  if (newPassword == null) return;
+  const confirmation = window.prompt('Confirmez le nouveau mot de passe');
+  if (confirmation !== newPassword) {
+    window.alert('Les mots de passe ne correspondent pas.');
+    return;
+  }
+  if (newPassword.length < state.passwordMinLength) {
+    window.alert(`Le mot de passe doit contenir au moins ${state.passwordMinLength} caractères.`);
+    return;
+  }
+  try {
+    await api('/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+    await logout();
+    loginError.textContent = 'Mot de passe modifié. Reconnectez-vous.';
+    loginError.classList.remove('hidden');
+  } catch (error) {
+    window.alert(error.message);
   }
 }
 
@@ -248,8 +342,9 @@ async function openDocument(documentId) {
   state.fields = document.latestAnnotation?.field_annotations?.map(item => structuredClone(item))
     || extractFields(document.extraction || {});
   state.selectedField = state.fields.length ? 0 : -1;
-  $('reviewerInput').value = document.latestAnnotation?.reviewed_by || '';
+  $('reviewerIdentity').textContent = `${state.user.displayName || state.user.username} · ${state.user.username}`;
   $('annotationNote').value = document.latestAnnotation?.note || '';
+  $('annotationNote').disabled = !(hasPermission('annotations.draft') || hasPermission('annotations.validate'));
   $('activeFilename').textContent = document.filename;
   $('activeHash').textContent = `SHA-256 ${document.pdfSha256}`;
   $('activeStatus').textContent = statusLabel(document.status);
@@ -273,6 +368,7 @@ function populateLabelSelect(select, current) {
 }
 
 function renderFields() {
+  const editable = hasPermission('annotations.draft') || hasPermission('annotations.validate');
   fieldList.replaceChildren();
   state.fields.forEach((field, index) => {
     const node = $('fieldTemplate').content.firstElementChild.cloneNode(true);
@@ -297,6 +393,13 @@ function renderFields() {
     page.value = field.evidence?.page || '';
     bbox.value = field.evidence?.bbox?.join(',') || '';
     comment.value = field.comment || '';
+    label.disabled = !editable;
+    path.disabled = !editable;
+    status.disabled = !editable;
+    corrected.disabled = !editable || field.status !== 'CORRECTED';
+    page.disabled = !editable;
+    bbox.disabled = !editable;
+    comment.disabled = !editable;
     node.addEventListener('click', () => {
       if (state.selectedField === index) return;
       state.selectedField = index;
@@ -309,7 +412,7 @@ function renderFields() {
     path.addEventListener('input', event => { field.path = event.target.value; });
     status.addEventListener('change', event => {
       field.status = event.target.value;
-      corrected.disabled = field.status !== 'CORRECTED';
+      corrected.disabled = !editable || field.status !== 'CORRECTED';
       renderProgress();
       node.classList.toggle('reviewed', ['CONFIRMED', 'CORRECTED'].includes(field.status));
       node.classList.toggle('problem', ['ABSENT', 'AMBIGUOUS'].includes(field.status));
@@ -402,7 +505,7 @@ function drawAnnotations(preview = null) {
 
 let drawStart = null;
 annotationCanvas.addEventListener('pointerdown', event => {
-  if (state.selectedField < 0) return;
+  if (state.selectedField < 0 || !(hasPermission('annotations.draft') || hasPermission('annotations.validate'))) return;
   const rect = annotationCanvas.getBoundingClientRect();
   drawStart = { x: event.clientX - rect.left, y: event.clientY - rect.top };
   annotationCanvas.setPointerCapture(event.pointerId);
@@ -439,7 +542,6 @@ annotationCanvas.addEventListener('pointerup', event => {
 function annotationPayload(status) {
   return {
     status,
-    reviewed_by: $('reviewerInput').value.trim(),
     note: $('annotationNote').value.trim(),
     field_annotations: state.fields.map(field => ({
       path: field.path,
@@ -531,9 +633,13 @@ function renderTraining() {
     const card = document.createElement('article'); card.className = 'info-card';
     const title = document.createElement('h3'); title.textContent = `Nouveau candidat · ${dataset.name} v${dataset.version}`;
     const text = document.createElement('p'); text.className = 'muted-text'; text.textContent = `${dataset.documentCount} documents, ${dataset.regionCount} zones humaines.`;
-    const button = document.createElement('button'); button.className = 'button primary'; button.textContent = 'Lancer l’entraînement';
-    button.addEventListener('click', () => prepareTraining(dataset.datasetId));
-    card.append(title, text, button); container.appendChild(card);
+    card.append(title, text);
+    if (hasPermission('training.write')) {
+      const button = document.createElement('button'); button.className = 'button primary'; button.textContent = 'Lancer l’entraînement';
+      button.addEventListener('click', () => prepareTraining(dataset.datasetId));
+      card.appendChild(button);
+    }
+    container.appendChild(card);
   }
   for (const run of state.trainingRuns) {
     const card = document.createElement('article'); card.className = 'info-card';
@@ -565,8 +671,170 @@ async function prepareTraining(datasetId) {
   } catch (error) { showMessage($('trainingMessage'), error.message, 'error'); }
 }
 
+const roleLabels = {
+  VIEWER: 'Lecture',
+  ANNOTATOR: 'Annotation',
+  VALIDATOR: 'Validation',
+  TRAINER: 'Entraînement',
+  ADMIN: 'Administration',
+};
+
+async function loadUsers() {
+  const payload = await api('/users');
+  state.users = payload.items || [];
+  renderUsers();
+}
+
+function renderUsers() {
+  const container = $('userList');
+  container.replaceChildren();
+  for (const user of state.users) {
+    const card = document.createElement('article');
+    card.className = `user-card ${user.active ? '' : 'inactive'}`;
+    const identity = document.createElement('div');
+    identity.className = 'user-identity';
+    const name = document.createElement('input');
+    name.value = user.displayName;
+    name.maxLength = 120;
+    name.setAttribute('aria-label', `Nom affiché de ${user.username}`);
+    const username = document.createElement('strong');
+    username.textContent = user.username;
+    const lastLogin = document.createElement('span');
+    lastLogin.className = 'muted-text';
+    lastLogin.textContent = user.lastLoginAt ? `Dernière connexion : ${String(user.lastLoginAt).slice(0, 16).replace('T', ' ')}` : 'Jamais connecté';
+    identity.append(name, username, lastLogin);
+
+    const roles = document.createElement('div');
+    roles.className = 'role-picker compact-roles';
+    for (const [code, labelText] of Object.entries(roleLabels)) {
+      const label = document.createElement('label');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = code;
+      checkbox.checked = user.roles.includes(code);
+      checkbox.dataset.role = code;
+      label.append(checkbox, document.createTextNode(labelText));
+      roles.appendChild(label);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'user-actions';
+    const activeLabel = document.createElement('label');
+    const active = document.createElement('input');
+    active.type = 'checkbox';
+    active.checked = user.active;
+    activeLabel.append(active, document.createTextNode('Compte actif'));
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'button primary compact';
+    save.textContent = 'Enregistrer';
+    save.addEventListener('click', async () => {
+      const selectedRoles = [...roles.querySelectorAll('input:checked')].map(input => input.value);
+      try {
+        await api(`/users/${encodeURIComponent(user.userId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ displayName: name.value.trim(), roles: selectedRoles, active: active.checked }),
+        });
+        showMessage($('userMessage'), `Compte ${user.username} mis à jour.`, 'success');
+        await loadUsers();
+        await loadAuditEvents();
+      } catch (error) { showMessage($('userMessage'), error.message, 'error'); }
+    });
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'button secondary compact';
+    reset.textContent = 'Changer le mot de passe';
+    reset.addEventListener('click', () => resetPassword(user));
+    actions.append(activeLabel, save, reset);
+    card.append(identity, roles, actions);
+    container.appendChild(card);
+  }
+}
+
+async function createUser(event) {
+  event.preventDefault();
+  const roles = [...document.querySelectorAll('input[name="newUserRole"]:checked')].map(input => input.value);
+  try {
+    const user = await api('/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: $('newUsername').value.trim(),
+        displayName: $('newDisplayName').value.trim(),
+        password: $('newPassword').value,
+        roles,
+      }),
+    });
+    $('createUserForm').reset();
+    document.querySelector('input[name="newUserRole"][value="ANNOTATOR"]').checked = true;
+    showMessage($('userMessage'), `Compte ${user.username} créé.`, 'success');
+    await loadUsers();
+    await loadAuditEvents();
+  } catch (error) { showMessage($('userMessage'), error.message, 'error'); }
+}
+
+async function resetPassword(user) {
+  const password = window.prompt(`Nouveau mot de passe pour ${user.username}`);
+  if (password == null) return;
+  const confirmation = window.prompt('Confirmez le nouveau mot de passe');
+  if (confirmation !== password) {
+    return showMessage($('userMessage'), 'Les mots de passe ne correspondent pas.', 'error');
+  }
+  if (password.length < state.passwordMinLength) {
+    return showMessage($('userMessage'), `Le mot de passe doit contenir au moins ${state.passwordMinLength} caractères.`, 'error');
+  }
+  try {
+    await api(`/users/${encodeURIComponent(user.userId)}/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    if (user.userId === state.user.userId) {
+      await logout();
+      loginError.textContent = 'Mot de passe modifié. Reconnectez-vous.';
+      loginError.classList.remove('hidden');
+      return;
+    }
+    showMessage($('userMessage'), `Mot de passe de ${user.username} modifié.`, 'success');
+    await loadAuditEvents();
+  } catch (error) { showMessage($('userMessage'), error.message, 'error'); }
+}
+
+async function loadAuditEvents() {
+  const payload = await api('/audit-events?limit=200');
+  state.auditEvents = payload.items || [];
+  const container = $('auditList');
+  container.replaceChildren();
+  for (const event of state.auditEvents) {
+    const row = document.createElement('div');
+    row.className = 'audit-row';
+    const when = document.createElement('time');
+    when.textContent = String(event.createdAt || '').slice(0, 19).replace('T', ' ');
+    const actor = document.createElement('strong');
+    actor.textContent = event.actorUsername;
+    const action = document.createElement('span');
+    action.textContent = event.action;
+    const target = document.createElement('span');
+    target.className = 'muted-text';
+    target.textContent = [event.targetType, event.targetId].filter(Boolean).join(' · ');
+    row.append(when, actor, action, target);
+    container.appendChild(row);
+  }
+  if (!container.children.length) {
+    const empty = document.createElement('p');
+    empty.className = 'muted-text';
+    empty.textContent = 'Aucune activité enregistrée.';
+    container.appendChild(empty);
+  }
+}
+
 $('connectButton').addEventListener('click', connect);
-tokenInput.addEventListener('keydown', event => { if (event.key === 'Enter') connect(); });
+passwordInput.addEventListener('keydown', event => { if (event.key === 'Enter') connect(); });
+$('logoutButton').addEventListener('click', logout);
+$('changePasswordButton').addEventListener('click', changeOwnPassword);
+$('createUserForm').addEventListener('submit', createUser);
+$('refreshAuditButton').addEventListener('click', () => loadAuditEvents().catch(error => showMessage($('userMessage'), error.message, 'error')));
 $('documentInput').addEventListener('change', event => uploadDocument(event.target.files?.[0]));
 $('documentSearch').addEventListener('input', renderDocumentList);
 $('documentStatusFilter').addEventListener('change', renderDocumentList);
@@ -592,7 +860,12 @@ document.querySelectorAll('.section-tab').forEach(button => button.addEventListe
   $(`${button.dataset.section}Section`).classList.remove('hidden');
 }));
 
-if (state.token) {
-  tokenInput.value = state.token;
-  connect();
-}
+api('/auth/config').then(config => {
+  state.passwordMinLength = Number(config.passwordMinLength || 8);
+  $('newPassword').minLength = state.passwordMinLength;
+  if (!config.hasUsers) {
+    $('setupHint').textContent = 'Aucun compte n’existe encore. Un administrateur doit créer le premier compte avec la commande indiquée dans la documentation.';
+    $('setupHint').classList.remove('hidden');
+  }
+}).catch(() => {});
+restoreSession();

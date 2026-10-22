@@ -13,6 +13,19 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jin_runtime.studio_contract import normalize_studio_annotation, utc_now
+from jin_runtime.studio_security import (
+    DUMMY_PASSWORD_HASH,
+    StudioPrincipal,
+    StudioSecurityError,
+    hash_password,
+    normalize_roles,
+    normalize_username,
+    permissions_for_roles,
+    random_token,
+    session_duration_hours,
+    token_digest,
+    verify_password,
+)
 
 
 MAX_PDF_BYTES = 100 * 1024 * 1024
@@ -159,8 +172,413 @@ class StudioStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS studio_users (
+                    user_id TEXT PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    display_name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    roles_json TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    failed_attempts INTEGER NOT NULL DEFAULT 0,
+                    locked_until TEXT,
+                    last_login_at TEXT,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_studio_users_active
+                    ON studio_users(active, username);
+
+                CREATE TABLE IF NOT EXISTS studio_sessions (
+                    session_hash TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES studio_users(user_id),
+                    csrf_token TEXT NOT NULL,
+                    client_ip TEXT NOT NULL,
+                    user_agent TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    revoked_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_studio_sessions_user
+                    ON studio_sessions(user_id, expires_at DESC);
+
+                CREATE TABLE IF NOT EXISTS studio_audit_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    actor_user_id TEXT,
+                    actor_username TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    target_type TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    details_json TEXT NOT NULL,
+                    client_ip TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_studio_audit_created
+                    ON studio_audit_events(created_at DESC);
                 """
             )
+
+    @staticmethod
+    def _user(row: sqlite3.Row) -> dict[str, Any]:
+        roles = normalize_roles(_loads(row["roles_json"], []))
+        return {
+            "userId": row["user_id"],
+            "username": row["username"],
+            "displayName": row["display_name"],
+            "roles": list(roles),
+            "permissions": sorted(permissions_for_roles(roles)),
+            "active": bool(row["active"]),
+            "lockedUntil": row["locked_until"],
+            "lastLoginAt": row["last_login_at"],
+            "createdBy": row["created_by"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
+    def _principal(
+        row: sqlite3.Row,
+        *,
+        session_hash: str = "",
+        csrf_token: str = "",
+        expires_at: str = "",
+    ) -> StudioPrincipal:
+        roles = normalize_roles(_loads(row["roles_json"], []))
+        return StudioPrincipal(
+            user_id=row["user_id"],
+            username=row["username"],
+            display_name=row["display_name"],
+            roles=roles,
+            permissions=permissions_for_roles(roles),
+            auth_type="session",
+            session_hash=session_hash,
+            csrf_token=csrf_token,
+            expires_at=expires_at,
+        )
+
+    @staticmethod
+    def _active_admin_count(connection: sqlite3.Connection) -> int:
+        rows = connection.execute(
+            "SELECT roles_json FROM studio_users WHERE active=1"
+        ).fetchall()
+        return sum(
+            1 for row in rows if "ADMIN" in _loads(row["roles_json"], [])
+        )
+
+    def user_count(self) -> int:
+        with self._connect() as connection:
+            return int(
+                connection.execute("SELECT COUNT(*) count FROM studio_users").fetchone()[
+                    "count"
+                ]
+            )
+
+    def create_user(
+        self,
+        *,
+        username: str,
+        display_name: str,
+        password: str,
+        roles: list[str] | tuple[str, ...],
+        created_by: str,
+    ) -> dict[str, Any]:
+        clean_username = normalize_username(username)
+        clean_name = str(display_name or "").strip()
+        if len(clean_name) < 2 or len(clean_name) > 120:
+            raise StudioSecurityError(
+                "Le nom affiché doit contenir entre 2 et 120 caractères."
+            )
+        clean_roles = normalize_roles(roles)
+        encoded_password = hash_password(password)
+        user_id = f"jusr-{uuid.uuid4().hex}"
+        now = utc_now()
+        try:
+            with self._lock, self._connect() as connection:
+                connection.execute(
+                    """INSERT INTO studio_users
+                       (user_id, username, display_name, password_hash, roles_json,
+                        active, failed_attempts, created_by, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?, ?)""",
+                    (
+                        user_id,
+                        clean_username,
+                        clean_name,
+                        encoded_password,
+                        _json(list(clean_roles)),
+                        str(created_by or "system")[:120],
+                        now,
+                        now,
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise StudioConflictError("Ce nom d'utilisateur existe déjà.") from exc
+        return self.get_user(user_id)
+
+    def get_user(self, user_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM studio_users WHERE user_id=?", (user_id,)
+            ).fetchone()
+        if row is None:
+            raise StudioNotFoundError(user_id)
+        return self._user(row)
+
+    def list_users(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM studio_users ORDER BY active DESC, username"
+            ).fetchall()
+        return [self._user(row) for row in rows]
+
+    def update_user(
+        self,
+        user_id: str,
+        *,
+        display_name: str | None = None,
+        roles: list[str] | tuple[str, ...] | None = None,
+        active: bool | None = None,
+    ) -> dict[str, Any]:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM studio_users WHERE user_id=?", (user_id,)
+            ).fetchone()
+            if row is None:
+                raise StudioNotFoundError(user_id)
+            current_roles = normalize_roles(_loads(row["roles_json"], []))
+            clean_roles = normalize_roles(roles) if roles is not None else current_roles
+            clean_name = (
+                str(display_name or "").strip()
+                if display_name is not None
+                else row["display_name"]
+            )
+            if len(clean_name) < 2 or len(clean_name) > 120:
+                raise StudioSecurityError(
+                    "Le nom affiché doit contenir entre 2 et 120 caractères."
+                )
+            next_active = bool(active) if active is not None else bool(row["active"])
+            removes_admin = "ADMIN" in current_roles and (
+                "ADMIN" not in clean_roles or not next_active
+            )
+            if removes_admin and self._active_admin_count(connection) <= 1:
+                raise StudioConflictError(
+                    "Le dernier administrateur actif ne peut pas être désactivé."
+                )
+            now = utc_now()
+            connection.execute(
+                """UPDATE studio_users
+                   SET display_name=?, roles_json=?, active=?, updated_at=?
+                   WHERE user_id=?""",
+                (clean_name, _json(list(clean_roles)), int(next_active), now, user_id),
+            )
+            if not next_active:
+                connection.execute(
+                    """UPDATE studio_sessions SET revoked_at=?
+                       WHERE user_id=? AND revoked_at IS NULL""",
+                    (now, user_id),
+                )
+        return self.get_user(user_id)
+
+    def set_user_password(self, user_id: str, password: str) -> None:
+        encoded = hash_password(password)
+        now = utc_now()
+        with self._lock, self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM studio_users WHERE user_id=?", (user_id,)
+            ).fetchone()
+            if exists is None:
+                raise StudioNotFoundError(user_id)
+            connection.execute(
+                """UPDATE studio_users
+                   SET password_hash=?, failed_attempts=0, locked_until=NULL, updated_at=?
+                   WHERE user_id=?""",
+                (encoded, now, user_id),
+            )
+            connection.execute(
+                """UPDATE studio_sessions SET revoked_at=?
+                   WHERE user_id=? AND revoked_at IS NULL""",
+                (now, user_id),
+            )
+
+    def verify_user_password(self, user_id: str, password: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT password_hash, active FROM studio_users WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+        return bool(row and row["active"] and verify_password(password, row["password_hash"]))
+
+    def authenticate_user(self, username: str, password: str) -> dict[str, Any] | None:
+        supplied_username = str(username or "").strip().lower()
+        now = utc_now()
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM studio_users WHERE username=? COLLATE NOCASE",
+                (supplied_username,),
+            ).fetchone()
+            encoded = row["password_hash"] if row is not None else DUMMY_PASSWORD_HASH
+            valid_password = verify_password(password, encoded)
+            if row is None:
+                return None
+            locked_until = str(row["locked_until"] or "")
+            if not row["active"] or (locked_until and locked_until > now):
+                return None
+            if not valid_password:
+                attempts = int(row["failed_attempts"] or 0) + 1
+                next_locked = None
+                if attempts >= 5:
+                    next_locked = (
+                        datetime.now(timezone.utc) + timedelta(minutes=15)
+                    ).isoformat().replace("+00:00", "Z")
+                    attempts = 0
+                connection.execute(
+                    """UPDATE studio_users
+                       SET failed_attempts=?, locked_until=?, updated_at=?
+                       WHERE user_id=?""",
+                    (attempts, next_locked, now, row["user_id"]),
+                )
+                return None
+            connection.execute(
+                """UPDATE studio_users
+                   SET failed_attempts=0, locked_until=NULL, last_login_at=?, updated_at=?
+                   WHERE user_id=?""",
+                (now, now, row["user_id"]),
+            )
+            refreshed = connection.execute(
+                "SELECT * FROM studio_users WHERE user_id=?", (row["user_id"],)
+            ).fetchone()
+        return self._user(refreshed)
+
+    def create_session(
+        self,
+        user_id: str,
+        *,
+        client_ip: str = "",
+        user_agent: str = "",
+    ) -> tuple[str, StudioPrincipal]:
+        token = random_token()
+        csrf = random_token()
+        digest = token_digest(token)
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat().replace("+00:00", "Z")
+        expires = (now_dt + timedelta(hours=session_duration_hours())).isoformat().replace(
+            "+00:00", "Z"
+        )
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM studio_users WHERE user_id=? AND active=1", (user_id,)
+            ).fetchone()
+            if row is None:
+                raise StudioNotFoundError(user_id)
+            connection.execute(
+                """INSERT INTO studio_sessions
+                   (session_hash, user_id, csrf_token, client_ip, user_agent,
+                    created_at, last_seen_at, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    digest,
+                    user_id,
+                    csrf,
+                    str(client_ip or "")[:128],
+                    str(user_agent or "")[:500],
+                    now,
+                    now,
+                    expires,
+                ),
+            )
+        return token, self._principal(
+            row,
+            session_hash=digest,
+            csrf_token=csrf,
+            expires_at=expires,
+        )
+
+    def resolve_session(self, token: str) -> StudioPrincipal | None:
+        digest = token_digest(token)
+        now = utc_now()
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """SELECT u.*, s.csrf_token, s.expires_at
+                   FROM studio_sessions s
+                   JOIN studio_users u ON u.user_id=s.user_id
+                   WHERE s.session_hash=? AND s.revoked_at IS NULL
+                     AND s.expires_at>? AND u.active=1""",
+                (digest, now),
+            ).fetchone()
+            if row is None:
+                return None
+            connection.execute(
+                "UPDATE studio_sessions SET last_seen_at=? WHERE session_hash=?",
+                (now, digest),
+            )
+        return self._principal(
+            row,
+            session_hash=digest,
+            csrf_token=row["csrf_token"],
+            expires_at=row["expires_at"],
+        )
+
+    def revoke_session(self, session_hash: str) -> None:
+        if not session_hash:
+            return
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """UPDATE studio_sessions SET revoked_at=?
+                   WHERE session_hash=? AND revoked_at IS NULL""",
+                (utc_now(), session_hash),
+            )
+
+    def record_audit(
+        self,
+        *,
+        actor_user_id: str = "",
+        actor_username: str,
+        action: str,
+        target_type: str,
+        target_id: str = "",
+        details: Mapping[str, Any] | None = None,
+        client_ip: str = "",
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT INTO studio_audit_events
+                   (actor_user_id, actor_username, action, target_type, target_id,
+                    details_json, client_ip, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    actor_user_id or None,
+                    str(actor_username or "unknown")[:120],
+                    str(action or "unknown")[:120],
+                    str(target_type or "unknown")[:80],
+                    str(target_id or "")[:180],
+                    _json(dict(details or {})),
+                    str(client_ip or "")[:128],
+                    utc_now(),
+                ),
+            )
+
+    def list_audit_events(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM studio_audit_events
+                   ORDER BY event_id DESC LIMIT ?""",
+                (max(1, min(1000, int(limit))),),
+            ).fetchall()
+        return [
+            {
+                "eventId": row["event_id"],
+                "actorUserId": row["actor_user_id"],
+                "actorUsername": row["actor_username"],
+                "action": row["action"],
+                "targetType": row["target_type"],
+                "targetId": row["target_id"],
+                "details": _loads(row["details_json"], {}),
+                "clientIp": row["client_ip"],
+                "createdAt": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def status(self) -> dict[str, Any]:
         with self._connect() as connection:

@@ -1,1 +1,1 @@
-__version__ = "5.18.0-jin-studio"
+__version__ = "5.19.0-studio-identity"

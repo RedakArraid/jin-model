@@ -9,7 +9,8 @@ from fastapi.testclient import TestClient
 
 from jin_runtime.studio_contract import StudioContractError, normalize_studio_annotation
 from jin_runtime.studio_api import create_studio_router
-from jin_runtime.studio_store import StudioStore
+from jin_runtime.studio_security import hash_password, verify_password
+from jin_runtime.studio_store import StudioConflictError, StudioStore
 from jin_runtime.studio_training_worker import validated_command
 
 
@@ -132,6 +133,170 @@ def test_studio_api_is_authenticated_and_supports_annotation_flow(tmp_path, monk
         "/studio/datasets", headers=headers, json=[document_id]
     )
     assert invalid_dataset.status_code == 400
+
+
+def test_passwords_are_scrypt_hashed_and_never_stored_in_plain_text():
+    encoded = hash_password("admin123")
+
+    assert encoded.startswith("scrypt$")
+    assert "admin123" not in encoded
+    assert verify_password("admin123", encoded)
+    assert not verify_password("wrong-password", encoded)
+
+
+def test_human_login_uses_secure_session_roles_csrf_and_audit(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIN_STUDIO_PASSWORD_MIN_LENGTH", "8")
+    store = StudioStore(tmp_path / "studio")
+    admin = store.create_user(
+        username="admin.local",
+        display_name="Administrateur local",
+        password="admin123",
+        roles=["ADMIN"],
+        created_by="pytest",
+    )
+    app = FastAPI()
+    app.include_router(create_studio_router(store))
+    client = TestClient(app)
+
+    login = client.post(
+        "/studio/auth/login",
+        json={"username": "admin.local", "password": "admin123"},
+    )
+    assert login.status_code == 200
+    assert login.json()["user"]["userId"] == admin["userId"]
+    assert login.json()["user"]["permissions"] == ["*"]
+    csrf = login.json()["user"]["csrfToken"]
+    cookie = login.headers["set-cookie"].lower()
+    assert "httponly" in cookie
+    assert "samesite=strict" in cookie
+
+    assert client.get("/studio/auth/me").status_code == 200
+    blocked = client.post(
+        "/studio/users",
+        json={
+            "username": "annotation.user",
+            "displayName": "Annotation User",
+            "password": "password123",
+            "roles": ["ANNOTATOR"],
+        },
+    )
+    assert blocked.status_code == 403
+
+    created = client.post(
+        "/studio/users",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "username": "annotation.user",
+            "displayName": "Annotation User",
+            "password": "password123",
+            "roles": ["ANNOTATOR"],
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["roles"] == ["ANNOTATOR"]
+    audit = client.get("/studio/audit-events").json()["items"]
+    assert {event["action"] for event in audit} >= {"auth.login", "user.create"}
+
+    logout = client.post("/studio/auth/logout", headers={"X-CSRF-Token": csrf})
+    assert logout.status_code == 200
+    assert client.get("/studio/auth/me").status_code == 401
+
+
+def test_annotation_identity_and_validator_permission_come_from_session(tmp_path):
+    store = StudioStore(tmp_path / "studio")
+    annotator = store.create_user(
+        username="annotator",
+        display_name="Annotateur",
+        password="password123",
+        roles=["ANNOTATOR"],
+        created_by="pytest",
+    )
+    validator = store.create_user(
+        username="validator",
+        display_name="Validateur",
+        password="password123",
+        roles=["VALIDATOR"],
+        created_by="pytest",
+    )
+    document = store.create_document(filename="commande.pdf", pdf_bytes=PDF)
+    app = FastAPI()
+    app.include_router(create_studio_router(store))
+
+    annotation_client = TestClient(app)
+    login = annotation_client.post(
+        "/studio/auth/login", json={"username": annotator["username"], "password": "password123"}
+    ).json()["user"]
+    draft_payload = annotation("DRAFT", "spoofed-user")
+    draft = annotation_client.put(
+        f"/studio/documents/{document['documentId']}/annotation",
+        headers={"X-CSRF-Token": login["csrfToken"]},
+        json=draft_payload,
+    )
+    assert draft.status_code == 201
+    assert draft.json()["reviewed_by"] == "annotator"
+    forbidden = annotation_client.put(
+        f"/studio/documents/{document['documentId']}/annotation",
+        headers={"X-CSRF-Token": login["csrfToken"]},
+        json=annotation("HUMAN_VALIDATED", "spoofed-user"),
+    )
+    assert forbidden.status_code == 403
+
+    validation_client = TestClient(app)
+    validator_login = validation_client.post(
+        "/studio/auth/login", json={"username": validator["username"], "password": "password123"}
+    ).json()["user"]
+    validated = validation_client.put(
+        f"/studio/documents/{document['documentId']}/annotation",
+        headers={"X-CSRF-Token": validator_login["csrfToken"]},
+        json=annotation("HUMAN_VALIDATED", "spoofed-user"),
+    )
+    assert validated.status_code == 201
+    assert validated.json()["reviewed_by"] == "validator"
+
+
+def test_last_active_admin_cannot_be_disabled(tmp_path):
+    store = StudioStore(tmp_path / "studio")
+    admin = store.create_user(
+        username="only.admin",
+        display_name="Only Admin",
+        password="password123",
+        roles=["ADMIN"],
+        created_by="pytest",
+    )
+
+    with pytest.raises(StudioConflictError, match="dernier administrateur"):
+        store.update_user(admin["userId"], active=False)
+
+
+def test_user_can_change_own_password_and_all_sessions_are_revoked(tmp_path):
+    store = StudioStore(tmp_path / "studio")
+    store.create_user(
+        username="viewer.user",
+        display_name="Viewer User",
+        password="password123",
+        roles=["VIEWER"],
+        created_by="pytest",
+    )
+    app = FastAPI()
+    app.include_router(create_studio_router(store))
+    client = TestClient(app)
+    user = client.post(
+        "/studio/auth/login",
+        json={"username": "viewer.user", "password": "password123"},
+    ).json()["user"]
+
+    changed = client.post(
+        "/studio/auth/change-password",
+        headers={"X-CSRF-Token": user["csrfToken"]},
+        json={"currentPassword": "password123", "newPassword": "new-password-456"},
+    )
+    assert changed.status_code == 200
+    assert changed.json()["reauthenticationRequired"] is True
+    assert client.get("/studio/auth/me").status_code == 401
+    assert client.post(
+        "/studio/auth/login",
+        json={"username": "viewer.user", "password": "new-password-456"},
+    ).status_code == 200
 
 
 def test_training_run_has_a_persistent_queue_lifecycle(tmp_path, monkeypatch):

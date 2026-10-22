@@ -2,7 +2,7 @@
 
 > Document de recherche historique. La production actuelle est CPU-only et
 > utilise les routeurs PDF/champs locaux ; LayoutLMv3 reste une piste optionnelle
-> et n'est pas une dépendance du service d'extraction du runtime 5.18.0.
+> et n'est pas une dépendance du service d'extraction du runtime 5.19.0.
 
 La mémoire statistique légère ne voit pas la géométrie complète de la page. La prochaine couche apprend les positions de champs et les tableaux sur les pages PDF complètes.
 

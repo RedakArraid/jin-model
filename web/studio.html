@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>JIN Studio – Annotation et entraînement</title>
-  <link rel="stylesheet" href="studio.css?v=1" />
+  <link rel="stylesheet" href="studio.css?v=2" />
 </head>
 <body>
   <header class="topbar">
@@ -16,19 +16,23 @@
     <div class="top-actions">
       <a class="button secondary" href="/">Extraction JIN</a>
       <span id="connectionBadge" class="badge muted">Non connecté</span>
+      <button id="changePasswordButton" class="button secondary compact hidden">Mot de passe</button>
+      <button id="logoutButton" class="button secondary compact hidden">Se déconnecter</button>
     </div>
   </header>
 
   <main>
     <section id="loginPanel" class="login-card">
       <div>
-        <h2>Connexion annotateur</h2>
-        <p>Le jeton reste dans cet onglet et n’est jamais ajouté à l’URL.</p>
+        <h2>Connexion à JIN Studio</h2>
+        <p>Utilisez le compte attribué par votre administrateur.</p>
       </div>
       <div class="login-form">
-        <input id="tokenInput" type="password" autocomplete="off" placeholder="Jeton JIN Studio" />
+        <label>Identifiant<input id="usernameInput" type="text" autocomplete="username" maxlength="64" /></label>
+        <label>Mot de passe<input id="passwordInput" type="password" autocomplete="current-password" maxlength="256" /></label>
         <button id="connectButton" class="button primary">Se connecter</button>
       </div>
+      <p id="setupHint" class="inline-notice hidden"></p>
       <p id="loginError" class="error hidden"></p>
     </section>
 
@@ -37,6 +41,7 @@
         <button class="section-tab active" data-section="annotations">Annotations</button>
         <button class="section-tab" data-section="datasets">Datasets</button>
         <button class="section-tab" data-section="training">Entraînements</button>
+        <button id="usersTab" class="section-tab hidden" data-section="users">Utilisateurs</button>
       </nav>
 
       <section id="annotationsSection" class="studio-section">
@@ -102,10 +107,10 @@
               </div>
             </div>
             <div class="reviewer-row">
-              <label>
-                Annotateur
-                <input id="reviewerInput" type="text" maxlength="160" placeholder="Identifiant de l’annotateur" />
-              </label>
+              <div class="identity-field">
+                <span>Annotateur connecté</span>
+                <strong id="reviewerIdentity"></strong>
+              </div>
               <label>
                 Note générale
                 <input id="annotationNote" type="text" maxlength="4000" placeholder="Facultatif" />
@@ -143,6 +148,44 @@
         <div id="trainingMessage" class="inline-notice hidden"></div>
         <div id="trainingList" class="card-grid"></div>
       </section>
+
+      <section id="usersSection" class="studio-section hidden admin-section">
+        <div class="section-header">
+          <div>
+            <h2>Utilisateurs et droits</h2>
+            <p>Les rôles déterminent qui peut annoter, valider et lancer les entraînements.</p>
+          </div>
+        </div>
+        <form id="createUserForm" class="user-create-card">
+          <div>
+            <h3>Créer un utilisateur</h3>
+            <p class="muted-text">Le nouvel utilisateur pourra modifier son activité uniquement selon les rôles choisis.</p>
+          </div>
+          <label>Identifiant<input id="newUsername" required minlength="3" maxlength="64" placeholder="prenom.nom" /></label>
+          <label>Nom affiché<input id="newDisplayName" required minlength="2" maxlength="120" /></label>
+          <label>Mot de passe<input id="newPassword" type="password" required maxlength="256" autocomplete="new-password" /></label>
+          <fieldset class="role-picker">
+            <legend>Rôles</legend>
+            <label><input type="checkbox" name="newUserRole" value="VIEWER" /> Lecture</label>
+            <label><input type="checkbox" name="newUserRole" value="ANNOTATOR" checked /> Annotation</label>
+            <label><input type="checkbox" name="newUserRole" value="VALIDATOR" /> Validation</label>
+            <label><input type="checkbox" name="newUserRole" value="TRAINER" /> Entraînement</label>
+            <label><input type="checkbox" name="newUserRole" value="ADMIN" /> Administration</label>
+          </fieldset>
+          <button class="button primary" type="submit">Créer le compte</button>
+        </form>
+        <div id="userMessage" class="inline-notice hidden"></div>
+        <div id="userList" class="user-list"></div>
+
+        <div class="section-header audit-heading">
+          <div>
+            <h2>Journal d’activité</h2>
+            <p>Dernières connexions, validations et opérations administratives.</p>
+          </div>
+          <button id="refreshAuditButton" class="button secondary compact">Actualiser</button>
+        </div>
+        <div id="auditList" class="audit-list"></div>
+      </section>
     </section>
   </main>
 
@@ -177,6 +220,6 @@
   </template>
 
   <script src="vendor/pdfjs-3.11.174/pdf.min.js"></script>
-  <script src="studio.js?v=1"></script>
+  <script src="studio.js?v=2"></script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 # JIN runtime setup
 
 This runbook covers the two supported runtime modes for
-`5.18.0-jin-studio`. The full image combines the JIN core `5.1.0`,
+`5.19.0-studio-identity`. The full image combines the JIN core `5.1.0`,
 the versioned `core_overrides/` layer and the runtime/UI. The clean consumer
 contract is versioned independently as `jin-clean-extraction-v2`.
 
