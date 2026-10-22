@@ -1,1 +1,1 @@
-__version__ = "5.17.0-financial-role-guards"
+__version__ = "5.18.0-jin-studio"

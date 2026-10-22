@@ -29,6 +29,7 @@ from jin_runtime.weak_field_reconciliation import reconcile_weak_fields
 from jin_runtime.generic_document_fields import enrich_generic_document_fields
 from jin_runtime.commercial_references import enrich_commercial_references
 from jin_runtime.grouped_order_fields import enrich_grouped_order_fields
+from jin_runtime.studio_api import create_studio_router
 from uda import api as core_api
 
 core_app = core_api.app
@@ -44,6 +45,7 @@ document_router = CorpusDocumentRouter()
 pdf_router = CpuPdfRouter()
 field_router = WeakFieldRouter()
 ban_reference = LocalBanReference()
+app.include_router(create_studio_router())
 
 
 def _forward_headers(request: Request) -> dict[str, str]:

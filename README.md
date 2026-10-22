@@ -1,4 +1,4 @@
-# JIN Model — Universal Document AI runtime 5.17.0
+# JIN Model — Universal Document AI runtime 5.18.0
 
 `RedakArraid/jin-model` contient la couche Docker/UI autour du moteur JIN
 empaqueté, ses correctifs métier versionnés et les modèles statistiques CPU.
@@ -10,13 +10,18 @@ Les numéros ci-dessous versionnent des éléments différents et ne doivent pas
 
 | Élément | Version actuelle | Rôle |
 | --- | --- | --- |
-| Runtime JIN | `5.17.0-financial-role-guards` | API, UI, réconciliation et contrôle qualité |
+| Runtime JIN | `5.18.0-jin-studio` | API, UI, réconciliation, annotation et contrôle qualité |
 | Cœur empaqueté | `5.1.0` | OCR et extraction structurée de base |
 | Contrat consommateur | `jin-clean-extraction-v2` | JSON stable renvoyé avec `view=clean` |
 | Routeur PDF CPU | `jin-pdf-fusion-router-v3-cpu` | famille documentaire et décision documentaire |
 | Routeur de champs CPU | `jin-field-weak-router-v2-cpu` | suggestions de champs, zones et cellules à revoir |
 
-La version 5.17.0 consolide les évolutions 5.10 à 5.16 :
+La version 5.18.0 ajoute JIN Studio et conserve les garde-fous métier de 5.17 :
+
+- l'annotation humaine des PDF, les révisions immuables et les datasets
+  versionnés sont gérés hors de GenieCommande ;
+- les entraînements LayoutLMv3 sont mis en file et exécutés dans un worker
+  Docker isolé du runtime d'extraction ;
 
 - le client qui émet le bon de commande est le `buyer`; le destinataire
   commercial du bon est le `supplier`, avec correction uniquement lorsque
@@ -36,7 +41,7 @@ La version 5.17.0 consolide les évolutions 5.10 à 5.16 :
 
 La documentation courante et l'index des documents historiques sont dans
 [docs/README.md](docs/README.md). Les changements détaillés de cette version
-sont dans [RELEASE_V5_17_0.md](docs/RELEASE_V5_17_0.md).
+sont dans [RELEASE_V5_18_0.md](docs/RELEASE_V5_18_0.md).
 
 ## Benchmark open-weight d'extraction
 
@@ -105,6 +110,12 @@ Guide complet : [Runtime Setup](docs/RUNTIME_SETUP.md).
 
 JIN peut apprendre à partir de corrections explicitement revues, en plus des
 modèles CPU préentraînés et des garde-fous déterministes du runtime.
+
+L'interface protégée **JIN Studio** est disponible sur
+`http://localhost:8080/studio.html`. Elle centralise l'annotation humaine des
+PDF, les révisions, la création des datasets et les entraînements isolés,
+sans alourdir le parcours ADV de GenieCommande. Voir
+[la documentation JIN Studio](docs/JIN_STUDIO.md).
 
 ## Historique des capacités spatiales et d'apprentissage
 
@@ -480,6 +491,6 @@ Les fichiers de résultats et les valeurs client attendues restent dans
 
 ## Version
 
-- Runtime : `5.17.0-financial-role-guards`
+- Runtime : `5.18.0-jin-studio`
 - Cœur : `5.1.0`
 - Contrat propre : `jin-clean-extraction-v2`

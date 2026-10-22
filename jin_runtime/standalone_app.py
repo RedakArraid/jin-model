@@ -15,6 +15,7 @@ from jin_runtime.feedback_auth import (
 from jin_runtime.feedback_http import feedback_response
 from jin_runtime.pdf_cpu_router import CpuPdfRouter
 from jin_runtime.weak_field_router import WeakFieldRouter
+from jin_runtime.studio_api import create_studio_router
 
 app = FastAPI(
     title="JIN Model Standalone Learning API",
@@ -29,6 +30,7 @@ learner = StatisticalAddressLearner()
 document_router = CorpusDocumentRouter()
 pdf_router = CpuPdfRouter()
 field_router = WeakFieldRouter()
+app.include_router(create_studio_router())
 
 
 @app.on_event("startup")

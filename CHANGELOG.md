@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.18.0-jin-studio
+
+- Add an authenticated JIN Studio UI and API for PDF annotation outside GenieCommande.
+- Store immutable annotation revisions linked to the PDF SHA-256 and require explicit human validation.
+- Export versioned spatial datasets from reviewed documents only.
+- Queue LayoutLMv3 training runs and execute them in an isolated opt-in Docker worker with heartbeats, stale-run recovery, bounded paths and a strict script allowlist.
+- Keep training artifacts, logs and customer documents outside Git under the persisted `data/` volume.
+
 ## 5.17.0-financial-role-guards
 
 - Align the living documentation with runtime 5.17.0, core 5.1.0 and clean schema v2, and distinguish these versions from the independently versioned routing artifacts.

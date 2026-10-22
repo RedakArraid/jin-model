@@ -3,13 +3,13 @@
 Cette page distingue la documentation opérationnelle actuelle des rapports et
 notes historiques. La source de vérité de version est
 `jin_runtime/__init__.py`; la version active est
-`5.17.0-financial-role-guards`.
+`5.18.0-jin-studio`.
 
 ## Versions à ne pas confondre
 
 | Élément | Version | Compatibilité |
 | --- | --- | --- |
-| Runtime et UI | `5.17.0-financial-role-guards` | couche active de ce dépôt |
+| Runtime et UI | `5.18.0-jin-studio` | couche active de ce dépôt |
 | Cœur d'extraction | `5.1.0` | moteur local reçu sous `model/` et superposé par `core_overrides/` |
 | Sortie consommateur | `jin-clean-extraction-v2` | contrat JSON stable et indépendant du numéro du runtime |
 | Routeur PDF | `jin-pdf-fusion-router-v3-cpu` | artefact statistique de routage documentaire |
@@ -31,7 +31,10 @@ spatiale, pas la version actuelle du runtime.
   modèles préentraînés, suggestions et mémoire de feedback.
 - [Contrat de feedback humain](FEEDBACK_CONTRACT_V1.md) : authentification,
   validation, idempotence et entraînement batch.
-- [Version 5.17.0](RELEASE_V5_17_0.md) : changements de la version active.
+- [JIN Studio](JIN_STUDIO.md) : annotation spatiale, révisions immuables,
+  datasets versionnés et entraînements candidats isolés.
+- [Version 5.18.0](RELEASE_V5_18_0.md) : changements de la version active.
+- [Version 5.17.0](RELEASE_V5_17_0.md) : garde-fous financiers et rôles métier.
 - [Changelog](../CHANGELOG.md) : historique condensé des versions.
 - Schéma consommateur :
   [`jin-clean-extraction-v2.schema.json`](../jin_runtime/schemas/jin-clean-extraction-v2.schema.json).

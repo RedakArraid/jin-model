@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JIN Studio – Annotation et entraînement</title>
+  <link rel="stylesheet" href="studio.css?v=1" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">ESPACE MODÈLE · ACCÈS RESTREINT</p>
+      <h1>JIN Studio</h1>
+      <p class="subtitle">Annoter, construire les datasets et préparer les modèles candidats.</p>
+    </div>
+    <div class="top-actions">
+      <a class="button secondary" href="/">Extraction JIN</a>
+      <span id="connectionBadge" class="badge muted">Non connecté</span>
+    </div>
+  </header>
+
+  <main>
+    <section id="loginPanel" class="login-card">
+      <div>
+        <h2>Connexion annotateur</h2>
+        <p>Le jeton reste dans cet onglet et n’est jamais ajouté à l’URL.</p>
+      </div>
+      <div class="login-form">
+        <input id="tokenInput" type="password" autocomplete="off" placeholder="Jeton JIN Studio" />
+        <button id="connectButton" class="button primary">Se connecter</button>
+      </div>
+      <p id="loginError" class="error hidden"></p>
+    </section>
+
+    <section id="studioApp" class="hidden">
+      <nav class="section-tabs" aria-label="Sections JIN Studio">
+        <button class="section-tab active" data-section="annotations">Annotations</button>
+        <button class="section-tab" data-section="datasets">Datasets</button>
+        <button class="section-tab" data-section="training">Entraînements</button>
+      </nav>
+
+      <section id="annotationsSection" class="studio-section">
+        <aside class="document-sidebar">
+          <div class="sidebar-heading">
+            <div>
+              <h2>Documents</h2>
+              <span id="documentCount" class="muted-text">0 document</span>
+            </div>
+            <label class="button primary compact">
+              Ajouter
+              <input id="documentInput" type="file" accept="application/pdf,.pdf" hidden />
+            </label>
+          </div>
+          <div id="uploadState" class="inline-notice hidden"></div>
+          <div class="filters">
+            <input id="documentSearch" type="search" placeholder="Rechercher un document" />
+            <select id="documentStatusFilter">
+              <option value="">Tous les états</option>
+              <option value="DRAFT">À annoter</option>
+              <option value="HUMAN_VALIDATED">Validés</option>
+            </select>
+          </div>
+          <div id="documentList" class="document-list"></div>
+        </aside>
+
+        <div id="annotationEmpty" class="empty-panel">
+          <div class="empty-icon">⌁</div>
+          <h2>Sélectionnez ou ajoutez un PDF</h2>
+          <p>JIN préremplit les champs. L’annotateur confirme, corrige ou marque les ambiguïtés.</p>
+        </div>
+
+        <div id="annotationWorkspace" class="annotation-workspace hidden">
+          <section class="pdf-panel">
+            <div class="panel-toolbar">
+              <div>
+                <strong id="activeFilename"></strong>
+                <span id="activeHash" class="hash"></span>
+              </div>
+              <span id="activeStatus" class="badge"></span>
+            </div>
+            <div class="pdf-controls">
+              <button id="previousPageButton" class="button secondary compact">←</button>
+              <span>Page <strong id="currentPage">1</strong> / <span id="pageCount">1</span></span>
+              <button id="nextPageButton" class="button secondary compact">→</button>
+              <span class="muted-text">Sélectionnez un champ puis tracez sa zone sur le PDF.</span>
+            </div>
+            <div id="pdfCanvasWrap" class="pdf-canvas-wrap">
+              <canvas id="pdfCanvas"></canvas>
+              <canvas id="annotationCanvas"></canvas>
+            </div>
+          </section>
+
+          <section class="fields-panel">
+            <div class="panel-toolbar sticky">
+              <div>
+                <h2>Champs à vérifier</h2>
+                <span id="reviewProgress" class="muted-text"></span>
+              </div>
+              <div class="top-actions">
+                <button id="addFieldButton" class="button secondary compact">Ajouter un champ</button>
+                <button id="confirmAllButton" class="button secondary compact">Confirmer les non revus</button>
+              </div>
+            </div>
+            <div class="reviewer-row">
+              <label>
+                Annotateur
+                <input id="reviewerInput" type="text" maxlength="160" placeholder="Identifiant de l’annotateur" />
+              </label>
+              <label>
+                Note générale
+                <input id="annotationNote" type="text" maxlength="4000" placeholder="Facultatif" />
+              </label>
+            </div>
+            <div id="annotationMessage" class="inline-notice hidden"></div>
+            <div id="fieldList" class="field-list"></div>
+            <div class="annotation-actions">
+              <button id="saveDraftButton" class="button secondary">Enregistrer le brouillon</button>
+              <button id="validateButton" class="button primary">Valider pour l’apprentissage</button>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="datasetsSection" class="studio-section hidden">
+        <div class="section-header">
+          <div>
+            <h2>Datasets versionnés</h2>
+            <p>Seuls les documents explicitement validés par un humain peuvent être intégrés.</p>
+          </div>
+          <button id="createDatasetButton" class="button primary">Créer depuis les documents validés</button>
+        </div>
+        <div id="datasetMessage" class="inline-notice hidden"></div>
+        <div id="datasetList" class="card-grid"></div>
+      </section>
+
+      <section id="trainingSection" class="studio-section hidden">
+        <div class="section-header">
+          <div>
+            <h2>Entraînements</h2>
+            <p>Les jeux validés sont entraînés par un worker isolé, sans ralentir le moteur d’extraction.</p>
+          </div>
+        </div>
+        <div id="trainingMessage" class="inline-notice hidden"></div>
+        <div id="trainingList" class="card-grid"></div>
+      </section>
+    </section>
+  </main>
+
+  <template id="fieldTemplate">
+    <article class="field-card">
+      <div class="field-heading">
+        <div>
+          <select class="field-label" aria-label="Type de champ"></select>
+          <input class="field-path" aria-label="Chemin canonique" />
+        </div>
+        <select class="field-status">
+          <option value="UNREVIEWED">À vérifier</option>
+          <option value="CONFIRMED">Correct</option>
+          <option value="CORRECTED">Corrigé</option>
+          <option value="ABSENT">Absent du document</option>
+          <option value="AMBIGUOUS">Ambigu</option>
+        </select>
+      </div>
+      <div class="field-values">
+        <label>Valeur JIN<input class="extracted-value" readonly /></label>
+        <label>Valeur corrigée<input class="corrected-value" /></label>
+      </div>
+      <details>
+        <summary>Preuve dans le PDF</summary>
+        <div class="evidence-grid">
+          <label>Page<input class="evidence-page" type="number" min="1" /></label>
+          <label>Boîte normalisée<input class="evidence-bbox" placeholder="x0,y0,x1,y1" /></label>
+          <label>Commentaire<input class="field-comment" maxlength="1000" /></label>
+        </div>
+      </details>
+    </article>
+  </template>
+
+  <script src="vendor/pdfjs-3.11.174/pdf.min.js"></script>
+  <script src="studio.js?v=1"></script>
+</body>
+</html>
