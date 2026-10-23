@@ -984,6 +984,94 @@ def _address_lists(value: Any) -> Iterable[list[dict[str, Any]]]:
             yield from _address_lists(child)
 
 
+def _repair_selected_delivery_party(
+    po: dict[str, Any],
+    primary: dict[str, Any],
+) -> None:
+    """Synchronize a proven delivery recipient with the raw party diagnosis.
+
+    The core can occasionally retain the right-hand part of a parallel label
+    (for example ``Merci de livrer si dispo``) as ``ship_to.name`` while the
+    structured delivery block has already recovered the actual company in its
+    department/recipient field.  Leaving those views out of sync also keeps a
+    stale business-validation warning even though the published postal label
+    is correct.
+
+    Only replace a name which is itself rejected by the delivery-party cleaner,
+    and only from another source-preserved, structured party component.
+    """
+    ship_to = po.get("ship_to")
+    if not isinstance(ship_to, dict):
+        ship_to = {}
+    current_name = ship_to.get("name") or ship_to.get("legal_name")
+    if _clean_delivery_party(current_name):
+        return
+
+    clean = primary.get("clean_address") or {}
+    components = clean.get("components") or {}
+    candidates = (
+        components.get("recipient"),
+        primary.get("party_name"),
+        components.get("department"),
+        primary.get("department"),
+    )
+    recovered_name = next(
+        (name for value in candidates if (name := _clean_delivery_party(value))),
+        None,
+    )
+    if not recovered_name:
+        return
+
+    ship_to["name"] = recovered_name
+    if not _clean_delivery_party(ship_to.get("legal_name")):
+        ship_to.pop("legal_name", None)
+    po["ship_to"] = ship_to
+
+    primary["party_name"] = recovered_name
+    primary["clean_address"] = clean_delivery_address(primary)
+    primary["formatted_address_clean"] = primary["clean_address"].get("one_line")
+
+    validation = po.get("validation")
+    if not isinstance(validation, dict):
+        return
+    checks = validation.get("checks")
+    if not isinstance(checks, dict):
+        return
+    semantics = checks.get("party_role_semantics")
+    if not isinstance(semantics, dict):
+        return
+    diagnosed = semantics.get("ship_to")
+    if not isinstance(diagnosed, dict) or diagnosed.get("valid") is not False:
+        return
+    if _clean_delivery_party(diagnosed.get("value")):
+        return
+
+    diagnosed["value"] = recovered_name
+    previous_quality = diagnosed.get("quality")
+    if not isinstance(previous_quality, (int, float)):
+        previous_quality = 0.0
+    diagnosed["quality"] = max(previous_quality, 0.95)
+    diagnosed["valid"] = True
+    diagnosed["repaired_from"] = "selected_delivery_address"
+
+    marker = "Semantically implausible/missing business party role(s): ship_to"
+    original_warnings = list(validation.get("warnings") or [])
+    validation["warnings"] = [warning for warning in original_warnings if warning != marker]
+    errors = list(validation.get("errors") or [])
+    other_invalid_checks = any(
+        isinstance(check, dict) and check.get("valid") is False
+        for check in checks.values()
+    )
+    if (
+        marker in original_warnings
+        and not validation["warnings"]
+        and not errors
+        and not other_invalid_checks
+    ):
+        validation["status"] = "PASS"
+        po["requires_human_review"] = False
+
+
 def enrich_delivery_addresses(payload: dict[str, Any]) -> dict[str, Any]:
     """Attach the clean view to delivery blocks and expose selection metadata."""
     seen: set[int] = set()
@@ -1007,6 +1095,8 @@ def enrich_delivery_addresses(payload: dict[str, Any]) -> dict[str, Any]:
         primary = [block for block in po.get("business_addresses") or []
                    if isinstance(block, dict)
                    and str(block.get("role") or "").lower() == "ship_to"]
+        if len(primary) == 1:
+            _repair_selected_delivery_party(po, primary[0])
         po["delivery_address_selection"] = {
             "status": "SELECTED" if len(primary) == 1 else "MISSING" if not primary else "AMBIGUOUS",
             "candidate_count": len(primary),

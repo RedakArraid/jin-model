@@ -1166,6 +1166,114 @@ class DeliveryAddressTests(unittest.TestCase):
         self.assertEqual(clean["components"]["industrial_zone"], "Z.A.D. DE RAUJOLLES")
         self.assertIn("Z.A.D. DE RAUJOLLES", clean["one_line"])
 
+    def test_selected_delivery_recipient_repairs_stale_instruction_diagnosis(self):
+        po = {
+            "ship_to": {
+                "name": ": Merci de livrer si dispo",
+                "legal_name": ": Merci de livrer si dispo",
+            },
+            "business_addresses": [{
+                "address_id": "delivery",
+                "role": "ship_to",
+                "party_name": ": Merci de livrer si dispo",
+                "department": "GAZ SERVICE RAPIDE",
+                "address": {
+                    "house_number": "23",
+                    "street": "RUE DE MONTMORENCY",
+                    "postal_code": "95600",
+                    "city": "EAUBONNE",
+                    "country": "France",
+                },
+            }],
+            "validation": {
+                "status": "WARNING",
+                "checks": {
+                    "quantity_price": {"valid": True},
+                    "party_role_semantics": {
+                        "ship_to": {
+                            "value": ": Merci de livrer si dispo",
+                            "quality": 0.05,
+                            "valid": False,
+                            "explicit_label_present": True,
+                        },
+                    },
+                },
+                "warnings": [
+                    "Semantically implausible/missing business party role(s): ship_to",
+                ],
+                "errors": [],
+            },
+            "requires_human_review": True,
+        }
+        payload = {
+            "business_extractions": {"purchase_order": po},
+        }
+
+        enrich_delivery_addresses(payload)
+
+        self.assertEqual(po["ship_to"]["name"], "GAZ SERVICE RAPIDE")
+        self.assertNotIn("legal_name", po["ship_to"])
+        self.assertEqual(
+            po["business_addresses"][0]["party_name"],
+            "GAZ SERVICE RAPIDE",
+        )
+        self.assertEqual(
+            po["business_addresses"][0]["clean_address"]["lines"][:2],
+            ["GAZ SERVICE RAPIDE", "23 RUE DE MONTMORENCY"],
+        )
+        ship_to_check = po["validation"]["checks"]["party_role_semantics"]["ship_to"]
+        self.assertEqual(ship_to_check["value"], "GAZ SERVICE RAPIDE")
+        self.assertTrue(ship_to_check["valid"])
+        self.assertEqual(po["validation"]["status"], "PASS")
+        self.assertEqual(po["validation"]["warnings"], [])
+        self.assertFalse(po["requires_human_review"])
+
+    def test_delivery_party_repair_preserves_unrelated_validation_warning(self):
+        po = {
+            "ship_to": {"name": "Merci de livrer si dispo"},
+            "business_addresses": [{
+                "address_id": "delivery",
+                "role": "ship_to",
+                "party_name": "Merci de livrer si dispo",
+                "department": "GAZ SERVICE RAPIDE",
+                "address": {
+                    "street": "RUE DE MONTMORENCY",
+                    "postal_code": "95600",
+                    "city": "EAUBONNE",
+                },
+            }],
+            "validation": {
+                "status": "WARNING",
+                "checks": {
+                    "duplicate_lines": {"count": 1, "valid": False},
+                    "party_role_semantics": {
+                        "ship_to": {
+                            "value": "Merci de livrer si dispo",
+                            "quality": 0.05,
+                            "valid": False,
+                        },
+                    },
+                },
+                "warnings": [
+                    "Semantically implausible/missing business party role(s): ship_to",
+                    "Potential duplicate line items detected: 1 signature(s)",
+                ],
+                "errors": [],
+            },
+            "requires_human_review": True,
+        }
+
+        enrich_delivery_addresses({
+            "business_extractions": {"purchase_order": po},
+        })
+
+        self.assertEqual(po["ship_to"]["name"], "GAZ SERVICE RAPIDE")
+        self.assertEqual(po["validation"]["status"], "WARNING")
+        self.assertEqual(po["validation"]["warnings"], [
+            "Potential duplicate line items detected: 1 signature(s)",
+        ])
+        self.assertTrue(po["requires_human_review"])
+
 
 if __name__ == "__main__":
     unittest.main()
