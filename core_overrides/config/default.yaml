@@ -307,7 +307,9 @@ layout:
   # opt-in and the stripped candidate must still match the material profile.
   material_reference_source_prefixes:
     - EL
-  material_reference_prefixed_min_score: 0.82
+  # A configured qualifier already supplies strong role evidence; keep a
+  # statistical floor for the suffix while allowing rare alphanumeric families.
+  material_reference_prefixed_min_score: 0.60
   # Unknown prefixes can be confirmed inside one document when at least two
   # distinct commercial lines have strongly supported material-reference suffixes.
   material_reference_auto_source_prefixes: true

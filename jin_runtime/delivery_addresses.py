@@ -493,6 +493,13 @@ def _clean_delivery_party(value: Any) -> str | None:
         " PROCHAINS MOIS ", " HTTP ", " WWW ", "@",
     )):
         return None
+    if re.match(
+        r"^(?:MERCI\s+DE\s+)?LIVRER\b|^LIVRAISON\s+(?:DE\s+PREFERENCE|LE\s+MATIN)\b",
+        folded,
+    ):
+        # Delivery instructions are operational notes, never a recipient or
+        # an organisational department on the postal label.
+        return None
     delivery_wish_sentence = bool(
         folded.startswith("LIVRAISON")
         and "SOUHAIT" in folded

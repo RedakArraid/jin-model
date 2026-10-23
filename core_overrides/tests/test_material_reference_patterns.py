@@ -171,6 +171,23 @@ def test_source_prefix_supports_confirmed_short_code_without_weakening_global_sa
     assert resolved.reference_value == "73924"
 
 
+def test_configured_source_prefix_supports_rare_alphanumeric_family():
+    profile = load_material_reference_profile({})
+    assert profile is not None
+
+    resolved = resolve_material_reference("EL774600188A0", profile, {})
+
+    assert resolved.match.supported
+    assert resolved.source_prefix == "EL"
+    assert resolved.reference_value == "774600188A0"
+
+    line = _line("EL774600188A0")
+    assert enrich_supplier_material_roles([line], {}) == 1
+    assert line.material_number == "EL774600188A0"
+    assert line.supplier_material_number == "774600188A0"
+    assert line.material_reference_source_prefix == "EL"
+
+
 def test_source_prefix_does_not_consume_words_or_unconfigured_prefixes():
     profile = load_material_reference_profile({})
     assert profile is not None

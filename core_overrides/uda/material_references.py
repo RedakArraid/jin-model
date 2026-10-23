@@ -335,7 +335,11 @@ def resolve_material_reference(
         layout = (config or {}).get("layout", {})
         if prefix in configured_prefixes:
             prefixed_threshold = float(layout.get(
-                "material_reference_prefixed_min_score", 0.82
+                # The explicitly configured source prefix is strong semantic
+                # evidence.  Keep a shape floor, but accept rare legitimate
+                # alphanumeric families that cannot reach the ordinary 0.74
+                # threshold from aggregate statistics alone.
+                "material_reference_prefixed_min_score", 0.60
             ))
         else:
             prefixed_threshold = float(layout.get(

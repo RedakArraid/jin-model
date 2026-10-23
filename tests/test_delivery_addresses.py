@@ -769,6 +769,24 @@ class DeliveryAddressTests(unittest.TestCase):
             ],
         )
 
+    def test_short_delivery_instruction_is_not_exposed_as_department(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "GAZ SERVICE RAPIDE",
+            "department": "Merci de livrer si dispo",
+            "address": {
+                "house_number": "55",
+                "street": "BOULEVARD HENRI BARBUSSE",
+                "postal_code": "78800",
+                "city": "HOUILLES",
+                "country": "France",
+            },
+        })
+
+        self.assertNotIn("department", clean["components"])
+        self.assertNotIn("MERCI DE LIVRER", clean["one_line"])
+        self.assertEqual(clean["lines"][0], "GAZ SERVICE RAPIDE")
+
     def test_short_industrial_zone_keeps_printed_order_before_street(self):
         clean = clean_delivery_address({
             "role": "ship_to",
