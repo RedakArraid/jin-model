@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import html
 import re
 import uuid
 import statistics
@@ -2331,6 +2332,10 @@ def _dedupe_line_items(items):
             continue
         sig = (
             item.page,
+            # Distinct source row numbers prove that two otherwise identical
+            # items were actually printed twice. Duplicate parser hypotheses
+            # normally keep the same row number and are still collapsed.
+            str(item.line_number or "").strip(),
             _fold(item.material_number or item.article_number or ""),
             _fold(item.supplier_material_number or ""),
             _fold(item.description or ""),
@@ -2557,6 +2562,7 @@ def _standard_native_table_items(table, default_currency: str = "EUR"):
                 if abs(printed_amount-computed)>tol:
                     continue
             items.append(LineItem(
+                line_number=str(len(items) + 1),
                 material_number=code, article_number=code, description=desc or None,
                 quantity=qty, ordered_quantity=qty, pack_quantity=lot,
                 unit_price=price, net_unit_price=price, line_total=amount, line_net_amount=amount,
@@ -6298,7 +6304,7 @@ def _sanitize_legal_footer_lines_v48(po, config: dict):
 
 
 def _separate_promotional_continuation_notes_v5171(lines) -> int:
-    """Move an appended promotion row out of the product description."""
+    """Move appended promotional or rich-text commercial notes out of descriptions."""
     moved = 0
     pattern = re.compile(
         r"\s+(?P<note>promo(?:tion)?\s+pa\s+n(?:[°ºo.]|\^o)?\s*"
@@ -6306,9 +6312,24 @@ def _separate_promotional_continuation_notes_v5171(lines) -> int:
         flags=re.I,
     )
     for line in lines or []:
-        description = " ".join(str(getattr(line, "description", "") or "").split())
+        raw_description = str(getattr(line, "description", "") or "")
+        has_html = bool(re.search(r"</?[A-Za-z][^>]*>", raw_description))
+        description = html.unescape(
+            re.sub(r"</?[A-Za-z][^>]*>", " ", raw_description)
+        )
+        description = " ".join(description.split())
         match = pattern.search(description)
+        if not match and has_html:
+            match = re.search(
+                r"\s+(?P<note>(?:devis|offre|d.rogation)\s+"
+                r"(?:n(?:[^A-Za-z0-9\s]|o)?\s*)?"
+                r"[A-Z0-9][A-Z0-9._/-]{2,})\s*$",
+                description,
+                flags=re.I,
+            )
         if not match:
+            if has_html and description:
+                line.description = description
             continue
         clean_description = description[:match.start()].rstrip(" ,;|/-")
         if not clean_description:

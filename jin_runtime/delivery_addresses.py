@@ -504,9 +504,26 @@ def _clean_delivery_party(value: Any) -> str | None:
 
 
 def _looks_like_street(value: Any) -> bool:
+    text = str(value or "").strip()
+    # Embedded PDF fonts can expose UTF-8 bytes as Latin-1 (for example
+    # ``allÃ©es``). Repair that narrow form before accent folding.
+    try:
+        repaired = text.encode("latin-1").decode("utf-8")
+        if repaired:
+            text = repaired
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+    folded = "".join(
+        char for char in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(char)
+    )
+    folded = re.sub(r"[^A-Z0-9]+", " ", folded.upper()).strip()
     return bool(re.match(
-        r"^\d+[A-Z]?\s+(?:RUE|R|AVENUE|AV|ROUTE|RTE|BOULEVARD|BD|CHEMIN|IMPASSE|ALLEE|QUAI)\b",
-        _norm(value),
+        r"^(?:(?:\d+[A-Z]?\s+)(?:RUE|R|AVENUE|AV|ROUTE|RTE|BOULEVARD|BD|"
+        r"CHEMIN|IMPASSE|ALLEE|ALLEES|QUAI|TRAVERSE)|"
+        r"(?:RUE|AVENUE|ROUTE|BOULEVARD|CHEMIN|IMPASSE|ALLEE|ALLEES|QUAI|"
+        r"TRAVERSE))\b",
+        folded,
     ))
 
 

@@ -1464,6 +1464,79 @@ class CleanOutputTests(unittest.TestCase):
             ["LEBLANC AMIENS", "MONTIÈRES ACTIVITÉS"],
         )
 
+    def test_parallel_billing_delivery_duplicate_company_beats_street_recipient(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{"text": (
+                "Facturé à : Adresse de livraison : Merci de livrer si dispo\n"
+                "ISERBA ISERBA\n"
+                "4 allÃ©es des hÃªtres\n"
+                "69760 LIMONEST"
+            )}],
+            "business_extractions": {"purchase_order": {
+                "buyer": {"name": "ISERBA"},
+                "supplier": {"name": "ELM LEBLANC"},
+                "ship_to": {"name": "4 allÃ©es des hÃªtres"},
+                "business_addresses": [{
+                    "address_id": "delivery", "role": "ship_to",
+                    "party_name": "4 allÃ©es des hÃªtres",
+                    "clean_address": {
+                        "one_line": "4 allÃ©es des hÃªtres, 69760 LIMONEST",
+                        "lines": ["4 allÃ©es des hÃªtres", "69760 LIMONEST"],
+                        "components": {
+                            "recipient": "4 allÃ©es des hÃªtres",
+                            "postal_code": "69760", "city": "LIMONEST",
+                        },
+                    },
+                }],
+            }},
+        }
+
+        order = build_clean_output(payload)["order"]
+
+        self.assertEqual(order["parties"]["buyer"]["name"], "ISERBA")
+        self.assertEqual(order["parties"]["ship_to"]["name"], "ISERBA")
+        self.assertEqual(order["delivery_address"]["party_name"], "ISERBA")
+        self.assertEqual(
+            order["delivery_address"]["components"]["street"],
+            "4 allÃ©es des hÃªtres",
+        )
+
+    def test_parallel_parent_company_does_not_replace_named_local_recipient(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{"text": (
+                "Facturé à : Adresse de livraison : Merci de livrer si dispo\n"
+                "CONFOGAZ IDF CONFOGAZ IDF\n"
+                "CONFOGAZ STAINS\n"
+                "17 rue du Bois\n93240 STAINS"
+            )}],
+            "business_extractions": {"purchase_order": {
+                "buyer": {"name": "CONFOGAZ IDF"},
+                "supplier": {"name": "ELM LEBLANC"},
+                "bill_to": {"name": "CONFOGAZ IDF"},
+                "ship_to": {"name": "CONFOGAZ STAINS"},
+                "business_addresses": [{
+                    "address_id": "delivery", "role": "ship_to",
+                    "party_name": "CONFOGAZ STAINS",
+                    "clean_address": {
+                        "one_line": "CONFOGAZ STAINS, 17 RUE DU BOIS, 93240 STAINS",
+                        "lines": ["CONFOGAZ STAINS", "17 RUE DU BOIS", "93240 STAINS"],
+                        "components": {
+                            "recipient": "CONFOGAZ STAINS",
+                            "house_number": "17", "street": "RUE DU BOIS",
+                            "postal_code": "93240", "city": "STAINS",
+                        },
+                    },
+                }],
+            }},
+        }
+
+        order = build_clean_output(payload)["order"]
+
+        self.assertEqual(order["parties"]["ship_to"]["name"], "CONFOGAZ STAINS")
+        self.assertEqual(order["delivery_address"]["party_name"], "CONFOGAZ STAINS")
+
     def test_placeholder_client_number_falls_back_to_delivery_party(self):
         payload = {
             "document": {"primary_document_type": "purchase_order"},

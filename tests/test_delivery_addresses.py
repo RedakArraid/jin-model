@@ -1068,6 +1068,29 @@ class DeliveryAddressTests(unittest.TestCase):
             ],
         )
 
+    def test_mojibake_plural_allee_recipient_is_promoted_to_street(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "4 allÃ©es des hÃªtres",
+            "address": {"postal_code": "69760", "city": "LIMONEST"},
+        })
+
+        self.assertNotIn("recipient", clean["components"])
+        self.assertEqual(clean["components"]["street"], "4 allÃ©es des hÃªtres")
+
+    def test_unnumbered_traverse_recipient_is_promoted_to_street(self):
+        clean = clean_delivery_address({
+            "role": "ship_to",
+            "party_name": "TRAVERSE DE LA BASTIDONNE",
+            "department": "TECHNIPARC DE LA BASTIDONNE",
+            "address": {"postal_code": "13400", "city": "AUBAGNE"},
+        })
+
+        self.assertNotIn("recipient", clean["components"])
+        self.assertEqual(
+            clean["components"]["street"], "TRAVERSE DE LA BASTIDONNE",
+        )
+
     def test_address_like_recipient_is_promoted_when_line1_repeats_it(self):
         clean = clean_delivery_address({
             "role": "ship_to",

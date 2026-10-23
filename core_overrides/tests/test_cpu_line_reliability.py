@@ -704,6 +704,22 @@ def test_postprocessor_separates_promotion_continuation_from_description():
     assert line.notes == ["Promo PA n° 26085"]
 
 
+def test_postprocessor_removes_html_quote_note_from_product_description():
+    line = LineItem(
+        material_number="EL7724001291",
+        description="THERMOSTAT OR 100 <p>&nbsp;devis CCH-060126-0709</p>",
+        quantity=6,
+        unit_price=30,
+        line_total=180,
+    )
+
+    moved = _separate_promotional_continuation_notes_v5171([line])
+
+    assert moved == 1
+    assert line.description == "THERMOSTAT OR 100"
+    assert line.notes == ["devis CCH-060126-0709"]
+
+
 def test_stacked_customer_and_supplier_references_use_net_price_without_losing_rows():
     page = _page([
         (180, [("Article", 10, 50), ("Designation", 120, 210),
@@ -1737,6 +1753,27 @@ def _native_table(headers, row, page=1):
         source=SimpleNamespace(page=page),
         confidence=0.98,
     )
+
+
+def test_native_table_preserves_two_identical_physical_product_rows():
+    table = SimpleNamespace(
+        data=[
+            ["Article", "Désignation", "Qté cdée", "Prix net", "Montant HT"],
+            ["EL8716747368", "KIT UPMO 15-60 + CONNECTEUR", "1", "183,17", "183,17"],
+            ["EL8716747368", "KIT UPMO 15-60 + CONNECTEUR", "1", "183,17", "183,17"],
+            ["EL87167712590", "JOINT", "1", "32,13", "32,13"],
+        ],
+        source=SimpleNamespace(page=1),
+        confidence=0.98,
+    )
+
+    lines, charges = _native_table_line_items_and_charges([table])
+
+    assert charges == []
+    assert [line.material_number for line in lines] == [
+        "EL8716747368", "EL8716747368", "EL87167712590",
+    ]
+    assert [line.line_number for line in lines] == ["1", "2", "3"]
 
 
 def test_dual_reference_stacked_table_uses_supplier_reference_and_extracts_port_charge():

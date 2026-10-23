@@ -939,6 +939,44 @@ def _source_parallel_delivery_party(
     lines = [line.strip() for line in source.splitlines()]
     for index, line in enumerate(lines):
         folded = _name_key(line)
+        # In a two-column billing/delivery block, text extraction may place
+        # both identical company cells on one line (``ISERBA ISERBA``). This
+        # is stronger recipient evidence than the following street line.
+        if "ADRESSEDELIVRAISON" in folded and "FACTUR" in folded:
+            for value in lines[index + 1:index + 4]:
+                tokens = value.split()
+                if len(tokens) < 2 or len(tokens) % 2:
+                    continue
+                middle = len(tokens) // 2
+                left = " ".join(tokens[:middle])
+                right = " ".join(tokens[middle:])
+                candidate = _clean_party_name(left)
+                if (
+                    candidate
+                    and _same_party(left, right)
+                    and not re.match(
+                        r"^(?:\d|RUE\b|AVENUE\b|ROUTE\b|CHEMIN\b|IMPASSE\b|"
+                        r"ALLEE|TRAVERSE\b|QUAI\b)",
+                        candidate,
+                        flags=re.I,
+                    )
+                ):
+                    current_key = _name_key(current_delivery_name)
+                    current_is_address_fragment = bool(re.match(
+                        r"^(?:\d|RUE|AVENUE|ROUTE|CHEMIN|IMPASSE|ALLEE|"
+                        r"TRAVERSE|QUAI|ZAC|ZAE|ZA|ZI|ZONE|PARC|TECHNIPARC)",
+                        current_key,
+                    ))
+                    if (
+                        current_delivery_name
+                        and not _same_party(current_delivery_name, candidate)
+                        and not current_is_address_fragment
+                    ):
+                        # A named local agency/site (CONFOGAZ STAINS,
+                        # O'CHAUFFAGE, ...) is more specific than the parent
+                        # company repeated in both adjacent columns.
+                        return None
+                    return candidate
         if not (
             "ADRESSEDELIVRAISON" in folded
             and "COMMANDEFOURNISSEUR" in folded
@@ -1086,12 +1124,9 @@ def _reconcile_clean_parties(
     parallel_delivery_name = _source_parallel_delivery_party(
         source, supplier_name, delivery_name
     )
-    if (
-        parallel_delivery_name
-        and delivery_name
-        and not _same_party(parallel_delivery_name, delivery_name)
-    ):
-        delivery_department = delivery_name
+    if parallel_delivery_name and not _same_party(parallel_delivery_name, delivery_name):
+        if delivery_name:
+            delivery_department = delivery_name
         delivery_name = parallel_delivery_name
         delivery["party_name"] = delivery_name
         components["recipient"] = delivery_name
@@ -1104,6 +1139,7 @@ def _reconcile_clean_parties(
         delivery_name
         and delivery_department
         and initial_buyer_name
+        and not parallel_delivery_name
         and _same_party(delivery_department, initial_buyer_name)
         and not _same_party(delivery_name, initial_buyer_name)
     ):
@@ -1163,6 +1199,18 @@ def _reconcile_clean_parties(
 
     buyer = dict(parties.get("buyer") or {})
     buyer_name = _party_display_name(buyer)
+    parallel_bill_to_name = _party_display_name(parties.get("bill_to"))
+    if (
+        parallel_delivery_name
+        and parallel_bill_to_name
+        and _same_party(parallel_delivery_name, parallel_bill_to_name)
+        and not _same_party(buyer_name, parallel_bill_to_name)
+    ):
+        # Identical company cells under explicit billing and delivery columns
+        # are stronger than an address fragment parsed as the buyer name.
+        buyer_name = parallel_bill_to_name
+        buyer["name"] = buyer_name
+        buyer.pop("legal_name", None)
     explicitly_labeled_buyer = _source_labeled_contact(
         source, labels=("ACHETEUR",)
     ).get("name")
@@ -1724,6 +1772,9 @@ def _business_address(source: dict[str, Any]) -> dict[str, Any]:
         })
         clean_components = refreshed.get("components") or clean_components
         clean_address = {**clean_address, **refreshed}
+        # Do not fall back to a stale raw party after the address cleaner has
+        # proven that it was actually a street (for example ``4 allées ...``).
+        party_name = _clean_party_name(clean_components.get("recipient"))
     source_id = source.get("address_id")
     # One physical address may legitimately be reused for several business
     # roles.  Keep each JSON object independently addressable for consumers.
@@ -1731,9 +1782,7 @@ def _business_address(source: dict[str, Any]) -> dict[str, Any]:
     address = _compact({
         "id": clean_id, "role": role,
         "role_label": source.get("role_label"),
-        "party_name": _clean_party_name(
-            clean_components.get("recipient") or party_name
-        ),
+        "party_name": party_name,
         "party_code": _clean_party_code(source.get("party_code")),
         "department": _clean_department(
             clean_components.get("department") or department

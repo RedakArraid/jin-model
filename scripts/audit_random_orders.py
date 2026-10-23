@@ -645,6 +645,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("folder", type=Path)
     parser.add_argument("--count", type=int, default=50)
     parser.add_argument("--seed", type=int, default=20260930)
+    parser.add_argument(
+        "--latest", action="store_true",
+        help="Select the most recently modified unique PDFs instead of a random sample.",
+    )
     parser.add_argument("--api", default="http://localhost:8080/api/extract")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
@@ -760,7 +764,14 @@ def main(argv: list[str] | None = None) -> int:
         random.Random(args.seed).shuffle(selected)
         selected = selected[:args.count]
     else:
-        candidates = sorted(path for path in folder.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf")
+        candidates = sorted(
+            (path for path in folder.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf"),
+            key=(
+                (lambda path: (path.stat().st_mtime_ns, path.as_posix()))
+                if args.latest else (lambda path: path.as_posix())
+            ),
+            reverse=args.latest,
+        )
         unique: dict[str, Path] = {}
         for path in candidates:
             if path.relative_to(folder).as_posix() in excluded:
@@ -770,7 +781,8 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             unique.setdefault(digest, path)
         selected = list(unique.items())
-        random.Random(args.seed).shuffle(selected)
+        if not args.latest:
+            random.Random(args.seed).shuffle(selected)
         selected = selected[:args.count]
     if len(selected) < args.count:
         raise SystemExit(f"Only {len(selected)} unique PDFs are available")
