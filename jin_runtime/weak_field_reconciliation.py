@@ -1080,6 +1080,13 @@ def _ensure_order_container(
     current_type = document.get("primary_document_type") or document.get("detected_document_type")
     page_classifications = document.get("page_classifications") or []
     first = next((item for item in page_classifications if item.get("page") == 1), {})
+    explicit_type = str(first.get("explicit_document_title") or "").strip()
+    if explicit_type and explicit_type not in ORDER_TYPES:
+        # Geometry may correctly find an order reference and date inside an
+        # acknowledgement, invoice or quotation.  Those fields identify the
+        # referenced transaction; they do not overrule an explicit document
+        # title on page one.
+        return {}
     first_signals = " ".join(str(item) for item in first.get("signals") or [])
     order_signal_count = sum(
         marker in _norm(first_signals)

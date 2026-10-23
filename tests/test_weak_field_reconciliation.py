@@ -1158,6 +1158,47 @@ class WeakFieldReconciliationTests(unittest.TestCase):
         po = out["business_extractions"]["purchase_order"]
         self.assertEqual(po["purchase_order"]["number"]["value"], "A2503480")
 
+    def test_explicit_order_confirmation_is_not_promoted_to_purchase_order(self):
+        payload = {
+            "document": {
+                "primary_document_type": "order_confirmation",
+                "detected_document_type": "order_confirmation",
+                "page_classifications": [{
+                    "page": 1,
+                    "type": "order_confirmation",
+                    "explicit_document_title": "order_confirmation",
+                    "signals": [
+                        "explicit-title:order_confirmation",
+                        "confirmation de commande",
+                    ],
+                }],
+            },
+            "business_extractions": {"order_confirmation": {}},
+            "weak_field_suggestions": {
+                "anchored_fields": {
+                    "order_number": order_candidate("15015760"),
+                    "order_date": {
+                        "value": "2026-04-27",
+                        "confidence": 0.995,
+                        "source": "geometry_anchor_v2",
+                        "source_text": "27.04.2026",
+                        "page": 1,
+                        "bbox": [262, 227, 346, 244],
+                    },
+                },
+                "address_candidates": [],
+            },
+        }
+
+        out = reconcile_weak_fields(payload)
+
+        self.assertEqual(
+            out["document"]["primary_document_type"],
+            "order_confirmation",
+        )
+        self.assertNotIn("purchase_order", out["business_extractions"])
+        self.assertEqual(out["weak_field_reconciliation"]["actions"], [])
+
 
     def test_reordered_city_on_repeated_pages_is_one_delivery_site(self):
         payload = base_payload()
