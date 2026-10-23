@@ -6258,6 +6258,53 @@ def _extract_vat_identifiers_v52(po, pages, config: dict):
     return po
 
 
+def _sanitize_tax_identifier_totals_v5174(po, config: dict):
+    """Remove a VAT registration number misread as a monetary tax amount."""
+    if not config.get("layout", {}).get("sanitize_tax_identifier_totals", True):
+        return po, 0
+    import math
+    import re
+
+    identifiers = set()
+    values = [
+        item.get("vat_number")
+        for item in getattr(po, "tax_identifiers", []) or []
+        if isinstance(item, dict)
+    ]
+    values.extend(
+        getattr(getattr(po, role, None), "vat_number", None)
+        for role in ("buyer", "supplier", "bill_to", "ship_to")
+    )
+    for value in values:
+        digits = re.sub(r"\D", "", str(value or ""))
+        if 8 <= len(digits) <= 15:
+            identifiers.add(int(digits))
+    if not identifiers:
+        return po, 0
+
+    def registration_amount(value) -> bool:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return False
+        return (
+            math.isfinite(number)
+            and abs(number - round(number)) <= 0.001
+            and int(round(number)) in identifiers
+        )
+
+    repaired = 0
+    for field in ("total_vat", "total_tax", "total_line_taxes"):
+        if registration_amount(getattr(po.totals, field, None)):
+            setattr(po.totals, field, None)
+            repaired += 1
+    for summary in getattr(po, "taxes", []) or []:
+        if registration_amount(getattr(summary, "tax_amount", None)):
+            summary.tax_amount = None
+            repaired += 1
+    return po, repaired
+
+
 def _legal_footer_line_v48(line, config: dict) -> bool:
     import re
     if not config.get("layout",{}).get("reject_legal_footer_lines",True): return False
@@ -6370,6 +6417,36 @@ def _summary_table_totals_v48(po, tables, config: dict, default_currency: str="E
     import re
     from po_ocr.normalize import parse_number
     if not config.get("layout",{}).get("native_summary_table_totals",True): return po
+
+    def is_tax_amount_label(
+        label: str, *, allow_annotated_rate: bool = False
+    ) -> bool:
+        """Accept monetary VAT labels, never registration-number labels."""
+        low = _fold(label)
+        if re.search(
+            r"\b(?:intra(?:communautaire)?|registration|identifiant|identifier|vat\s+id)\b|"
+            r"\b(?:numero|number|no)\b.*\b(?:tva|vat)\b|"
+            r"^n[^a-z0-9]{0,4}(?:de\s*)?(?:tva|vat)\b",
+            low,
+        ):
+            return False
+        annotated_rate = bool(re.fullmatch(
+            r"t\.?v\.?a\.?\s+\d+(?:[.,]\d+)?\s*%", low
+        ))
+        if re.search(r"%|\b(?:taux|rate)\b", low) and not (
+            allow_annotated_rate and annotated_rate
+        ):
+            return False
+        return bool(
+            annotated_rate
+            or re.fullmatch(r"t\.?v\.?a\.?(?:\s+montant)?", low)
+            or re.search(
+                r"\b(?:valeur|montant|total)\s+(?:de\s+)?t\.?v\.?a\.?\b|"
+                r"\bt\.?v\.?a\.?\s+(?:valeur|montant|total)\b",
+                low,
+            )
+        )
+
     for table in tables:
         data=table.data or []
         for row in data:
@@ -6387,7 +6464,7 @@ def _summary_table_totals_v48(po, tables, config: dict, default_currency: str="E
                 if re.search(r"\b(?:total\s+ttc|ttc\s+total|net\s+a\s+payer|amount\s+due)\b",low):
                     po.totals.amount_due=float(num); po.totals.grand_total=float(num)
                     po.totals.total_gross=float(num); po.totals.total_after_tax=float(num)
-                elif ("valeur tva" in low or re.fullmatch(r"t\.?v\.?a\.?(?:\s+montant)?",low)) and not re.search(r"%|taux",low):
+                elif is_tax_amount_label(label):
                     po.totals.total_vat=float(num); po.totals.total_tax=float(num)
                 elif re.search(r"\b(?:valeur\s+h\.?t\.?|total\s+h\.?t\.?|total\s+net\s+h\.?t\.?)\b",low):
                     po.totals.total_net=float(num); po.totals.subtotal=float(num); po.totals.total_before_tax=float(num)
@@ -6402,7 +6479,7 @@ def _summary_table_totals_v48(po, tables, config: dict, default_currency: str="E
                     low=_fold(lab)
                     if re.search(r"\b(?:montant|total)\s*(?:h\.?t\.?|net\s*ht)?\b",low) and "tva" not in low and "net a payer" not in low:
                         po.totals.total_net=float(num); po.totals.subtotal=float(num); po.totals.total_before_tax=float(num)
-                    elif "tva" in low:
+                    elif is_tax_amount_label(lab, allow_annotated_rate=True):
                         po.totals.total_vat=float(num); po.totals.total_tax=float(num)
                     elif "net a payer" in low or "net payable" in low or "amount due" in low:
                         po.totals.amount_due=float(num); po.totals.grand_total=float(num); po.totals.total_gross=float(num); po.totals.total_after_tax=float(num)
@@ -7123,6 +7200,9 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     po = _enhance_strict_totals_v47(po, pages, config)
     po = _summary_table_totals_v48(po, tables, config, default_currency=default_currency)
     po = _strict_text_totals_v48(po, pages, config, default_currency=default_currency)
+    po, parser_diag["tax_identifier_total_repairs"] = (
+        _sanitize_tax_identifier_totals_v5174(po, config)
+    )
     po, parser_diag["ocr_currency_suffix_repairs"] = _repair_scan_currency_suffix_artifacts_v64(
         po, pages, config
     )

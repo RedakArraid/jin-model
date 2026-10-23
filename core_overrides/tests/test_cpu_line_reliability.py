@@ -56,6 +56,7 @@ from uda.business import (
     _sanitize_double_counted_shipping_v47,
     _sanitize_internal_reference_v47,
     _sanitize_non_product_lines_v61,
+    _sanitize_tax_identifier_totals_v5174,
     _price_then_quantity_table_items,
     _quantity_first_table_items,
     _summary_table_totals_v48,
@@ -2136,6 +2137,48 @@ def test_summary_table_reads_label_value_cells_without_confusing_vat_rate():
     assert po.totals.total_vat == 1391.47
     assert po.totals.total_gross == 8348.81
     assert po.totals.grand_total == 8348.81
+
+
+def test_summary_table_does_not_treat_vat_registration_as_tax_amount():
+    table = SimpleNamespace(
+        data=[[
+            "NÂ° TVA intracommunautaire\nTotal lignes HT",
+            "FR54793797283\n1 253,68",
+        ]],
+        source=SimpleNamespace(page=1),
+        confidence=0.99,
+    )
+    po = SimpleNamespace(totals=Totals())
+
+    _summary_table_totals_v48(po, [table], {})
+
+    assert po.totals.total_vat is None
+    assert po.totals.total_tax is None
+    assert po.totals.total_net == 1253.68
+
+
+def test_tax_registration_amount_is_removed_after_all_total_recovery_passes():
+    po = SimpleNamespace(
+        totals=Totals(
+            total_net=1253.68,
+            total_vat=54793797283.0,
+            total_tax=54793797283.0,
+        ),
+        tax_identifiers=[{"vat_number": "FR54793797283"}],
+        buyer=SimpleNamespace(vat_number="FR54793797283"),
+        supplier=SimpleNamespace(vat_number=None),
+        bill_to=SimpleNamespace(vat_number=None),
+        ship_to=SimpleNamespace(vat_number=None),
+        taxes=[SimpleNamespace(tax_amount=54793797283.0)],
+    )
+
+    po, repaired = _sanitize_tax_identifier_totals_v5174(po, {})
+
+    assert repaired == 3
+    assert po.totals.total_vat is None
+    assert po.totals.total_tax is None
+    assert po.taxes[0].tax_amount is None
+    assert po.totals.total_net == 1253.68
 
 
 def test_mixed_total_header_does_not_overwrite_net_with_ttc_and_keeps_explicit_eur():

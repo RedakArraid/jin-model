@@ -185,6 +185,7 @@ layout:
   vector_min_rectangle_height: 12.0
   visual_row_gap_threshold: 48.0
   vat_identifier_extraction: true
+  sanitize_tax_identifier_totals: true
   line_y_tolerance_factor: 0.65
   adaptive_line_y_tolerance: true
   line_y_tolerance_min: 0.45
