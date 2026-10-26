@@ -1,8 +1,39 @@
 services:
   api:
+    volumes:
+      - /mnt/jin-model-data/data:/app/data
+      - /mnt/jin-model-data/feedback:/app/training/feedback
     networks:
       - inference
       - jin-private
+
+  mcp:
+    ports:
+      - "127.0.0.1:8083:8001"
+    volumes:
+      - /mnt/jin-model-data/data:/app/data
+    networks:
+      - inference
+      - jin-private
+
+  backup:
+    volumes:
+      - /mnt/jin-model-data/data:/app/data
+      - /mnt/jin-model-data/feedback:/app/training/feedback
+      - /mnt/jin-model-data/backups:/app/backups
+    command:
+      - create
+      - --project-root
+      - /app
+      - --output-root
+      - /app/backups
+      - --studio-root
+      - /app/data/studio
+      - --learning-root
+      - /app/data/learning
+      - --feedback-root
+      - /app/training/feedback
+      - --exclude-reference
 
 networks:
   jin-private:

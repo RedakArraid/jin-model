@@ -7,6 +7,9 @@ cd "$REPOSITORY_ROOT"
 
 PYTHON_BIN=${PYTHON_BIN:-python3}
 COMPOSE=(docker compose -f "$REPOSITORY_ROOT/docker-compose.yml")
+if [ -f "$REPOSITORY_ROOT/docker-compose.override.yml" ]; then
+  COMPOSE+=(-f "$REPOSITORY_ROOT/docker-compose.override.yml")
+fi
 for env_file in "${JIN_RUNTIME_SETTINGS_FILE:-}" "${JIN_RELEASE_ENV_FILE:-}" "${JIN_COMPOSE_ENV_FILE:-}"; do
   if [ -n "$env_file" ]; then
     COMPOSE+=(--env-file "$env_file")
