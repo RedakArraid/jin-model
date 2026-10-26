@@ -18,97 +18,161 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
+_DEFAULT_FIELD_PATHS = {
+    "DOCUMENT_TYPE": "document.type",
+    "ORDER_NUMBER": "order.customer_order_number.value",
+    "ORDER_DATE": "order.order_date.value",
+    "CUSTOMER_REFERENCE": "order.customer_reference.value",
+    "CUSTOMER_CODE": "order.customer_agency_code.value",
+    "DELIVERY_DATE": "order.requested_delivery_date.value",
+    "LINE_ITEM_NUMBER": "order.line_items[0].line_number",
+    "LINE_ITEM_REFERENCE": "order.line_items[0].references.article_number",
+    "LINE_ITEM_DESCRIPTION": "order.line_items[0].description",
+    "LINE_ITEM_QUANTITY": "order.line_items[0].quantity",
+    "LINE_ITEM_UNIT": "order.line_items[0].unit",
+    "LINE_ITEM_UNIT_PRICE": "order.line_items[0].pricing.net_unit_price",
+    "LINE_ITEM_TOTAL": "order.line_items[0].amounts.total",
+    "LINE_ITEM_DELIVERY_DATE": "order.line_items[0].delivery.date",
+    "ADDITIONAL_CHARGE_LABEL": "order.additional_charges[0].description",
+    "ADDITIONAL_CHARGE_AMOUNT": "order.additional_charges[0].amount",
+    "TOTAL_SUBTOTAL": "order.totals.subtotal",
+    "TOTAL_NET": "order.totals.total_net",
+    "TOTAL_VAT": "order.totals.total_vat",
+    "TOTAL_GROSS": "order.totals.total_gross",
+    "TOTAL_AMOUNT_DUE": "order.totals.amount_due",
+    "VAT_NUMBER": "document.tax_identifiers[0].vat_number",
+    "SIREN": "document.tax_identifiers[0].siren",
+    "SIRET": "document.tax_identifiers[0].siret",
+    "OFFER_NUMBER": "order.quote_number.value",
+    "DEROGATION_NUMBER": "order.derogation_number.value",
+}
+
+
+def _canonical_field_path(label: str) -> str:
+    if label in _DEFAULT_FIELD_PATHS:
+        return _DEFAULT_FIELD_PATHS[label]
+    if label.startswith("ADDRESS_"):
+        return f"order.addresses[0].components.{label.removeprefix('ADDRESS_').lower()}"
+    for role in ("BUYER", "SUPPLIER", "SHIP_TO", "BILL_TO", "PAYER", "SHIP_FROM"):
+        prefix = f"{role}_"
+        if not label.startswith(prefix):
+            continue
+        component = label.removeprefix(prefix)
+        party = role.lower()
+        if component.startswith("CONTACT_"):
+            return f"order.parties.{party}.contact.{component.removeprefix('CONTACT_').lower()}"
+        if component in {"NAME", "CODE", "VAT_NUMBER", "SIREN", "SIRET"}:
+            return f"order.parties.{party}.{component.lower()}"
+        return f"order.parties.{party}.address.{component.lower()}"
+    return f"manual.{label.lower()}"
+
+
+def _field(label: str, name: str, help_text: str) -> dict[str, str]:
+    """Build a catalog entry with mandatory annotation guidance."""
+    return {
+        "label": label,
+        "name": name,
+        "help": help_text,
+        "defaultPath": _canonical_field_path(label),
+    }
+
+
+_ADDRESS_COMPONENTS: tuple[tuple[str, str, str], ...] = (
+    ("BUILDING", "bâtiment", "le nom ou numéro de bâtiment, sans la rue"),
+    ("RESIDENCE", "résidence", "le nom de résidence, sans le destinataire"),
+    ("ENTRY", "entrée", "l'identifiant d'entrée, par exemple « Entrée B »"),
+    ("FLOOR", "étage", "l'étage imprimé, par exemple « 3e étage »"),
+    ("UNIT", "appartement / unité", "le numéro d'appartement, de lot ou d'unité"),
+    ("HOUSE_NUMBER", "numéro de voie", "le numéro placé devant la voie, sans son suffixe"),
+    ("HOUSE_NUMBER_SUFFIX", "suffixe du numéro", "le suffixe du numéro, par exemple BIS, TER ou A"),
+    ("STREET_TYPE", "type de voie", "le type de voie seul, par exemple RUE, AVENUE ou BD"),
+    ("STREET_NAME", "nom de voie", "le nom de la voie sans numéro ni type de voie"),
+    ("STREET", "voie complète", "la ligne de voie complète, sans code postal ni ville"),
+    ("INDUSTRIAL_ZONE", "zone industrielle", "le libellé complet de zone industrielle, par exemple « Z.I. des Paluds »"),
+    ("ACTIVITY_PARK", "zone d'activité", "le libellé complet de zone d'activité, par exemple « Z.A. Henri Spriet »"),
+    ("PLACE_NAME", "lieu-dit", "le nom du lieu-dit, sans code postal ni ville"),
+    ("POSTAL_BOX", "boîte postale", "la boîte postale complète, par exemple « BP 123 »"),
+    ("TSA", "TSA", "le libellé TSA et son numéro"),
+    ("CS", "CS", "le libellé CS et son numéro"),
+    ("POSTAL_ROUTING_CODE", "code d'acheminement", "le code d'acheminement distinct du code postal"),
+    ("POSTAL_CODE", "code postal", "le code postal seul, généralement cinq chiffres en France"),
+    ("CITY", "ville", "le nom de ville seul, CEDEX exclu"),
+    ("CEDEX_NUMBER", "CEDEX", "la mention CEDEX et son éventuel numéro"),
+    ("INSEE_CODE", "code INSEE", "le code INSEE explicitement imprimé"),
+    ("COUNTRY", "pays", "le nom de pays imprimé en toutes lettres"),
+    ("COUNTRY_CODE", "code pays", "le code pays explicitement imprimé, sans le déduire du pays"),
+)
+
+_GENERIC_ADDRESS_FIELDS = tuple(
+    _field(
+        f"ADDRESS_{suffix}",
+        component[0].upper() + component[1:],
+        f"Encadrez uniquement {instruction}. Ne sélectionnez pas toute l'adresse.",
+    )
+    for suffix, component, instruction in _ADDRESS_COMPONENTS
+    if suffix != "STREET"
+)
+
+_ROLE_IDENTITIES: tuple[tuple[str, str, str], ...] = (
+    ("BUYER", "Acheteur", "l'acheteur / client qui passe la commande"),
+    ("SUPPLIER", "Fournisseur", "le fournisseur qui reçoit la commande"),
+    ("SHIP_TO", "Livraison", "le destinataire de la livraison"),
+    ("BILL_TO", "Facturation", "le destinataire de la facture"),
+    ("PAYER", "Payeur", "le payeur"),
+    ("SHIP_FROM", "Expéditeur", "l'expéditeur"),
+)
+
+_ROLE_CORE_COMPONENTS: tuple[tuple[str, str, str], ...] = (
+    ("NAME", "nom", "le nom commercial ou la raison sociale, sans l'adresse ni le libellé du rôle"),
+    ("CODE", "code", "le code interne explicitement associé à cette partie, sans numéro de commande ni référence article"),
+    ("VAT_NUMBER", "TVA", "le numéro de TVA imprimé, préfixe pays compris"),
+    ("SIREN", "SIREN", "le SIREN imprimé de neuf chiffres, sans le calculer"),
+    ("SIRET", "SIRET", "le SIRET imprimé de quatorze chiffres, sans le calculer"),
+    ("CONTACT_PHONE", "téléphone", "le numéro de téléphone imprimé, sans son libellé"),
+    ("CONTACT_FAX", "fax", "le numéro de fax imprimé, sans son libellé"),
+    ("CONTACT_EMAIL", "e-mail", "l'adresse e-mail complète, sans le texte voisin"),
+)
+
 FIELD_CATALOG: tuple[dict[str, str], ...] = (
-    {"label": "DOCUMENT_TYPE", "name": "Type de document"},
-    {"label": "ORDER_NUMBER", "name": "Numéro de commande"},
-    {"label": "ORDER_DATE", "name": "Date de commande"},
-    {"label": "CUSTOMER_REFERENCE", "name": "Référence client"},
-    {"label": "CUSTOMER_CODE", "name": "Code client"},
-    {"label": "DELIVERY_DATE", "name": "Date de livraison souhaitée"},
-    {"label": "ADDRESS_BUILDING", "name": "Bâtiment"},
-    {"label": "ADDRESS_RESIDENCE", "name": "Résidence"},
-    {"label": "ADDRESS_ENTRY", "name": "Entrée"},
-    {"label": "ADDRESS_FLOOR", "name": "Étage"},
-    {"label": "ADDRESS_UNIT", "name": "Appartement / unité"},
-    {"label": "ADDRESS_HOUSE_NUMBER", "name": "Numéro de rue"},
-    {"label": "ADDRESS_HOUSE_NUMBER_SUFFIX", "name": "Suffixe du numéro"},
-    {"label": "ADDRESS_STREET_TYPE", "name": "Type de voie"},
-    {"label": "ADDRESS_STREET_NAME", "name": "Nom de voie"},
-    {"label": "ADDRESS_INDUSTRIAL_ZONE", "name": "Zone industrielle"},
-    {"label": "ADDRESS_ACTIVITY_PARK", "name": "Zone d'activité"},
-    {"label": "ADDRESS_PLACE_NAME", "name": "Lieu-dit"},
-    {"label": "ADDRESS_POSTAL_BOX", "name": "Boîte postale"},
-    {"label": "ADDRESS_TSA", "name": "TSA"},
-    {"label": "ADDRESS_POSTAL_ROUTING_CODE", "name": "Code d'acheminement"},
-    {"label": "ADDRESS_CS", "name": "CS"},
-    {"label": "ADDRESS_POSTAL_CODE", "name": "Code postal"},
-    {"label": "ADDRESS_CITY", "name": "Ville"},
-    {"label": "ADDRESS_CEDEX_NUMBER", "name": "CEDEX"},
-    {"label": "ADDRESS_INSEE_CODE", "name": "Code INSEE"},
-    {"label": "ADDRESS_COUNTRY", "name": "Pays (libellé)"},
-    {"label": "ADDRESS_COUNTRY_CODE", "name": "Pays"},
-    {"label": "LINE_ITEM_NUMBER", "name": "Numéro de ligne"},
-    {"label": "LINE_ITEM_REFERENCE", "name": "Référence article"},
-    {"label": "LINE_ITEM_DESCRIPTION", "name": "Description article"},
-    {"label": "LINE_ITEM_QUANTITY", "name": "Quantité"},
-    {"label": "LINE_ITEM_UNIT", "name": "Unité"},
-    {"label": "LINE_ITEM_UNIT_PRICE", "name": "Prix unitaire"},
-    {"label": "LINE_ITEM_TOTAL", "name": "Montant de ligne"},
-    {"label": "LINE_ITEM_DELIVERY_DATE", "name": "Date de livraison de ligne"},
-    {"label": "ADDITIONAL_CHARGE_LABEL", "name": "Libellé de frais"},
-    {"label": "ADDITIONAL_CHARGE_AMOUNT", "name": "Montant de frais"},
-    {"label": "TOTAL_SUBTOTAL", "name": "Sous-total produits"},
-    {"label": "TOTAL_NET", "name": "Total HT"},
-    {"label": "TOTAL_VAT", "name": "TVA"},
-    {"label": "TOTAL_GROSS", "name": "Total TTC"},
-    {"label": "TOTAL_AMOUNT_DUE", "name": "Montant à payer"},
-    {"label": "VAT_NUMBER", "name": "Numéro de TVA"},
-    {"label": "SIREN", "name": "Numéro SIREN"},
-    {"label": "SIRET", "name": "Numéro SIRET"},
-    {"label": "OFFER_NUMBER", "name": "Numéro d'offre"},
-    {"label": "DEROGATION_NUMBER", "name": "Numéro de dérogation"},
+    _field(
+        "DOCUMENT_TYPE",
+        "Type de document",
+        "Encadrez le titre qui prouve explicitement le type, par exemple « BON DE COMMANDE » ou « COMMANDE ». Ne sélectionnez ni toute la page, ni un logo, ni une adresse ; choisissez ensuite la valeur normalisée dans la liste.",
+    ),
+    _field("ORDER_NUMBER", "Numéro de commande", "Encadrez uniquement la valeur qui identifie la commande du client, sans le libellé « commande », une date ou un code client."),
+    _field("ORDER_DATE", "Date de commande", "Encadrez uniquement la date d'émission de la commande, pas une date de livraison, d'impression ou de validité."),
+    _field("CUSTOMER_REFERENCE", "Référence client", "Encadrez uniquement la référence de dossier ou de chantier donnée par le client, pas le numéro principal de commande."),
+    _field("CUSTOMER_CODE", "Code client", "Encadrez uniquement le code interne du client qui passe la commande, pas un numéro de commande, de fournisseur ou d'article."),
+    _field("DELIVERY_DATE", "Date de livraison souhaitée", "Encadrez uniquement la date de livraison demandée au niveau de la commande ; ignorez les dates propres à une ligne article."),
+    *_GENERIC_ADDRESS_FIELDS,
+    _field("LINE_ITEM_NUMBER", "Numéro de ligne", "Encadrez uniquement le numéro ordinal de la ligne d'article."),
+    _field("LINE_ITEM_REFERENCE", "Référence article", "Encadrez uniquement le code article de cette ligne, jamais la description complète ni toute la ligne."),
+    _field("LINE_ITEM_DESCRIPTION", "Description article", "Encadrez uniquement la désignation de l'article ; excluez référence, quantité, prix et montant."),
+    _field("LINE_ITEM_QUANTITY", "Quantité", "Encadrez uniquement la quantité commandée de cette ligne, sans l'unité."),
+    _field("LINE_ITEM_UNIT", "Unité", "Encadrez uniquement l'unité de vente de cette ligne, par exemple PCE, U, M ou LOT."),
+    _field("LINE_ITEM_UNIT_PRICE", "Prix unitaire", "Encadrez uniquement le prix unitaire de cette ligne, hors quantité et montant total."),
+    _field("LINE_ITEM_TOTAL", "Montant de ligne", "Encadrez uniquement le montant total de cette ligne, pas le prix unitaire ni le total du document."),
+    _field("LINE_ITEM_DELIVERY_DATE", "Date de livraison de ligne", "Encadrez uniquement la date de livraison associée à cette ligne article."),
+    _field("ADDITIONAL_CHARGE_LABEL", "Libellé de frais", "Encadrez uniquement le libellé d'un frais hors produit, par exemple PORT, ÉCO-CONTRIBUTION ou EMBALLAGE."),
+    _field("ADDITIONAL_CHARGE_AMOUNT", "Montant de frais", "Encadrez uniquement le montant correspondant au frais hors produit."),
+    _field("TOTAL_SUBTOTAL", "Sous-total produits", "Encadrez uniquement le montant du sous-total des produits avant taxes et frais."),
+    _field("TOTAL_NET", "Total HT", "Encadrez uniquement le montant total hors taxes explicitement imprimé."),
+    _field("TOTAL_VAT", "TVA", "Encadrez uniquement le montant de TVA, pas un numéro de TVA intracommunautaire."),
+    _field("TOTAL_GROSS", "Total TTC", "Encadrez uniquement le montant total toutes taxes comprises."),
+    _field("TOTAL_AMOUNT_DUE", "Montant à payer", "Encadrez uniquement le montant final à payer explicitement imprimé."),
+    _field("VAT_NUMBER", "Numéro de TVA", "Encadrez uniquement le numéro de TVA intracommunautaire imprimé, préfixe pays compris ; n'encadrez pas un montant de taxe."),
+    _field("SIREN", "Numéro SIREN", "Encadrez uniquement le SIREN imprimé de neuf chiffres ; ne l'inventez pas à partir d'un autre identifiant."),
+    _field("SIRET", "Numéro SIRET", "Encadrez uniquement le SIRET imprimé de quatorze chiffres ; ne l'inventez pas à partir d'un autre identifiant."),
+    _field("OFFER_NUMBER", "Numéro d'offre", "Encadrez uniquement l'identifiant qui suit un libellé d'offre, de devis ou de proposition commerciale."),
+    _field("DEROGATION_NUMBER", "Numéro de dérogation", "Encadrez uniquement l'identifiant explicitement présenté comme dérogation, accord spécial ou référence de dérogation."),
     *tuple(
-        {"label": f"{role}_{suffix}", "name": f"{name} — {component}"}
-        for role, name in (
-            ("BUYER", "Acheteur"),
-            ("SUPPLIER", "Fournisseur"),
-            ("SHIP_TO", "Livraison"),
-            ("BILL_TO", "Facturation"),
-            ("PAYER", "Payeur"),
-            ("SHIP_FROM", "Expéditeur"),
+        _field(
+            f"{role}_{suffix}",
+            f"{role_name} — {component}",
+            f"Encadrez uniquement {instruction}, pour {role_description}. Ne mélangez pas les blocs d'autres parties.",
         )
-        for suffix, component in (
-            ("NAME", "nom"),
-            ("CODE", "code"),
-            ("VAT_NUMBER", "TVA"),
-            ("SIREN", "SIREN"),
-            ("SIRET", "SIRET"),
-            ("CONTACT_PHONE", "téléphone"),
-            ("CONTACT_FAX", "fax"),
-            ("CONTACT_EMAIL", "e-mail"),
-            ("BUILDING", "bâtiment"),
-            ("RESIDENCE", "résidence"),
-            ("ENTRY", "entrée"),
-            ("FLOOR", "étage"),
-            ("UNIT", "appartement / unité"),
-            ("HOUSE_NUMBER", "numéro de voie"),
-            ("HOUSE_NUMBER_SUFFIX", "suffixe du numéro"),
-            ("STREET_TYPE", "type de voie"),
-            ("STREET_NAME", "nom de voie"),
-            ("STREET", "voie complète"),
-            ("INDUSTRIAL_ZONE", "zone industrielle"),
-            ("ACTIVITY_PARK", "zone d'activité"),
-            ("PLACE_NAME", "lieu-dit"),
-            ("POSTAL_BOX", "boîte postale"),
-            ("TSA", "TSA"),
-            ("CS", "CS"),
-            ("POSTAL_ROUTING_CODE", "code d'acheminement"),
-            ("POSTAL_CODE", "code postal"),
-            ("CITY", "ville"),
-            ("CEDEX_NUMBER", "CEDEX"),
-            ("COUNTRY", "pays"),
-            ("COUNTRY_CODE", "code pays"),
-        )
+        for role, role_name, role_description in _ROLE_IDENTITIES
+        for suffix, component, instruction in (*_ROLE_CORE_COMPONENTS, *_ADDRESS_COMPONENTS)
     ),
 )
 FIELD_LABELS = frozenset(item["label"] for item in FIELD_CATALOG)

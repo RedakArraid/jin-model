@@ -18,7 +18,11 @@ from jin_runtime.studio_security import (
     service_principal,
     session_duration_hours,
 )
-from jin_runtime.studio_service_auth import configured_service_token
+from jin_runtime.studio_service_auth import (
+    configured_service_token,
+    rotate_service_token,
+    service_token_status,
+)
 from jin_runtime.studio_region_text import StudioRegionError, extract_pdf_region_text
 from jin_runtime.studio_store import StudioConflictError, StudioNotFoundError, StudioStore
 
@@ -391,6 +395,38 @@ def create_studio_router(store: StudioStore | None = None) -> APIRouter:
         _authorize(request, repository, "users.manage")
         items = repository.list_users()
         return {"items": items, "count": len(items)}
+
+    @router.get("/admin/service-token")
+    def get_service_token_status(request: Request) -> dict[str, Any]:
+        principal = _authorize(request, repository, "users.manage")
+        if principal.auth_type != "session":
+            raise HTTPException(status_code=403, detail="Une session ADMIN est requise")
+        return service_token_status()
+
+    @router.post("/admin/service-token/rotate")
+    async def rotate_studio_service_token(request: Request) -> dict[str, Any]:
+        principal = _authorize(request, repository, "users.manage", csrf=True)
+        if principal.auth_type != "session":
+            raise HTTPException(status_code=403, detail="Une session ADMIN est requise")
+        payload = await _request_json_object(request, field="Rotation du jeton")
+        if payload.get("confirm") is not True:
+            raise HTTPException(
+                status_code=422,
+                detail="La révocation de l'ancien jeton doit être confirmée",
+            )
+        try:
+            token = rotate_service_token()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        _audit(
+            repository,
+            request,
+            principal,
+            "service_token.rotate",
+            "service_token",
+            details={"source": "file"},
+        )
+        return {"token": token, **service_token_status()}
 
     @router.post("/users", status_code=201)
     async def create_user(request: Request) -> dict[str, Any]:

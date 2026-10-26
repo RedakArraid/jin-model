@@ -13,6 +13,21 @@ _ENV_NAMES = (
 )
 
 
+def _shared_storage_enabled() -> bool:
+    return str(os.getenv("JIN_STUDIO_SHARED_STORAGE") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _managed_file_mode() -> int:
+    # API and MCP can run as different users while sharing only JIN_STUDIO_DIR.
+    # That scoped directory remains the security boundary for the secret.
+    return 0o666 if _shared_storage_enabled() else 0o600
+
+
 def _environment_token() -> str:
     for name in _ENV_NAMES:
         token = str(os.getenv(name) or "").strip()
@@ -24,6 +39,25 @@ def _environment_token() -> str:
 def service_token_file() -> Path | None:
     configured = str(os.getenv("JIN_STUDIO_SERVICE_TOKEN_FILE") or "").strip()
     return Path(configured).resolve() if configured else None
+
+
+def _studio_override_marker(path: Path) -> Path:
+    return path.with_name(f"{path.name}.studio-managed")
+
+
+def _mark_studio_override(path: Path) -> None:
+    marker = _studio_override_marker(path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    target = marker.with_name(f".{marker.name}.{secrets.token_hex(8)}.tmp")
+    try:
+        target.write_text("studio-managed\n", encoding="utf-8")
+        try:
+            target.chmod(_managed_file_mode())
+        except OSError:
+            pass
+        os.replace(target, marker)
+    finally:
+        target.unlink(missing_ok=True)
 
 
 def _read_token(path: Path) -> str:
@@ -40,13 +74,13 @@ def _write_new_token(path: Path, token: str, *, replace: bool) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     target = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    descriptor = os.open(target, flags, 0o600)
+    descriptor = os.open(target, flags, _managed_file_mode())
     try:
         os.write(descriptor, (token + "\n").encode("utf-8"))
     finally:
         os.close(descriptor)
     try:
-        target.chmod(0o600)
+        target.chmod(_managed_file_mode())
     except OSError:
         pass
     try:
@@ -59,16 +93,24 @@ def _write_new_token(path: Path, token: str, *, replace: bool) -> None:
 
 
 def configured_service_token(*, create: bool = True) -> str:
-    """Return the configured token, atomically creating its shared file if needed."""
+    """Return the active token, preferring a Studio-managed shared-file override."""
+    path = service_token_file()
     environment = _environment_token()
+    if environment and (
+        path is None or not _studio_override_marker(path).is_file()
+    ):
+        return environment
+    if path is not None:
+        existing = _read_token(path)
+        if existing and (
+            not environment or _studio_override_marker(path).is_file()
+        ):
+            return existing
+
     if environment:
         return environment
-    path = service_token_file()
-    if path is None:
+    if path is None or not create:
         return ""
-    existing = _read_token(path)
-    if existing or not create:
-        return existing
 
     generated = secrets.token_urlsafe(48)
     try:
@@ -79,21 +121,60 @@ def configured_service_token(*, create: bool = True) -> str:
 
 
 def rotate_service_token() -> str:
-    """Rotate the file-backed token; environment-managed secrets are immutable here."""
-    if _environment_token():
-        raise RuntimeError(
-            "The service token comes from an environment variable; rotate it in the secret manager."
-        )
+    """Rotate the Studio-managed token, overriding legacy environment tokens."""
     path = service_token_file()
     if path is None:
         raise RuntimeError("JIN_STUDIO_SERVICE_TOKEN_FILE is not configured")
     generated = secrets.token_urlsafe(48)
     _write_new_token(path, generated, replace=True)
+    if _environment_token():
+        _mark_studio_override(path)
     return generated
+
+
+def service_token_status() -> dict[str, object]:
+    """Describe machine-token management without ever returning the secret."""
+    mcp_shared = not bool(str(os.getenv("JIN_STUDIO_MCP_TOKEN") or "").strip())
+    path = service_token_file()
+    environment = _environment_token()
+    if environment and (
+        path is None or not _studio_override_marker(path).is_file()
+    ):
+        return {
+            "configured": True,
+            "source": "environment",
+            "rotatable": path is not None,
+            "mcpShared": mcp_shared,
+        }
+    file_token = _read_token(path) if path is not None else ""
+    if file_token and (
+        not environment or _studio_override_marker(path).is_file()
+    ):
+        return {
+            "configured": True,
+            "source": "file",
+            "rotatable": True,
+            "mcpShared": mcp_shared,
+        }
+    if path is None:
+        return {
+            "configured": False,
+            "source": "missing",
+            "rotatable": False,
+            "mcpShared": mcp_shared,
+        }
+    token = configured_service_token()
+    return {
+        "configured": bool(token),
+        "source": "file",
+        "rotatable": True,
+        "mcpShared": mcp_shared,
+    }
 
 
 __all__ = [
     "configured_service_token",
     "rotate_service_token",
+    "service_token_status",
     "service_token_file",
 ]

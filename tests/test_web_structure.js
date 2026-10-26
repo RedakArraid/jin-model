@@ -43,13 +43,25 @@ test('JIN Studio JavaScript only references DOM ids present in its page', () => 
 test('JIN Studio exposes synchronized values, removable fields and coordinate-safe zoom', () => {
   for (const id of [
     'zoomOutButton', 'zoomInButton', 'fitWidthButton', 'focusFieldButton',
-    'canvasStage', 'annotationJsonPreview',
+    'canvasStage', 'annotationJsonPreview', 'serviceTokenStatus',
+    'rotateServiceTokenButton', 'serviceTokenResult', 'serviceTokenValue',
   ]) {
     assert.match(studioHtml, new RegExp(`id="${id}"`));
   }
   assert.match(studioHtml, /document-type-select/);
   assert.match(studioHtml, /delete-field/);
+  assert.match(studioHtml, /Que faut-il encadrer \?/);
+  assert.match(studioHtml, /field-help/);
+  assert.match(studioJs, /catalogHelp/);
+  assert.match(studioJs, /helper\.addEventListener\('click', event => event\.stopPropagation\(\)\)/);
+  assert.match(studioJs, /field\.path = availableCanonicalPath\(field\.label, field\.path, index\)/);
+  assert.doesNotMatch(studioJs, /Le jeton est géré hors de JIN Studio/);
+  assert.match(studioJs, /rotateServiceTokenFromUi/);
   assert.match(studioJs, /updateFieldFromRegion/);
   assert.match(studioJs, /value \/ \(index % 2 === 0 \? annotationCanvas\.width : annotationCanvas\.height\) \* 1000/);
   assert.match(studioCss, /\.canvas-stage \{ position: relative/);
+  assert.ok(
+    studioHtml.indexOf('id="addFieldButton"') > studioHtml.indexOf('id="fieldList"'),
+    'the add-field button must be rendered below the field list',
+  );
 });

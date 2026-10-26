@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>JIN Studio – Annotation et entraînement</title>
-  <link rel="stylesheet" href="studio.css?v=3" />
+  <link rel="stylesheet" href="studio.css?v=5" />
 </head>
 <body>
   <header class="topbar">
@@ -117,7 +117,6 @@
                 <span id="reviewProgress" class="muted-text"></span>
               </div>
               <div class="top-actions">
-                <button id="addFieldButton" class="button secondary compact">Ajouter un champ</button>
                 <button id="confirmAllButton" class="button secondary compact">Confirmer les non revus</button>
               </div>
             </div>
@@ -133,6 +132,9 @@
             </div>
             <div id="annotationMessage" class="inline-notice hidden"></div>
             <div id="fieldList" class="field-list"></div>
+            <div class="add-field-row">
+              <button id="addFieldButton" class="button add-field-button" type="button">＋ Ajouter un champ</button>
+            </div>
             <details class="json-preview">
               <summary>Aperçu JSON de l’annotation (mis à jour en direct)</summary>
               <pre id="annotationJsonPreview"></pre>
@@ -161,7 +163,7 @@
         <div class="section-header">
           <div>
             <h2>Entraînements</h2>
-            <p>Les jeux validés entraînent un candidat isolé. Le runtime actif n’est jamais remplacé automatiquement.</p>
+            <p>Les jeux validés entraînent un candidat dans un worker isolé. Le runtime actif n’est jamais remplacé automatiquement.</p>
           </div>
         </div>
         <div id="trainingMessage" class="inline-notice hidden"></div>
@@ -175,6 +177,22 @@
             <p>Les rôles déterminent qui peut annoter, valider et lancer les entraînements.</p>
           </div>
         </div>
+        <article class="service-token-card">
+          <div>
+            <h3>Accès distant API / MCP</h3>
+            <p id="serviceTokenStatus" class="muted-text">Chargement de l’état du jeton…</p>
+            <p class="muted-text">Le nouveau secret n’est affiché qu’une fois. Sa création révoque immédiatement l’ancien jeton API et, sauf configuration d’un secret MCP distinct, le jeton MCP.</p>
+          </div>
+          <button id="rotateServiceTokenButton" class="button danger" type="button">Générer / remplacer le jeton</button>
+          <div id="serviceTokenResult" class="service-token-result hidden">
+            <label>Nouveau jeton machine<input id="serviceTokenValue" type="text" readonly autocomplete="off" spellcheck="false" /></label>
+            <div class="top-actions">
+              <button id="copyServiceTokenButton" class="button primary compact" type="button">Copier</button>
+              <button id="hideServiceTokenButton" class="button secondary compact" type="button">Masquer</button>
+            </div>
+          </div>
+          <div id="serviceTokenMessage" class="inline-notice hidden"></div>
+        </article>
         <form id="createUserForm" class="user-create-card">
           <div>
             <h3>Créer un utilisateur</h3>
@@ -226,6 +244,10 @@
           <button class="delete-field button danger compact" type="button" title="Retirer ce champ">Retirer</button>
         </div>
       </div>
+      <details class="field-helper">
+        <summary>Que faut-il encadrer ?</summary>
+        <p class="field-help"></p>
+      </details>
       <div class="field-values">
         <label>Valeur JIN<input class="extracted-value" readonly /></label>
         <label>Valeur corrigée
@@ -246,6 +268,6 @@
   </template>
 
   <script src="vendor/pdfjs-3.11.174/pdf.min.js"></script>
-  <script src="studio.js?v=4"></script>
+  <script src="studio.js?v=7"></script>
 </body>
 </html>

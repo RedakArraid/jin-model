@@ -90,6 +90,17 @@ docker compose exec api python -m jin_runtime.studio_admin show-service-token
 docker compose exec api python -m jin_runtime.studio_admin rotate-service-token --confirm
 ```
 
+Un administrateur connecté peut aussi ouvrir **Utilisateurs**, puis
+**Accès distant API / MCP** et cliquer sur **Générer / remplacer le jeton**.
+Le nouveau secret n'est affiché qu'une fois et sa création révoque
+immédiatement l'ancien pour l'API et pour MCP lorsque
+`JIN_STUDIO_MCP_TOKEN` n'est pas défini. Cette opération est protégée par la session ADMIN et
+le contrôle CSRF, puis inscrite dans le journal d'activité. Même si le jeton
+actif vient initialement de `JIN_STUDIO_SERVICE_TOKEN`, le bouton reste actif
+dès que `JIN_STUDIO_SERVICE_TOKEN_FILE` est configuré. La génération crée alors
+un jeton géré par Studio dans ce fichier partagé ; il devient immédiatement
+prioritaire pour l'API et pour MCP lorsque celui-ci partage le jeton Studio.
+
 Après rotation, mettre à jour tous les clients. Les deux façades utilisent :
 
 - API REST : `https://<hôte>/api/studio` ;
@@ -268,6 +279,24 @@ Une annotation référence obligatoirement :
 - éventuellement une page et une boîte `[x0,y0,x1,y1]` normalisée sur 1000 ;
 - l'annotateur et l'horodatage pour `HUMAN_VALIDATED` ;
 - un digest immuable.
+
+Chaque entrée du catalogue de champs contient une aide `help`, affichée dans
+l'annotateur sous **Que faut-il encadrer ?** et également exposée par REST et
+MCP. La règle par défaut consiste à encadrer uniquement la valeur imprimée,
+sans son libellé et sans les valeurs voisines. Par exemple, une référence
+article ne doit jamais couvrir la description complète ou toute la ligne.
+Le catalogue fournit également un `defaultPath`. Quand l'annotateur change le
+type d'un champ, son chemin canonique est recalculé automatiquement tout en
+conservant, lorsque c'est pertinent, l'indice de ligne, d'adresse, de frais ou
+d'identifiant fiscal. Le bouton **＋ Ajouter un champ** se trouve sous le dernier
+champ afin que l'ajout reste accessible à la fin de la revue.
+
+Le type de document constitue un cas particulier : sa valeur est normalisée
+(`purchase_order`, `invoice`, etc.) et n'existe pas nécessairement telle quelle
+sur la page. Il faut donc encadrer le titre qui apporte la preuve textuelle la
+plus explicite, par exemple **BON DE COMMANDE** ou **COMMANDE**, puis choisir le
+type normalisé dans la liste. Il ne faut encadrer ni toute la page, ni un logo,
+ni une adresse pour justifier le type.
 
 Une validation est refusée si un champ reste `UNREVIEWED`. Un dataset refuse
 tout document dont la dernière révision n'est pas `HUMAN_VALIDATED`.

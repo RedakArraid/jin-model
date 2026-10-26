@@ -260,6 +260,55 @@ function catalogName(label) {
   return state.catalog.find(item => item.label === label)?.name || label;
 }
 
+function catalogHelp(label) {
+  return state.catalog.find(item => item.label === label)?.help
+    || 'Encadrez uniquement la valeur imprimée correspondant à ce champ, sans les libellés ni les champs voisins.';
+}
+
+function catalogDefaultPath(label) {
+  return state.catalog.find(item => item.label === label)?.defaultPath
+    || `manual.${String(label || 'field').toLowerCase()}`;
+}
+
+function contextualPath(template, previousPath = '') {
+  let path = template;
+  for (const collection of ['line_items', 'additional_charges', 'addresses', 'tax_identifiers']) {
+    if (!path.includes(`${collection}[0]`)) continue;
+    const match = String(previousPath).match(new RegExp(`${collection}\\[(\\d+)\\]`));
+    if (match) path = path.replace(`${collection}[0]`, `${collection}[${match[1]}]`);
+  }
+  return path;
+}
+
+function availableCanonicalPath(label, previousPath = '', excludedIndex = -1) {
+  const base = contextualPath(catalogDefaultPath(label), previousPath);
+  const used = new Set(
+    state.fields
+      .filter((_, index) => index !== excludedIndex)
+      .map(item => item.path),
+  );
+  if (!used.has(base)) return base;
+
+  const collectionMatch = base.match(/(line_items|additional_charges|addresses|tax_identifiers)\[(\d+)\]/);
+  if (collectionMatch) {
+    for (let index = Number(collectionMatch[2]) + 1; index < 10000; index += 1) {
+      const candidate = base.replace(
+        `${collectionMatch[1]}[${collectionMatch[2]}]`,
+        `${collectionMatch[1]}[${index}]`,
+      );
+      if (!used.has(candidate)) return candidate;
+    }
+  }
+
+  for (let occurrence = 2; occurrence < 10000; occurrence += 1) {
+    const candidate = base.endsWith('.value')
+      ? `${base.slice(0, -6)}.alternatives[${occurrence - 1}].value`
+      : `${base}.alternatives[${occurrence - 1}]`;
+    if (!used.has(candidate)) return candidate;
+  }
+  return base;
+}
+
 async function enterStudio(user) {
   state.user = user;
   state.csrfToken = user.csrfToken || '';
@@ -274,7 +323,11 @@ async function enterStudio(user) {
   const catalog = await api('/field-catalog');
   state.catalog = catalog.fields || [];
   await Promise.all([loadDocuments(), loadDatasets(), loadTrainingRuns()]);
-  if (hasPermission('users.manage')) await Promise.all([loadUsers(), loadAuditEvents()]);
+  if (hasPermission('users.manage')) await Promise.all([
+    loadUsers(),
+    loadAuditEvents(),
+    loadServiceTokenStatus(),
+  ]);
   if (!state.trainingPoll) {
     state.trainingPoll = window.setInterval(() => {
       if (!document.hidden && state.user) loadTrainingRuns().catch(() => {});
@@ -556,6 +609,11 @@ function renderFields() {
     node.classList.toggle('problem', ['ABSENT', 'AMBIGUOUS'].includes(field.status));
     const label = node.querySelector('.field-label');
     populateLabelSelect(label, field.label);
+    const helper = node.querySelector('.field-helper');
+    const help = node.querySelector('.field-help');
+    help.textContent = catalogHelp(field.label);
+    helper.open = index === state.selectedField;
+    helper.addEventListener('click', event => event.stopPropagation());
     const path = node.querySelector('.field-path');
     const status = node.querySelector('.field-status');
     const extracted = node.querySelector('.extracted-value');
@@ -595,6 +653,7 @@ function renderFields() {
     node.addEventListener('click', () => selectField(index));
     label.addEventListener('change', event => {
       field.label = event.target.value;
+      field.path = availableCanonicalPath(field.label, field.path, index);
       markDirty();
       renderFields();
     });
@@ -645,6 +704,7 @@ async function selectField(index) {
   state.selectedField = index;
   fieldList.querySelectorAll('.field-card').forEach((item, itemIndex) => {
     item.classList.toggle('selected', itemIndex === index);
+    item.querySelector('.field-helper').open = itemIndex === index;
   });
   const targetPage = Number(state.fields[index].evidence?.page || 0);
   if (state.pdf && targetPage > 0 && targetPage <= state.pdf.numPages && targetPage !== state.page) {
@@ -1028,7 +1088,7 @@ function renderTraining() {
     const text = document.createElement('p'); text.className = 'muted-text'; text.textContent = `${dataset.documentCount} documents, ${dataset.regionCount} zones humaines.`;
     card.append(title, text);
     if (hasPermission('training.write')) {
-      const button = document.createElement('button'); button.className = 'button primary'; button.textContent = 'Entraîner un candidat';
+      const button = document.createElement('button'); button.className = 'button primary'; button.textContent = 'Lancer l’entraînement';
       button.addEventListener('click', () => prepareTraining(dataset.datasetId));
       card.appendChild(button);
     }
@@ -1071,6 +1131,68 @@ const roleLabels = {
   TRAINER: 'Entraînement',
   ADMIN: 'Administration',
 };
+
+async function loadServiceTokenStatus() {
+  const status = await api('/admin/service-token');
+  const label = $('serviceTokenStatus');
+  const button = $('rotateServiceTokenButton');
+  if (status.source === 'environment') {
+    label.textContent = status.rotatable
+      ? 'Un jeton issu de la configuration est actif. Vous pouvez le remplacer ici par un jeton géré par JIN Studio.'
+      : 'Un jeton issu de la configuration est actif, mais le stockage partagé des jetons Studio n’est pas configuré.';
+  } else if (status.configured) {
+    label.textContent = 'Jeton partagé actif, stocké dans le volume sécurisé de JIN Studio.';
+  } else {
+    label.textContent = 'Aucun jeton machine configuré.';
+  }
+  if (!status.mcpShared) {
+    label.textContent += ' MCP utilise un jeton distinct géré par la configuration de la VM.';
+  }
+  button.disabled = !status.rotatable;
+  button.title = status.rotatable ? '' : 'Le stockage partagé des jetons JIN Studio n’est pas configuré';
+}
+
+async function rotateServiceTokenFromUi() {
+  const accepted = window.confirm(
+    'Créer un nouveau jeton révoquera immédiatement le précédent. Continuer ?',
+  );
+  if (!accepted) return;
+  try {
+    const payload = await api('/admin/service-token/rotate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true }),
+    });
+    $('serviceTokenValue').value = payload.token;
+    $('serviceTokenResult').classList.remove('hidden');
+    showMessage(
+      $('serviceTokenMessage'),
+      'Jeton créé. Copiez-le maintenant : il ne sera plus affiché après masquage ou rechargement.',
+      'success',
+    );
+    await Promise.all([loadServiceTokenStatus(), loadAuditEvents()]);
+  } catch (error) {
+    showMessage($('serviceTokenMessage'), error.message, 'error');
+  }
+}
+
+async function copyServiceToken() {
+  const value = $('serviceTokenValue').value;
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    showMessage($('serviceTokenMessage'), 'Jeton copié dans le presse-papiers.', 'success');
+  } catch (_) {
+    $('serviceTokenValue').select();
+    showMessage($('serviceTokenMessage'), 'Copie automatique indisponible : utilisez Ctrl+C.', 'error');
+  }
+}
+
+function hideServiceToken() {
+  $('serviceTokenValue').value = '';
+  $('serviceTokenResult').classList.add('hidden');
+  showMessage($('serviceTokenMessage'), '', '');
+}
 
 async function loadUsers() {
   const payload = await api('/users');
@@ -1228,6 +1350,9 @@ $('logoutButton').addEventListener('click', logout);
 $('changePasswordButton').addEventListener('click', changeOwnPassword);
 $('createUserForm').addEventListener('submit', createUser);
 $('refreshAuditButton').addEventListener('click', () => loadAuditEvents().catch(error => showMessage($('userMessage'), error.message, 'error')));
+$('rotateServiceTokenButton').addEventListener('click', rotateServiceTokenFromUi);
+$('copyServiceTokenButton').addEventListener('click', copyServiceToken);
+$('hideServiceTokenButton').addEventListener('click', hideServiceToken);
 $('documentInput').addEventListener('change', event => uploadDocument(event.target.files?.[0]));
 $('documentSearch').addEventListener('input', renderDocumentList);
 $('documentStatusFilter').addEventListener('change', renderDocumentList);
@@ -1238,8 +1363,8 @@ $('confirmAllButton').addEventListener('click', () => {
 });
 $('addFieldButton').addEventListener('click', () => {
   const index = state.fields.length;
-  const unique = `${Date.now()}-${index}`;
-  state.fields.push({ path: `manual.field[${unique}]`, label: 'ORDER_NUMBER', status: 'UNREVIEWED', extracted_value: '', corrected_value: null, evidence: null, comment: '' });
+  const label = 'ORDER_NUMBER';
+  state.fields.push({ path: availableCanonicalPath(label), label, status: 'UNREVIEWED', extracted_value: '', corrected_value: null, evidence: null, comment: '' });
   state.selectedField = index;
   markDirty();
   renderFields();

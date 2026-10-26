@@ -7,7 +7,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from jin_runtime.studio_contract import StudioContractError, normalize_studio_annotation
+from jin_runtime.studio_contract import (
+    FIELD_CATALOG,
+    StudioContractError,
+    normalize_studio_annotation,
+)
 from jin_runtime.studio_api import create_studio_router
 from jin_runtime.studio_security import hash_password, verify_password
 from jin_runtime.studio_store import StudioConflictError, StudioStore
@@ -15,6 +19,28 @@ from jin_runtime.studio_training_worker import validated_command
 
 
 PDF = b"%PDF-1.4\n% JIN Studio test\n%%EOF\n"
+
+
+def test_every_annotatable_field_has_precise_selection_help():
+    assert FIELD_CATALOG
+    assert all(item.get("help", "").startswith("Encadrez") for item in FIELD_CATALOG)
+    assert all(item.get("defaultPath", "") for item in FIELD_CATALOG)
+    assert len({item["label"] for item in FIELD_CATALOG}) == len(FIELD_CATALOG)
+    assert len({item["defaultPath"] for item in FIELD_CATALOG}) == len(FIELD_CATALOG)
+
+    by_label = {item["label"]: item for item in FIELD_CATALOG}
+    document_help = by_label["DOCUMENT_TYPE"]["help"]
+    assert "BON DE COMMANDE" in document_help
+    assert "toute la page" in document_help
+    assert "jamais la description complète" in by_label["LINE_ITEM_REFERENCE"]["help"]
+    assert "client qui passe la commande" in by_label["BUYER_CODE"]["help"]
+    assert by_label["ORDER_DATE"]["defaultPath"] == "order.order_date.value"
+    assert by_label["ADDRESS_STREET_NAME"]["defaultPath"] == (
+        "order.addresses[0].components.street_name"
+    )
+    assert by_label["BUYER_STREET_NAME"]["defaultPath"] == (
+        "order.parties.buyer.address.street_name"
+    )
 
 
 def annotation(status: str = "DRAFT", reviewer: str = "") -> dict:
@@ -229,6 +255,83 @@ def test_human_login_uses_secure_session_roles_csrf_and_audit(tmp_path, monkeypa
     logout = client.post("/studio/auth/logout", headers={"X-CSRF-Token": csrf})
     assert logout.status_code == 200
     assert client.get("/studio/auth/me").status_code == 401
+
+
+def test_admin_can_rotate_file_backed_service_token_once_from_ui_api(
+    tmp_path, monkeypatch
+):
+    for name in (
+        "JIN_STUDIO_SERVICE_TOKEN",
+        "JIN_STUDIO_TOKEN",
+        "JIN_FEEDBACK_TOKEN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    token_path = tmp_path / "service-token"
+    monkeypatch.setenv("JIN_STUDIO_SERVICE_TOKEN_FILE", str(token_path))
+    store = StudioStore(tmp_path / "studio")
+    store.create_user(
+        username="token.admin",
+        display_name="Token Admin",
+        password="admin123",
+        roles=["ADMIN"],
+        created_by="pytest",
+    )
+    app = FastAPI()
+    app.include_router(create_studio_router(store))
+    client = TestClient(app)
+    login = client.post(
+        "/studio/auth/login",
+        json={"username": "token.admin", "password": "admin123"},
+    ).json()["user"]
+
+    status = client.get("/studio/admin/service-token")
+    assert status.status_code == 200
+    assert status.json() == {
+        "configured": True,
+        "source": "file",
+        "rotatable": True,
+        "mcpShared": True,
+    }
+    assert "token" not in status.json()
+    previous_token = token_path.read_text(encoding="utf-8").strip()
+    assert client.post(
+        "/studio/admin/service-token/rotate", json={"confirm": True}
+    ).status_code == 403
+    refused = client.post(
+        "/studio/admin/service-token/rotate",
+        headers={"X-CSRF-Token": login["csrfToken"]},
+        json={"confirm": False},
+    )
+    assert refused.status_code == 422
+
+    rotated = client.post(
+        "/studio/admin/service-token/rotate",
+        headers={"X-CSRF-Token": login["csrfToken"]},
+        json={"confirm": True},
+    )
+    assert rotated.status_code == 200
+    response_payload = rotated.json()
+    token = response_payload.pop("token")
+    assert len(token) >= 32
+    assert token != previous_token
+    assert token_path.read_text(encoding="utf-8").strip() == token
+    assert response_payload == {
+        "configured": True,
+        "source": "file",
+        "rotatable": True,
+        "mcpShared": True,
+    }
+    service_client = TestClient(app)
+    assert service_client.get(
+        "/studio/status", headers={"Authorization": f"Bearer {token}"}
+    ).status_code == 200
+    assert service_client.get(
+        "/studio/status", headers={"Authorization": f"Bearer {previous_token}"}
+    ).status_code == 401
+    actions = {
+        item["action"] for item in client.get("/studio/audit-events").json()["items"]
+    }
+    assert "service_token.rotate" in actions
 
 
 def test_annotation_identity_and_validator_permission_come_from_session(tmp_path):
