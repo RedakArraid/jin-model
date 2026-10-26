@@ -129,9 +129,30 @@
     return result;
   }
 
+  function lineItemsLast(fields) {
+    const regularFields = [];
+    const lineItemGroups = new Map();
+    const unindexedLineItemFields = [];
+    for (const field of fields || []) {
+      const lineIndex = indexFromPath(field?.path);
+      if (!isLineItemLabel(field?.label) && lineIndex < 0) {
+        regularFields.push(field);
+      } else if (lineIndex < 0) {
+        unindexedLineItemFields.push(field);
+      } else {
+        if (!lineItemGroups.has(lineIndex)) lineItemGroups.set(lineIndex, []);
+        lineItemGroups.get(lineIndex).push(field);
+      }
+    }
+    const lineItemFields = [...lineItemGroups.keys()]
+      .sort((left, right) => left - right)
+      .flatMap(index => lineItemGroups.get(index));
+    return [...regularFields, ...lineItemFields, ...unindexedLineItemFields];
+  }
+
   function compact(fields) {
     const mapping = new Map(indices(fields).map((oldIndex, newIndex) => [oldIndex, newIndex]));
-    return (fields || []).map(field => {
+    const compacted = (fields || []).map(field => {
       const oldIndex = indexFromPath(field?.path);
       if (oldIndex < 0 || !mapping.has(oldIndex) || mapping.get(oldIndex) === oldIndex) return field;
       return {
@@ -142,6 +163,7 @@
         ),
       };
     });
+    return lineItemsLast(compacted);
   }
 
   function validate(fields) {
@@ -176,6 +198,7 @@
     createField,
     createLine,
     preannotate,
+    lineItemsLast,
     compact,
     validate,
   });

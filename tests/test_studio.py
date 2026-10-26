@@ -154,6 +154,56 @@ def test_line_item_annotations_require_visible_contiguous_indexes():
     ]
 
 
+def test_annotation_normalization_always_places_line_items_last():
+    payload = {
+        "status": "DRAFT",
+        "field_annotations": [
+            {
+                "path": "order.line_items[1].description",
+                "label": "LINE_ITEM_DESCRIPTION",
+                "status": "UNREVIEWED",
+                "extracted_value": "BLOC GAZ",
+                "corrected_value": None,
+            },
+            {
+                "path": "order.customer_order_number.value",
+                "label": "ORDER_NUMBER",
+                "status": "UNREVIEWED",
+                "extracted_value": "PO-42",
+                "corrected_value": None,
+            },
+            {
+                "path": "order.line_items[0].quantity",
+                "label": "LINE_ITEM_QUANTITY",
+                "status": "UNREVIEWED",
+                "extracted_value": 2,
+                "corrected_value": None,
+            },
+            {
+                "path": "order.requested_delivery_date.value",
+                "label": "DELIVERY_DATE",
+                "status": "UNREVIEWED",
+                "extracted_value": "2026-10-26",
+                "corrected_value": None,
+            },
+        ],
+    }
+
+    normalized = normalize_studio_annotation(
+        payload,
+        document_id="jdoc-12345678",
+        document_sha256="a" * 64,
+        revision=1,
+    )
+
+    assert [field["label"] for field in normalized["field_annotations"]] == [
+        "ORDER_NUMBER",
+        "DELIVERY_DATE",
+        "LINE_ITEM_QUANTITY",
+        "LINE_ITEM_DESCRIPTION",
+    ]
+
+
 def test_line_item_annotations_reject_missing_or_unindexed_lines():
     missing_first_line = {
         "status": "DRAFT",

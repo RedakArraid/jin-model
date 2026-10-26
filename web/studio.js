@@ -443,8 +443,10 @@ function addLineItem() {
   );
 }
 
-function compactLineItemIndexes() {
+function compactLineItemIndexes(selectedField = state.fields[state.selectedField]) {
   state.fields = lineItemTools.compact(state.fields);
+  const selectedIndex = selectedField ? state.fields.indexOf(selectedField) : -1;
+  if (selectedIndex >= 0) state.selectedField = selectedIndex;
 }
 
 function removeLineItem(lineIndex) {
@@ -1004,6 +1006,10 @@ function renderFields() {
       renderFields();
     });
     path.addEventListener('input', event => { field.path = event.target.value; markDirty(); });
+    path.addEventListener('change', () => {
+      compactLineItemIndexes(field);
+      renderFields();
+    });
     status.addEventListener('change', event => {
       field.status = event.target.value;
       if (isDocumentType && field.status === 'CORRECTED' && !field.corrected_value) {
@@ -1803,13 +1809,25 @@ $('confirmAllButton').addEventListener('click', () => {
   renderFields();
 });
 $('addFieldButton').addEventListener('click', () => {
-  const index = state.fields.length;
   const label = 'ORDER_NUMBER';
-  state.fields.push({ path: availableCanonicalPath(label), label, status: 'UNREVIEWED', extracted_value: '', corrected_value: null, evidence: null, comment: '' });
+  const field = {
+    path: availableCanonicalPath(label),
+    label,
+    status: 'UNREVIEWED',
+    extracted_value: '',
+    corrected_value: null,
+    evidence: null,
+    comment: '',
+  };
+  state.fields.push(field);
+  compactLineItemIndexes();
+  const index = state.fields.indexOf(field);
   state.selectedField = index;
   markDirty();
   renderFields();
-  fieldList.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  fieldList.querySelector(`[data-index="${index}"]`)?.scrollIntoView({
+    behavior: 'smooth', block: 'center',
+  });
 });
 $('addLineItemButton').addEventListener('click', addLineItem);
 $('saveDraftButton').addEventListener('click', () => saveAnnotation('DRAFT'));

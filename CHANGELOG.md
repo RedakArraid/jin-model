@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Kept the complete order-line annotation block last in Studio and persisted
+  annotations, including when users add general fields later.
 - Added named, immutable annotation masks that reuse canonical fields and
   normalized PDF regions while re-reading every value on the target document.
 - Added layout/type compatibility warnings plus REST, MCP and audit support for

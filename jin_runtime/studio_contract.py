@@ -349,6 +349,25 @@ def _validate_line_item_structure(fields: list[dict[str, Any]]) -> None:
         )
 
 
+def _line_items_last(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep regular annotations first and the repeated order-line block last."""
+
+    regular_fields: list[dict[str, Any]] = []
+    line_item_groups: dict[int, list[dict[str, Any]]] = {}
+    for field in fields:
+        match = _LINE_ITEM_PATH.search(field["path"])
+        if match is None:
+            regular_fields.append(field)
+            continue
+        line_item_groups.setdefault(int(match.group("index")), []).append(field)
+    line_item_fields = [
+        field
+        for line_index in sorted(line_item_groups)
+        for field in line_item_groups[line_index]
+    ]
+    return [*regular_fields, *line_item_fields]
+
+
 def annotation_digest(payload: Mapping[str, Any]) -> str:
     canonical = copy.deepcopy(dict(payload))
     canonical.pop("annotation_digest", None)
@@ -384,6 +403,7 @@ def normalize_studio_annotation(
     if len(paths) != len(set(paths)):
         raise StudioContractError("field annotation paths must be unique")
     _validate_line_item_structure(fields)
+    fields = _line_items_last(fields)
     if status == "HUMAN_VALIDATED":
         if not reviewer:
             raise StudioContractError("reviewed_by is required for human validation")

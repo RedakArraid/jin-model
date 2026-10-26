@@ -35,6 +35,35 @@ test('removing a whole line compacts following indexes without changing values',
   assert.deepEqual(lines.validate(compacted), []);
 });
 
+test('regular fields always stay above the complete order-line block', () => {
+  const firstLine = lines.createLine(0);
+  const secondLine = lines.createLine(1);
+  const orderNumber = {
+    path: 'order.customer_order_number.value',
+    label: 'ORDER_NUMBER',
+    extracted_value: 'PO-42',
+  };
+  const deliveryDate = {
+    path: 'order.requested_delivery_date.value',
+    label: 'DELIVERY_DATE',
+    extracted_value: '2026-10-26',
+  };
+
+  const ordered = lines.compact([
+    secondLine[0],
+    orderNumber,
+    ...firstLine,
+    ...secondLine.slice(1),
+    deliveryDate,
+  ]);
+
+  assert.deepEqual(ordered.slice(0, 2), [orderNumber, deliveryDate]);
+  assert.ok(ordered.slice(2, 8).every(field => lines.indexFromPath(field.path) === 0));
+  assert.ok(ordered.slice(8).every(field => lines.indexFromPath(field.path) === 1));
+  assert.equal(ordered[2], firstLine[0]);
+  assert.equal(ordered[8], secondLine[0]);
+});
+
 test('line validation reports gaps and line fields without an array index', () => {
   const gap = lines.createLine(1);
   assert.match(lines.validate(gap).join(' '), /line_items\[0\].*absent/);

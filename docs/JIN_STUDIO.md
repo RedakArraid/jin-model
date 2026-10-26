@@ -373,6 +373,11 @@ le numéro imprimé de ligne ou sa date de livraison. **Retirer la ligne** suppr
 le groupe complet et réindexe automatiquement les groupes suivants sans toucher
 aux valeurs ni aux rectangles.
 
+Le bloc complet des lignes de commande reste toujours en dernière position dans
+l'annotateur et dans l'annotation enregistrée. Un champ général ajouté après
+coup est automatiquement inséré au-dessus de ce bloc, sans déplacer les champs
+à l'intérieur d'une ligne ni modifier leurs valeurs.
+
 La préannotation ne conserve qu'une occurrence sémantique par ligne : par
 exemple `article_number` et `material_number` identiques ne créent plus deux
 champs « Référence article », et `unit_price` / `net_unit_price` identiques ne
