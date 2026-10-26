@@ -67,12 +67,18 @@ def _canonical_field_path(label: str) -> str:
     return f"manual.{label.lower()}"
 
 
-def _field(label: str, name: str, help_text: str) -> dict[str, str]:
+def _field(
+    label: str,
+    name: str,
+    help_text: str,
+    example_text: str,
+) -> dict[str, str]:
     """Build a catalog entry with mandatory annotation guidance."""
     return {
         "label": label,
         "name": name,
         "help": help_text,
+        "example": example_text,
         "defaultPath": _canonical_field_path(label),
     }
 
@@ -103,11 +109,38 @@ _ADDRESS_COMPONENTS: tuple[tuple[str, str, str], ...] = (
     ("COUNTRY_CODE", "code pays", "le code pays explicitement imprimé, sans le déduire du pays"),
 )
 
+_ADDRESS_EXAMPLES: dict[str, str] = {
+    "BUILDING": "Dans « Bâtiment C », encadrez « Bâtiment C ».",
+    "RESIDENCE": "Dans « Résidence Les Tilleuls », encadrez « Résidence Les Tilleuls ».",
+    "ENTRY": "Dans « Entrée B », encadrez « Entrée B ».",
+    "FLOOR": "Dans « 3e étage », encadrez « 3e étage ».",
+    "UNIT": "Dans « Appartement 24 », encadrez « 24 ».",
+    "HOUSE_NUMBER": "Dans « 12 BIS RUE ISAAC NEWTON », encadrez « 12 ».",
+    "HOUSE_NUMBER_SUFFIX": "Dans « 12 BIS RUE ISAAC NEWTON », encadrez « BIS ».",
+    "STREET_TYPE": "Dans « 12 RUE ISAAC NEWTON », encadrez « RUE ».",
+    "STREET_NAME": "Dans « 12 RUE ISAAC NEWTON », encadrez « ISAAC NEWTON ».",
+    "STREET": "Dans « 12 BIS RUE ISAAC NEWTON », encadrez toute cette ligne de voie.",
+    "INDUSTRIAL_ZONE": "Dans « Z.I. DES PALUDS », encadrez « Z.I. DES PALUDS ».",
+    "ACTIVITY_PARK": "Dans « Z.A. HENRI SPRIET », encadrez « Z.A. HENRI SPRIET ».",
+    "PLACE_NAME": "Dans « Lieu-dit La Grande Plaine », encadrez « La Grande Plaine ».",
+    "POSTAL_BOX": "Dans « BP 123 », encadrez « BP 123 ».",
+    "TSA": "Dans « TSA 70001 », encadrez « TSA 70001 ».",
+    "CS": "Dans « CS 40215 », encadrez « CS 40215 ».",
+    "POSTAL_ROUTING_CODE": "Dans « 00013 14120 MONDEVILLE », encadrez « 00013 ».",
+    "POSTAL_CODE": "Dans « 24102 BERGERAC CEDEX », encadrez « 24102 ».",
+    "CITY": "Dans « 24102 BERGERAC CEDEX », encadrez « BERGERAC ».",
+    "CEDEX_NUMBER": "Dans « 24102 BERGERAC CEDEX 2 », encadrez « CEDEX 2 ».",
+    "INSEE_CODE": "Dans « Code INSEE : 33063 », encadrez « 33063 ».",
+    "COUNTRY": "Dans « FRANCE », encadrez « FRANCE ».",
+    "COUNTRY_CODE": "Dans « Pays : FR », encadrez « FR ».",
+}
+
 _GENERIC_ADDRESS_FIELDS = tuple(
     _field(
         f"ADDRESS_{suffix}",
         component[0].upper() + component[1:],
         f"Encadrez uniquement {instruction}. Ne sélectionnez pas toute l'adresse.",
+        _ADDRESS_EXAMPLES[suffix],
     )
     for suffix, component, instruction in _ADDRESS_COMPONENTS
     if suffix != "STREET"
@@ -133,43 +166,56 @@ _ROLE_CORE_COMPONENTS: tuple[tuple[str, str, str], ...] = (
     ("CONTACT_EMAIL", "e-mail", "l'adresse e-mail complète, sans le texte voisin"),
 )
 
+_ROLE_CORE_EXAMPLES: dict[str, str] = {
+    "NAME": "Dans « Raison sociale : SOCIÉTÉ ALPHA », encadrez « SOCIÉTÉ ALPHA ».",
+    "CODE": "Dans « Code tiers : C004281 », encadrez « C004281 ».",
+    "VAT_NUMBER": "Dans « TVA : FR40 123 456 789 », encadrez « FR40 123 456 789 ».",
+    "SIREN": "Dans « SIREN : 123 456 789 », encadrez « 123 456 789 ».",
+    "SIRET": "Dans « SIRET : 123 456 789 00012 », encadrez « 123 456 789 00012 ».",
+    "CONTACT_PHONE": "Dans « Tél. : 01 23 45 67 89 », encadrez « 01 23 45 67 89 ».",
+    "CONTACT_FAX": "Dans « Fax : 01 23 45 67 80 », encadrez « 01 23 45 67 80 ».",
+    "CONTACT_EMAIL": "Dans « E-mail : achats@exemple.fr », encadrez « achats@exemple.fr ».",
+}
+
 FIELD_CATALOG: tuple[dict[str, str], ...] = (
     _field(
         "DOCUMENT_TYPE",
         "Type de document",
         "Encadrez le titre qui prouve explicitement le type, par exemple « BON DE COMMANDE » ou « COMMANDE ». Ne sélectionnez ni toute la page, ni un logo, ni une adresse ; choisissez ensuite la valeur normalisée dans la liste.",
+        "Dans « BON DE COMMANDE FOURNISSEUR », encadrez ce titre complet puis choisissez « purchase_order ».",
     ),
-    _field("ORDER_NUMBER", "Numéro de commande", "Encadrez uniquement la valeur qui identifie la commande du client, sans le libellé « commande », une date ou un code client."),
-    _field("ORDER_DATE", "Date de commande", "Encadrez uniquement la date d'émission de la commande, pas une date de livraison, d'impression ou de validité."),
-    _field("CUSTOMER_REFERENCE", "Référence client", "Encadrez uniquement la référence de dossier ou de chantier donnée par le client, pas le numéro principal de commande."),
-    _field("CUSTOMER_CODE", "Code client", "Encadrez uniquement le code interne du client qui passe la commande, pas un numéro de commande, de fournisseur ou d'article."),
-    _field("DELIVERY_DATE", "Date de livraison souhaitée", "Encadrez uniquement la date de livraison demandée au niveau de la commande ; ignorez les dates propres à une ligne article."),
+    _field("ORDER_NUMBER", "Numéro de commande", "Encadrez uniquement la valeur qui identifie la commande du client, sans le libellé « commande », une date ou un code client.", "Dans « N° commande : BC-2026-00418 », encadrez « BC-2026-00418 »."),
+    _field("ORDER_DATE", "Date de commande", "Encadrez uniquement la date d'émission de la commande, pas une date de livraison, d'impression ou de validité.", "Dans « Date de commande : 24/10/2026 », encadrez « 24/10/2026 »."),
+    _field("CUSTOMER_REFERENCE", "Référence client", "Encadrez uniquement la référence de dossier ou de chantier donnée par le client, pas le numéro principal de commande.", "Dans « Réf. chantier : CAC2410TOU00034 », encadrez « CAC2410TOU00034 »."),
+    _field("CUSTOMER_CODE", "Code client", "Encadrez uniquement le code interne du client qui passe la commande, pas un numéro de commande, de fournisseur ou d'article.", "Dans « Code client : 17532053 », encadrez « 17532053 »."),
+    _field("DELIVERY_DATE", "Date de livraison souhaitée", "Encadrez uniquement la date de livraison demandée au niveau de la commande ; ignorez les dates propres à une ligne article.", "Dans « Livraison souhaitée : 05/11/2026 », encadrez « 05/11/2026 »."),
     *_GENERIC_ADDRESS_FIELDS,
-    _field("LINE_ITEM_NUMBER", "Numéro de ligne", "Encadrez uniquement le numéro ordinal de la ligne d'article."),
-    _field("LINE_ITEM_REFERENCE", "Référence article", "Encadrez uniquement le code article de cette ligne, jamais la description complète ni toute la ligne."),
-    _field("LINE_ITEM_DESCRIPTION", "Description article", "Encadrez uniquement la désignation de l'article ; excluez référence, quantité, prix et montant."),
-    _field("LINE_ITEM_QUANTITY", "Quantité", "Encadrez uniquement la quantité commandée de cette ligne, sans l'unité."),
-    _field("LINE_ITEM_UNIT", "Unité", "Encadrez uniquement l'unité de vente de cette ligne, par exemple PCE, U, M ou LOT."),
-    _field("LINE_ITEM_UNIT_PRICE", "Prix unitaire", "Encadrez uniquement le prix unitaire de cette ligne, hors quantité et montant total."),
-    _field("LINE_ITEM_TOTAL", "Montant de ligne", "Encadrez uniquement le montant total de cette ligne, pas le prix unitaire ni le total du document."),
-    _field("LINE_ITEM_DELIVERY_DATE", "Date de livraison de ligne", "Encadrez uniquement la date de livraison associée à cette ligne article."),
-    _field("ADDITIONAL_CHARGE_LABEL", "Libellé de frais", "Encadrez uniquement le libellé d'un frais hors produit, par exemple PORT, ÉCO-CONTRIBUTION ou EMBALLAGE."),
-    _field("ADDITIONAL_CHARGE_AMOUNT", "Montant de frais", "Encadrez uniquement le montant correspondant au frais hors produit."),
-    _field("TOTAL_SUBTOTAL", "Sous-total produits", "Encadrez uniquement le montant du sous-total des produits avant taxes et frais."),
-    _field("TOTAL_NET", "Total HT", "Encadrez uniquement le montant total hors taxes explicitement imprimé."),
-    _field("TOTAL_VAT", "TVA", "Encadrez uniquement le montant de TVA, pas un numéro de TVA intracommunautaire."),
-    _field("TOTAL_GROSS", "Total TTC", "Encadrez uniquement le montant total toutes taxes comprises."),
-    _field("TOTAL_AMOUNT_DUE", "Montant à payer", "Encadrez uniquement le montant final à payer explicitement imprimé."),
-    _field("VAT_NUMBER", "Numéro de TVA", "Encadrez uniquement le numéro de TVA intracommunautaire imprimé, préfixe pays compris ; n'encadrez pas un montant de taxe."),
-    _field("SIREN", "Numéro SIREN", "Encadrez uniquement le SIREN imprimé de neuf chiffres ; ne l'inventez pas à partir d'un autre identifiant."),
-    _field("SIRET", "Numéro SIRET", "Encadrez uniquement le SIRET imprimé de quatorze chiffres ; ne l'inventez pas à partir d'un autre identifiant."),
-    _field("OFFER_NUMBER", "Numéro d'offre", "Encadrez uniquement l'identifiant qui suit un libellé d'offre, de devis ou de proposition commerciale."),
-    _field("DEROGATION_NUMBER", "Numéro de dérogation", "Encadrez uniquement l'identifiant explicitement présenté comme dérogation, accord spécial ou référence de dérogation."),
+    _field("LINE_ITEM_NUMBER", "Numéro de ligne", "Encadrez uniquement le numéro ordinal de la ligne d'article.", "Dans « 10 | 8738717111 | BLOC GAZ », encadrez seulement « 10 »."),
+    _field("LINE_ITEM_REFERENCE", "Référence article", "Encadrez uniquement le code article de cette ligne, jamais la description complète ni toute la ligne.", "Dans « 8738717111 BLOC GAZ 2 PCE », encadrez seulement « 8738717111 »."),
+    _field("LINE_ITEM_DESCRIPTION", "Description article", "Encadrez uniquement la désignation de l'article ; excluez référence, quantité, prix et montant.", "Dans « 8738717111 BLOC GAZ 2 PCE », encadrez seulement « BLOC GAZ »."),
+    _field("LINE_ITEM_QUANTITY", "Quantité", "Encadrez uniquement la quantité commandée de cette ligne, sans l'unité.", "Dans « Qté : 2 PCE », encadrez seulement « 2 »."),
+    _field("LINE_ITEM_UNIT", "Unité", "Encadrez uniquement l'unité de vente de cette ligne, par exemple PCE, U, M ou LOT.", "Dans « Qté : 2 PCE », encadrez seulement « PCE »."),
+    _field("LINE_ITEM_UNIT_PRICE", "Prix unitaire", "Encadrez uniquement le prix unitaire de cette ligne, hors quantité et montant total.", "Dans « PU 15,63 € | Total 31,26 € », encadrez « 15,63 »."),
+    _field("LINE_ITEM_TOTAL", "Montant de ligne", "Encadrez uniquement le montant total de cette ligne, pas le prix unitaire ni le total du document.", "Dans « PU 15,63 € | Total 31,26 € », encadrez « 31,26 »."),
+    _field("LINE_ITEM_DELIVERY_DATE", "Date de livraison de ligne", "Encadrez uniquement la date de livraison associée à cette ligne article.", "Dans la ligne article « Livraison 05/11/2026 », encadrez « 05/11/2026 »."),
+    _field("ADDITIONAL_CHARGE_LABEL", "Libellé de frais", "Encadrez uniquement le libellé d'un frais hors produit, par exemple PORT, ÉCO-CONTRIBUTION ou EMBALLAGE.", "Dans « PORT 18,00 € », encadrez seulement « PORT »."),
+    _field("ADDITIONAL_CHARGE_AMOUNT", "Montant de frais", "Encadrez uniquement le montant correspondant au frais hors produit.", "Dans « PORT 18,00 € », encadrez seulement « 18,00 »."),
+    _field("TOTAL_SUBTOTAL", "Sous-total produits", "Encadrez uniquement le montant du sous-total des produits avant taxes et frais.", "Dans « Sous-total produits : 659,06 € », encadrez « 659,06 »."),
+    _field("TOTAL_NET", "Total HT", "Encadrez uniquement le montant total hors taxes explicitement imprimé.", "Dans « Total HT : 791,15 € », encadrez « 791,15 »."),
+    _field("TOTAL_VAT", "TVA", "Encadrez uniquement le montant de TVA, pas un numéro de TVA intracommunautaire.", "Dans « TVA 20 % : 158,23 € », encadrez « 158,23 »."),
+    _field("TOTAL_GROSS", "Total TTC", "Encadrez uniquement le montant total toutes taxes comprises.", "Dans « Total TTC : 949,38 € », encadrez « 949,38 »."),
+    _field("TOTAL_AMOUNT_DUE", "Montant à payer", "Encadrez uniquement le montant final à payer explicitement imprimé.", "Dans « Net à payer : 949,38 € », encadrez « 949,38 »."),
+    _field("VAT_NUMBER", "Numéro de TVA", "Encadrez uniquement le numéro de TVA intracommunautaire imprimé, préfixe pays compris ; n'encadrez pas un montant de taxe.", "Dans « TVA intracommunautaire : FR40 123 456 789 », encadrez « FR40 123 456 789 »."),
+    _field("SIREN", "Numéro SIREN", "Encadrez uniquement le SIREN imprimé de neuf chiffres ; ne l'inventez pas à partir d'un autre identifiant.", "Dans « SIREN : 123 456 789 », encadrez « 123 456 789 »."),
+    _field("SIRET", "Numéro SIRET", "Encadrez uniquement le SIRET imprimé de quatorze chiffres ; ne l'inventez pas à partir d'un autre identifiant.", "Dans « SIRET : 123 456 789 00012 », encadrez « 123 456 789 00012 »."),
+    _field("OFFER_NUMBER", "Numéro d'offre", "Encadrez uniquement l'identifiant qui suit un libellé d'offre, de devis ou de proposition commerciale.", "Dans « Suivant offre N° OF-2026-1842 », encadrez « OF-2026-1842 »."),
+    _field("DEROGATION_NUMBER", "Numéro de dérogation", "Encadrez uniquement l'identifiant explicitement présenté comme dérogation, accord spécial ou référence de dérogation.", "Dans « Dérogation : DER-45821 », encadrez « DER-45821 »."),
     *tuple(
         _field(
             f"{role}_{suffix}",
             f"{role_name} — {component}",
             f"Encadrez uniquement {instruction}, pour {role_description}. Ne mélangez pas les blocs d'autres parties.",
+            _ROLE_CORE_EXAMPLES.get(suffix, _ADDRESS_EXAMPLES.get(suffix, "Encadrez uniquement la valeur imprimée.")),
         )
         for role, role_name, role_description in _ROLE_IDENTITIES
         for suffix, component, instruction in (*_ROLE_CORE_COMPONENTS, *_ADDRESS_COMPONENTS)

@@ -15,6 +15,7 @@ de GenieCommande. L'interface est disponible sur `/studio.html` et son API sous
 - synchronisation immédiate de la valeur relue dans l'aperçu JSON ;
 - zoom jusqu'à 400 %, cadrage sur le champ actif et agrandissement visuel des
   rectangles sans modifier leurs coordonnées normalisées ;
+- affichage ou masquage des autres rectangles, sans jamais masquer le champ actif ;
 - ajout et retrait de champs, dont SIREN/SIRET génériques ou rattachés à un rôle ;
 - choix assisté du type de document, avec une valeur libre via « Autre » ;
 - brouillons et révisions immuables ;
@@ -269,6 +270,9 @@ Quand une nouvelle zone est tracée, Studio relit sa valeur et passe le champ à
 immédiatement cette modification ; `Ctrl+S` enregistre le brouillon. Les boutons
 de zoom ne changent jamais la boîte `[x0,y0,x1,y1]` stockée sur 1000 : ils ne
 font qu'agrandir le PDF et tous ses rectangles à l'écran.
+La case **Afficher les autres cadres** permet de masquer temporairement les
+autres annotations pour travailler sans surcharge visuelle. Le cadre du champ
+sélectionné reste affiché et le choix est conservé par le navigateur.
 
 Les identifiants `SIREN`, `SIRET`, `BUYER_SIREN`, `BUYER_SIRET`,
 `SUPPLIER_SIREN` et `SUPPLIER_SIRET` sont annotables. Le runtime ne demande pas
@@ -296,11 +300,13 @@ Une annotation référence obligatoirement :
 - l'annotateur et l'horodatage pour `HUMAN_VALIDATED` ;
 - un digest immuable.
 
-Chaque entrée du catalogue de champs contient une aide `help`, affichée dans
-l'annotateur sous **Que faut-il encadrer ?** et également exposée par REST et
-MCP. La règle par défaut consiste à encadrer uniquement la valeur imprimée,
-sans son libellé et sans les valeurs voisines. Par exemple, une référence
-article ne doit jamais couvrir la description complète ou toute la ligne.
+Chaque entrée du catalogue de champs contient une aide `help` et un exemple
+concret `example`, affichés dans l'annotateur sous **Que faut-il encadrer ?** et
+également exposés par REST et MCP. L'exemple montre une courte portion de texte
+source puis la valeur exacte à encadrer. La règle par défaut consiste à
+encadrer uniquement la valeur imprimée, sans son libellé et sans les valeurs
+voisines. Par exemple, une référence article ne doit jamais couvrir la
+description complète ou toute la ligne.
 Le catalogue fournit également un `defaultPath`. Quand l'annotateur change le
 type d'un champ, son chemin canonique est recalculé automatiquement tout en
 conservant, lorsque c'est pertinent, l'indice de ligne, d'adresse, de frais ou

@@ -1,4 +1,8 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import fitz
 
 from jin_runtime.studio_contract import FIELD_LABELS as STUDIO_FIELD_LABELS
 from scripts.import_annotation_campaign_to_studio import draft_fields
@@ -7,7 +11,9 @@ from training.annotations.bootstrap_from_extractions import (
     ADDRESS_LABEL_SUFFIX,
     FIELD_LABELS as BOOTSTRAP_FIELD_LABELS,
     PARTY_LABELS,
+    annotate_one,
     collect_candidates,
+    deduplicate_candidates,
 )
 
 
@@ -110,6 +116,160 @@ class AnnotationBootstrapTests(unittest.TestCase):
         self.assertEqual(reference["page_hint"], 1)
         self.assertEqual(reference["bbox_hint"], [5.0, 100.0, 590.0, 120.0])
 
+    def test_semantic_dedup_keeps_equal_values_on_distinct_rows(self):
+        payload = {
+            "order": {
+                "line_items": [
+                    {
+                        "references": {
+                            "material_number": "7738112972",
+                            "article_number": "7738112972",
+                        },
+                        "quantity": 1,
+                    },
+                    {
+                        "references": {
+                            "material_number": "7738112973",
+                            "article_number": "7738112973",
+                        },
+                        "quantity": 1,
+                    },
+                ]
+            }
+        }
+
+        candidates = deduplicate_candidates(collect_candidates(payload))
+
+        quantities = [item for item in candidates if item["label"] == "LINE_ITEM_QUANTITY"]
+        references = [item for item in candidates if item["label"] == "LINE_ITEM_REFERENCE"]
+        self.assertEqual(len(quantities), 2)
+        self.assertEqual(len(references), 2)
+        self.assertEqual(
+            {item["path"] for item in quantities},
+            {"order.line_items[0].quantity", "order.line_items[1].quantity"},
+        )
+
+    def test_line_nested_order_alias_is_not_a_header_annotation(self):
+        payload = {
+            "order": {
+                "customer_order_number": {"value": "PO-123"},
+                "line_items": [
+                    {
+                        "references": {
+                            "supplier_material_number": "7738112972",
+                            "customer_order_number": "ROW-ORDER",
+                        }
+                    }
+                ],
+            }
+        }
+
+        candidates = collect_candidates(payload)
+
+        self.assertEqual(
+            [item["value"] for item in candidates if item["label"] == "ORDER_NUMBER"],
+            ["PO-123"],
+        )
+        self.assertIn(
+            "7738112972",
+            [item["value"] for item in candidates if item["label"] == "LINE_ITEM_REFERENCE"],
+        )
+
+    def test_primary_line_reference_prefers_numeric_article_prior(self):
+        payload = {
+            "order": {
+                "line_items": [
+                    {
+                        "references": {
+                            "material_number": "ELM/7738112714",
+                            "supplier_material_number": "7738112714",
+                        }
+                    },
+                    {
+                        "references": {
+                            "material_number": "87168294760",
+                            "supplier_material_number": "L1029476",
+                        }
+                    },
+                ]
+            }
+        }
+
+        references = [
+            item
+            for item in deduplicate_candidates(collect_candidates(payload))
+            if item["label"] == "LINE_ITEM_REFERENCE"
+        ]
+
+        self.assertEqual(
+            [(item["path"], item["value"]) for item in references],
+            [
+                ("order.line_items[0].references.supplier_material_number", "7738112714"),
+                ("order.line_items[1].references.material_number", "87168294760"),
+            ],
+        )
+
+    def test_geometry_assigns_repeated_quantities_to_their_own_rows(self):
+        with TemporaryDirectory() as directory:
+            pdf_path = Path(directory) / "two-lines.pdf"
+            document = fitz.open()
+            page = document.new_page(width=600, height=800)
+            page.insert_text((40, 80), "BON DE COMMANDE")
+            page.insert_text((40, 180), "1 7738112972 POMPE A 1 EA 10,00 10,00")
+            page.insert_text((40, 220), "2 7738112973 POMPE B 1 EA 12,00 12,00")
+            document.save(pdf_path)
+            document.close()
+            payload = {
+                "document": {"type": "purchase_order"},
+                "order": {
+                    "customer_order_number": {
+                        "value": "PO-NOT-PRINTED",
+                        "evidence": {"page": 1, "bbox": [300, 50, 400, 70]},
+                    },
+                    "line_items": [
+                        {
+                            "line_number": "1",
+                            "references": {"material_number": "7738112972"},
+                            "description": "POMPE A",
+                            "quantity": 1.0,
+                            "unit": "EA",
+                            "pricing": {"unit_price": 10.0},
+                            "amounts": {"total": 10.0},
+                            "evidence": {"page": 1},
+                        },
+                        {
+                            "line_number": "2",
+                            "references": {"material_number": "7738112973"},
+                            "description": "POMPE B",
+                            "quantity": 1.0,
+                            "unit": "EA",
+                            "pricing": {"unit_price": 12.0},
+                            "amounts": {"total": 12.0},
+                            "evidence": {"page": 1},
+                        },
+                    ]
+                },
+            }
+
+            annotation, report = annotate_one(pdf_path, payload, max_ambiguity=3)
+
+        regions = [region for page in annotation["pages"] for region in page["regions"]]
+        quantity_regions = [
+            region for region in regions if region["label"] == "LINE_ITEM_QUANTITY"
+        ]
+        self.assertEqual(report["unmatched_fields"], 0)
+        self.assertEqual(len(quantity_regions), 2)
+        self.assertEqual(len({region["source_path"] for region in regions}), len(regions))
+        self.assertLess(quantity_regions[0]["bbox"][1], quantity_regions[1]["bbox"][1])
+        fallback = next(region for region in regions if region["label"] == "ORDER_NUMBER")
+        self.assertEqual(fallback["match_method"], "source_bbox_fallback")
+        annotation["document_labels"] = {"document_type": "purchase_order"}
+        order_field = next(
+            item for item in draft_fields(annotation) if item["label"] == "ORDER_NUMBER"
+        )
+        self.assertEqual(order_field["status"], "AMBIGUOUS")
+        self.assertIn("evidence", order_field)
+
     def test_party_and_address_labels_keep_business_role(self):
         payload = {
             "order": {
@@ -181,6 +341,43 @@ class AnnotationBootstrapTests(unittest.TestCase):
         self.assertEqual(order["evidence"]["bbox"], [10, 20, 80, 30])
         self.assertEqual(delivery["status"], "AMBIGUOUS")
         self.assertNotIn("evidence", delivery)
+
+    def test_studio_draft_suppresses_duplicate_occurrences_without_fake_paths(self):
+        annotation = {
+            "document_labels": {
+                "document_type": "purchase_order",
+                "evidence": {"page": 1, "bbox": [10, 10, 100, 30]},
+            },
+            "pages": [
+                {
+                    "page": 1,
+                    "regions": [
+                        {
+                            "label": "LINE_ITEM_QUANTITY",
+                            "value": "1",
+                            "source_path": "order.line_items[0].quantity",
+                            "bbox": [100, 100, 120, 120],
+                            "match_method": "line_geometry",
+                        },
+                        {
+                            "label": "LINE_ITEM_QUANTITY",
+                            "value": "1",
+                            "source_path": "order.line_items[0].quantity",
+                            "bbox": [200, 100, 220, 120],
+                            "match_method": "line_geometry",
+                        },
+                    ],
+                }
+            ],
+        }
+
+        fields = draft_fields(annotation)
+
+        quantities = [item for item in fields if item["label"] == "LINE_ITEM_QUANTITY"]
+        document_type = next(item for item in fields if item["label"] == "DOCUMENT_TYPE")
+        self.assertEqual(len(quantities), 1)
+        self.assertNotIn("#occurrence-", quantities[0]["path"])
+        self.assertEqual(document_type["evidence"]["bbox"], [10, 10, 100, 30])
 
     def test_studio_draft_turns_degenerate_region_into_ambiguous_field(self):
         annotation = {

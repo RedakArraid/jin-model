@@ -192,6 +192,8 @@ input:focus, select:focus { outline: 3px solid rgba(35, 86, 216, .13); border-co
 .pdf-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
 .zoom-controls { display: inline-flex; align-items: center; gap: 5px; margin-left: 6px; }
 .zoom-level { min-width: 54px; color: var(--muted); text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; }
+.annotation-visibility-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); background: white; cursor: pointer; user-select: none; }
+.annotation-visibility-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--primary); cursor: pointer; }
 .pdf-help { flex: 1 1 240px; text-align: right; }
 .pdf-canvas-wrap { position: relative; flex: 1; overflow: auto; padding: 16px; background: #e9edf4; }
 .canvas-stage { position: relative; margin: 0 auto; box-shadow: 0 5px 18px rgba(20,32,55,.16); }
@@ -218,6 +220,9 @@ label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weig
 .field-helper summary { padding: 8px 10px; cursor: pointer; font-size: 12px; font-weight: 750; }
 .field-helper summary::marker { color: var(--primary); }
 .field-help { margin: 0; padding: 0 10px 10px; font-size: 12px; line-height: 1.45; }
+.field-example { display: grid; grid-template-columns: auto 1fr; gap: 8px; margin: 0 10px 10px; padding: 9px 10px; border-left: 3px solid var(--primary); border-radius: 5px; background: white; font-size: 12px; line-height: 1.45; }
+.field-example strong { color: var(--primary); }
+.field-example-value { color: var(--ink); }
 .field-status { width: 180px; }
 .field-heading-actions { display: flex; align-items: center; gap: 7px; }
 .delete-field { min-height: 38px; }

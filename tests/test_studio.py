@@ -24,6 +24,8 @@ PDF = b"%PDF-1.4\n% JIN Studio test\n%%EOF\n"
 def test_every_annotatable_field_has_precise_selection_help():
     assert FIELD_CATALOG
     assert all(item.get("help", "").startswith("Encadrez") for item in FIELD_CATALOG)
+    assert all(item.get("example", "").startswith("Dans ") for item in FIELD_CATALOG)
+    assert all("encadrez" in item["example"].lower() for item in FIELD_CATALOG)
     assert all(item.get("defaultPath", "") for item in FIELD_CATALOG)
     assert len({item["label"] for item in FIELD_CATALOG}) == len(FIELD_CATALOG)
     assert len({item["defaultPath"] for item in FIELD_CATALOG}) == len(FIELD_CATALOG)
@@ -33,6 +35,9 @@ def test_every_annotatable_field_has_precise_selection_help():
     assert "BON DE COMMANDE" in document_help
     assert "toute la page" in document_help
     assert "jamais la description complète" in by_label["LINE_ITEM_REFERENCE"]["help"]
+    assert "8738717111" in by_label["LINE_ITEM_REFERENCE"]["example"]
+    assert "ISAAC NEWTON" in by_label["ADDRESS_STREET_NAME"]["example"]
+    assert "PORT" in by_label["ADDITIONAL_CHARGE_LABEL"]["example"]
     assert "client qui passe la commande" in by_label["BUYER_CODE"]["help"]
     assert by_label["ORDER_DATE"]["defaultPath"] == "order.order_date.value"
     assert by_label["ADDRESS_STREET_NAME"]["defaultPath"] == (

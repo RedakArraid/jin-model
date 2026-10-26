@@ -26,33 +26,54 @@ def _configure_console() -> None:
         reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
-def _unique_path(base: str, used: set[str]) -> str:
-    clean = str(base or "field").strip()[:260] or "field"
-    candidate = clean
-    counter = 2
-    while candidate in used:
-        candidate = f"{clean[:250]}#occurrence-{counter}"
-        counter += 1
-    used.add(candidate)
-    return candidate
+def _canonical_path(base: Any) -> str:
+    return str(base or "field").strip()[:260] or "field"
+
+
+def _valid_box(box: Any) -> bool:
+    return (
+        isinstance(box, list)
+        and len(box) == 4
+        and all(isinstance(value, (int, float)) for value in box)
+        and 0 <= box[0] < box[2] <= 1000
+        and 0 <= box[1] < box[3] <= 1000
+    )
 
 
 def draft_fields(annotation: dict[str, Any]) -> list[dict[str, Any]]:
-    used: set[str] = set()
     fields: list[dict[str, Any]] = []
-    document_type = str(
-        (annotation.get("document_labels") or {}).get("document_type") or "unknown"
-    )
-    fields.append(
-        {
-            "path": _unique_path("document.type", used),
-            "label": "DOCUMENT_TYPE",
-            "status": "UNREVIEWED",
-            "extracted_value": document_type,
-            "corrected_value": None,
-            "comment": "Classe préremplie par JIN ; confirmer même pour un document négatif.",
+    field_indexes: dict[str, int] = {}
+
+    def add_field(field: dict[str, Any]) -> None:
+        """Keep one canonical JSON path and prefer the candidate with a box."""
+
+        path = _canonical_path(field.get("path"))
+        field["path"] = path
+        existing_index = field_indexes.get(path)
+        if existing_index is None:
+            field_indexes[path] = len(fields)
+            fields.append(field)
+            return
+        if "evidence" not in fields[existing_index] and "evidence" in field:
+            fields[existing_index] = field
+
+    document_labels = annotation.get("document_labels") or {}
+    document_type = str(document_labels.get("document_type") or "unknown")
+    document_field = {
+        "path": "document.type",
+        "label": "DOCUMENT_TYPE",
+        "status": "UNREVIEWED",
+        "extracted_value": document_type,
+        "corrected_value": None,
+        "comment": "Classe préremplie par JIN ; confirmer le libellé visible dans le document.",
+    }
+    type_evidence = document_labels.get("evidence") or {}
+    if _valid_box(type_evidence.get("bbox")) and int(type_evidence.get("page") or 0) > 0:
+        document_field["evidence"] = {
+            "page": int(type_evidence["page"]),
+            "bbox": type_evidence["bbox"],
         }
-    )
+    add_field(document_field)
 
     for page in annotation.get("pages") or []:
         page_number = int(page.get("page") or 0)
@@ -61,28 +82,27 @@ def draft_fields(annotation: dict[str, Any]) -> list[dict[str, Any]]:
             if label not in FIELD_LABELS:
                 continue
             box = region.get("bbox")
-            valid_box = (
-                isinstance(box, list)
-                and len(box) == 4
-                and all(isinstance(value, (int, float)) for value in box)
-                and 0 <= box[0] < box[2] <= 1000
-                and 0 <= box[1] < box[3] <= 1000
-            )
+            valid_box = _valid_box(box)
+            match_method = str(region.get("match_method") or "text")
             field = {
-                "path": _unique_path(str(region.get("source_path") or label), used),
+                "path": _canonical_path(region.get("source_path") or label),
                 "label": label,
-                "status": "UNREVIEWED" if valid_box else "AMBIGUOUS",
+                "status": (
+                    "UNREVIEWED"
+                    if valid_box and match_method != "source_bbox_fallback"
+                    else "AMBIGUOUS"
+                ),
                 "extracted_value": region.get("canonical_value", region.get("value")),
                 "corrected_value": None,
                 "comment": (
-                    "Préannotation Codex/JIN à confirmer."
+                    f"Préannotation Codex/JIN à confirmer ({match_method})."
                     if valid_box
                     else "Zone source dégénérée après normalisation ; redessiner la boîte."
                 ),
             }
             if valid_box:
                 field["evidence"] = {"page": page_number, "bbox": box}
-            fields.append(field)
+            add_field(field)
 
     report = annotation.get("generation_report") or {}
     for unresolved in report.get("unresolved") or []:
@@ -90,16 +110,16 @@ def draft_fields(annotation: dict[str, Any]) -> list[dict[str, Any]]:
         if label not in FIELD_LABELS:
             continue
         reason = str(unresolved.get("reason") or "unresolved")
-        fields.append(
+        add_field(
             {
-                "path": _unique_path(str(unresolved.get("path") or label), used),
+                "path": _canonical_path(unresolved.get("path") or label),
                 "label": label,
                 "status": "AMBIGUOUS",
                 "extracted_value": unresolved.get("canonical_value", unresolved.get("value")),
                 "corrected_value": None,
                 "comment": (
                     "Préannotation non localisée automatiquement "
-                    f"({reason}); tracer la bonne zone, corriger ou marquer absent."
+                    f"({reason}) ; tracer la bonne zone, corriger ou marquer absent."
                 ),
             }
         )
@@ -113,6 +133,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("source_root", type=Path)
     parser.add_argument("--studio-dir", type=Path, default=Path("data/studio"))
     parser.add_argument("--campaign-id")
+    parser.add_argument(
+        "--refresh-machine-drafts",
+        action="store_true",
+        help=(
+            "Create a new revision only when the latest annotation is still a "
+            "codex-preannotation DRAFT. Human revisions are never replaced."
+        ),
+    )
     args = parser.parse_args(argv)
 
     campaign = args.campaign_dir.resolve()
@@ -155,20 +183,27 @@ def main(argv: list[str] | None = None) -> int:
                     "preannotationStatus": "REVIEW_REQUIRED",
                 },
             )
-        if not current.get("latestAnnotation"):
+        latest = current.get("latestAnnotation") or {}
+        refreshable = (
+            args.refresh_machine_drafts
+            and latest.get("status") == "DRAFT"
+            and latest.get("reviewed_by") == "codex-preannotation"
+        )
+        if not latest or refreshable:
             annotation_payload = {
                 "status": "DRAFT",
                 "reviewed_by": "codex-preannotation",
                 "note": (
-                    "Préannotation produite par Codex/JIN. Chaque champ doit être "
-                    "confirmé, corrigé, marqué absent ou ambigu par un humain."
+                    "Préannotation géométrique v2 produite par Codex/JIN. Chaque "
+                    "champ doit être confirmé, corrigé, marqué absent ou ambigu "
+                    "par un humain."
                 ),
                 "field_annotations": draft_fields(annotation),
             }
             saved = store.save_annotation(current["documentId"], annotation_payload)
-            action = "IMPORTED"
+            action = "REFRESHED" if refreshable else "IMPORTED"
         else:
-            saved = current.get("latestAnnotation") or {}
+            saved = latest
             action = "REUSED"
         imported.append(
             {

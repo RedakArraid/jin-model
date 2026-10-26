@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>JIN Studio – Annotation et entraînement</title>
-  <link rel="stylesheet" href="studio.css?v=6" />
+  <link rel="stylesheet" href="studio.css?v=7" />
 </head>
 <body>
   <header class="topbar">
@@ -100,6 +100,13 @@
                 <button id="fitWidthButton" class="button secondary compact">Ajuster</button>
                 <button id="focusFieldButton" class="button secondary compact">Cadrer le champ</button>
               </div>
+              <label
+                class="annotation-visibility-toggle"
+                title="Le cadre du champ sélectionné reste toujours visible."
+              >
+                <input id="showOtherAnnotationsToggle" type="checkbox" checked />
+                <span>Afficher les autres cadres</span>
+              </label>
               <span class="muted-text pdf-help">Sélectionnez un champ puis tracez sa zone : sa valeur sera relue automatiquement.</span>
             </div>
             <div id="pdfCanvasWrap" class="pdf-canvas-wrap">
@@ -291,6 +298,10 @@
       <details class="field-helper">
         <summary>Que faut-il encadrer ?</summary>
         <p class="field-help"></p>
+        <div class="field-example">
+          <strong>Exemple</strong>
+          <span class="field-example-value"></span>
+        </div>
       </details>
       <div class="field-values">
         <label>Valeur JIN<input class="extracted-value" readonly /></label>
@@ -312,6 +323,6 @@
   </template>
 
   <script src="vendor/pdfjs-3.11.174/pdf.min.js"></script>
-  <script src="studio.js?v=8"></script>
+  <script src="studio.js?v=10"></script>
 </body>
 </html>

@@ -76,6 +76,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("source_root", type=Path)
     parser.add_argument("--sample-file", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--reuse-extractions-dir",
+        type=Path,
+        help="Optional directory of previously generated extraction JSON files.",
+    )
     parser.add_argument("--api", default="http://localhost:8080/api/extract")
     parser.add_argument("--max-ambiguity", type=int, default=3)
     parser.add_argument("--force", action="store_true")
@@ -85,6 +90,9 @@ def main(argv: list[str] | None = None) -> int:
     output = args.output_dir.resolve()
     extraction_dir = output / "extractions"
     annotation_dir = output / "annotations"
+    reuse_extractions_dir = (
+        args.reuse_extractions_dir.resolve() if args.reuse_extractions_dir else None
+    )
     extraction_dir.mkdir(parents=True, exist_ok=True)
     annotation_dir.mkdir(parents=True, exist_ok=True)
 
@@ -107,9 +115,20 @@ def main(argv: list[str] | None = None) -> int:
             annotation_path = annotation_dir / f"{stem}.json"
             started = time.perf_counter()
             try:
+                reusable_extraction = (
+                    reuse_extractions_dir / extraction_path.name
+                    if reuse_extractions_dir else None
+                )
                 if extraction_path.is_file() and not args.force:
                     payload = json.loads(extraction_path.read_text(encoding="utf-8"))
                     extraction_mode = "REUSED"
+                elif reusable_extraction is not None and reusable_extraction.is_file() and not args.force:
+                    payload = json.loads(reusable_extraction.read_text(encoding="utf-8"))
+                    extraction_path.write_text(
+                        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                    extraction_mode = "REUSED_EXTERNAL"
                 else:
                     with pdf_path.open("rb") as handle:
                         response = client.post(
@@ -133,6 +152,10 @@ def main(argv: list[str] | None = None) -> int:
                         "document_labels": {
                             "document_type": _document_type(payload),
                             "requires_review": True,
+                            **(
+                                {"evidence": annotation["document_type_evidence"]}
+                                if annotation.get("document_type_evidence") else {}
+                            ),
                         },
                         "review": {
                             "status": "PENDING",
@@ -142,9 +165,12 @@ def main(argv: list[str] | None = None) -> int:
                         },
                         "generation_report": {
                             "candidate_fields": report["candidate_fields"],
+                            "source_candidate_fields": report.get("source_candidate_fields"),
+                            "semantic_aliases_removed": report.get("semantic_aliases_removed"),
                             "matched_fields": report["matched_fields"],
                             "ambiguous_fields": report["ambiguous_fields"],
                             "unmatched_fields": report["unmatched_fields"],
+                            "match_methods": report.get("match_methods") or {},
                             "unresolved": report["unmatched"],
                         },
                     }
@@ -163,7 +189,9 @@ def main(argv: list[str] | None = None) -> int:
                     "document_type": _document_type(payload),
                     "annotation_status": annotation["annotation_status"],
                     "region_count": region_count,
+                    "source_candidate_fields": report.get("source_candidate_fields", report["candidate_fields"]),
                     "candidate_fields": report["candidate_fields"],
+                    "semantic_aliases_removed": report.get("semantic_aliases_removed", 0),
                     "matched_fields": report["matched_fields"],
                     "ambiguous_fields": report["ambiguous_fields"],
                     "unmatched_fields": report["unmatched_fields"],
@@ -229,6 +257,9 @@ def main(argv: list[str] | None = None) -> int:
         "completed": len(records),
         "errors": errors,
         "regions": sum(record["region_count"] for record in records),
+        "source_candidate_fields": sum(record["source_candidate_fields"] for record in records),
+        "candidate_fields": sum(record["candidate_fields"] for record in records),
+        "semantic_aliases_removed": sum(record["semantic_aliases_removed"] for record in records),
         "matched_fields": sum(record["matched_fields"] for record in records),
         "ambiguous_fields": sum(record["ambiguous_fields"] for record in records),
         "unmatched_fields": sum(record["unmatched_fields"] for record in records),

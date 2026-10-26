@@ -24,6 +24,15 @@ const DOCUMENT_TYPE_VALUES = new Set(
 const MIN_ZOOM = .5;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = .25;
+const OTHER_ANNOTATIONS_VISIBILITY_KEY = 'jin-studio.show-other-annotations';
+
+function storedOtherAnnotationsVisibility() {
+  try {
+    return window.localStorage.getItem(OTHER_ANNOTATIONS_VISIBILITY_KEY) !== 'false';
+  } catch (_) {
+    return true;
+  }
+}
 
 const state = {
   user: null,
@@ -44,6 +53,7 @@ const state = {
   rendering: false,
   pendingRender: false,
   zoom: 1,
+  showOtherAnnotations: storedOtherAnnotationsVisibility(),
   pageTextItems: [],
   regionRequest: 0,
   dirty: false,
@@ -65,6 +75,8 @@ const fieldList = $('fieldList');
 const annotationCanvas = $('annotationCanvas');
 const pdfCanvas = $('pdfCanvas');
 const canvasStage = $('canvasStage');
+const showOtherAnnotationsToggle = $('showOtherAnnotationsToggle');
+showOtherAnnotationsToggle.checked = state.showOtherAnnotations;
 
 function hasPermission(permission) {
   const permissions = state.user?.permissions || [];
@@ -263,6 +275,11 @@ function catalogName(label) {
 function catalogHelp(label) {
   return state.catalog.find(item => item.label === label)?.help
     || 'Encadrez uniquement la valeur imprimée correspondant à ce champ, sans les libellés ni les champs voisins.';
+}
+
+function catalogExample(label) {
+  return state.catalog.find(item => item.label === label)?.example
+    || 'Dans « Libellé : VALEUR », encadrez uniquement « VALEUR ».';
 }
 
 function catalogDefaultPath(label) {
@@ -611,7 +628,9 @@ function renderFields() {
     populateLabelSelect(label, field.label);
     const helper = node.querySelector('.field-helper');
     const help = node.querySelector('.field-help');
+    const example = node.querySelector('.field-example-value');
     help.textContent = catalogHelp(field.label);
+    example.textContent = catalogExample(field.label);
     helper.open = index === state.selectedField;
     helper.addEventListener('click', event => event.stopPropagation());
     const path = node.querySelector('.field-path');
@@ -838,6 +857,7 @@ function drawAnnotations(preview = null) {
   const context = annotationCanvas.getContext('2d');
   context.clearRect(0, 0, annotationCanvas.width, annotationCanvas.height);
   state.fields.forEach((field, index) => {
+    if (!state.showOtherAnnotations && index !== state.selectedField) return;
     if (Number(field.evidence?.page) !== state.page || !field.evidence?.bbox) return;
     const [x0, y0, x1, y1] = field.evidence.bbox;
     context.strokeStyle = index === state.selectedField ? '#2356d8' : '#0b8c65';
@@ -1453,6 +1473,16 @@ $('zoomOutButton').addEventListener('click', () => setZoom(state.zoom - ZOOM_STE
 $('zoomInButton').addEventListener('click', () => setZoom(state.zoom + ZOOM_STEP));
 $('fitWidthButton').addEventListener('click', () => setZoom(1));
 $('focusFieldButton').addEventListener('click', focusSelectedField);
+showOtherAnnotationsToggle.addEventListener('change', event => {
+  state.showOtherAnnotations = event.target.checked;
+  try {
+    window.localStorage.setItem(
+      OTHER_ANNOTATIONS_VISIBILITY_KEY,
+      String(state.showOtherAnnotations),
+    );
+  } catch (_) { /* The visual preference remains active for this page. */ }
+  drawAnnotations();
+});
 $('annotationNote').addEventListener('input', markDirty);
 
 document.addEventListener('keydown', event => {
