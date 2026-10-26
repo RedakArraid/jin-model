@@ -695,6 +695,7 @@ class StudioStore:
         document_dir.mkdir(parents=True, exist_ok=False)
         pdf_path = document_dir / "source.pdf"
         pdf_path.write_bytes(pdf_bytes)
+        stored_pdf_path = pdf_path.relative_to(self.root).as_posix()
         now = utc_now()
         safe_name = _filename(filename)
         with self._lock, self._connect() as connection:
@@ -707,7 +708,7 @@ class StudioStore:
                     document_id,
                     safe_name,
                     digest,
-                    str(pdf_path),
+                    stored_pdf_path,
                     _json(dict(source or {})),
                     _json(dict(extraction or {})),
                     now,
@@ -768,13 +769,31 @@ class StudioStore:
             row = self._row(connection, document_id)
             return self._document(row, self._latest_annotation(connection, document_id))
 
+    def _resolve_document_pdf_path(self, row: sqlite3.Row) -> Path:
+        """Resolve a PDF after Studio storage moves between host and containers."""
+
+        canonical_path = self.documents_dir / str(row["document_id"]) / "source.pdf"
+        stored_path = Path(str(row["pdf_path"] or ""))
+        candidates = [canonical_path]
+        if stored_path.is_absolute():
+            candidates.append(stored_path)
+        elif str(stored_path):
+            candidates.append(self.root / stored_path)
+
+        checked: set[Path] = set()
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            if resolved in checked:
+                continue
+            checked.add(resolved)
+            if self.documents_dir in resolved.parents and resolved.is_file():
+                return resolved
+        raise StudioNotFoundError(str(row["document_id"]))
+
     def pdf_path(self, document_id: str) -> Path:
         with self._connect() as connection:
             row = self._row(connection, document_id)
-        path = Path(row["pdf_path"]).resolve()
-        if self.documents_dir not in path.parents or not path.exists():
-            raise StudioNotFoundError(document_id)
-        return path
+        return self._resolve_document_pdf_path(row)
 
     def save_annotation(self, document_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         with self._lock, self._connect() as connection:
@@ -836,9 +855,7 @@ class StudioStore:
 
         with self._lock, self._connect() as connection:
             document = self._row(connection, source_document_id)
-            pdf_path = Path(document["pdf_path"]).resolve()
-            if self.documents_dir not in pdf_path.parents or not pdf_path.exists():
-                raise StudioNotFoundError(source_document_id)
+            pdf_path = self._resolve_document_pdf_path(document)
             clean_name = str(name or "").strip()
             latest = connection.execute(
                 "SELECT MAX(version) version FROM studio_annotation_masks "
@@ -1008,7 +1025,7 @@ class StudioStore:
                 manifest_rows.append(
                     {
                         "document_id": document_id,
-                        "pdf": document["pdf_path"],
+                        "pdf": str(self._resolve_document_pdf_path(document)),
                         "annotation": str(annotation_path),
                         "pdf_sha256": document["pdf_sha256"],
                         "annotation_digest": annotation["annotation_digest"],

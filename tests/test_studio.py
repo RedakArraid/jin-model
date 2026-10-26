@@ -50,6 +50,27 @@ def test_store_creates_a_shared_schema_initialization_lock(tmp_path):
     assert store.status()["annotationMasks"] == 0
 
 
+def test_document_pdf_paths_are_relative_and_survive_a_foreign_absolute_path(tmp_path):
+    store = StudioStore(tmp_path / "studio")
+    document = store.create_document(filename="commande.pdf", pdf_bytes=PDF)
+    document_id = document["documentId"]
+
+    with store._connect() as connection:
+        stored = connection.execute(
+            "SELECT pdf_path FROM studio_documents WHERE document_id=?",
+            (document_id,),
+        ).fetchone()["pdf_path"]
+        assert stored == f"documents/{document_id}/source.pdf"
+        connection.execute(
+            "UPDATE studio_documents SET pdf_path=? WHERE document_id=?",
+            (r"C:\foreign-host\studio\documents\legacy\source.pdf", document_id),
+        )
+
+    assert store.pdf_path(document_id) == (
+        store.documents_dir / document_id / "source.pdf"
+    ).resolve()
+
+
 def test_every_annotatable_field_has_precise_selection_help():
     assert FIELD_CATALOG
     assert all(item.get("help", "").startswith("Encadrez") for item in FIELD_CATALOG)

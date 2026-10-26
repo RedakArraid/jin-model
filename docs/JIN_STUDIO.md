@@ -336,6 +336,11 @@ dans le masque. Une nouvelle sauvegarde sous le même nom crée `v2`, `v3`, etc.
 La liste courante présente seulement la dernière version de chaque nom ; les
 versions précédentes restent accessibles par API ou MCP pour l'audit.
 
+Les chemins des PDF sont conservés relativement au stockage Studio. Les anciens
+documents qui contiennent encore un chemin absolu Windows ou Docker sont
+résolus automatiquement à partir de leur identifiant ; un déplacement entre la
+VM, l'hôte et les conteneurs ne rend donc pas le document introuvable.
+
 Sur un autre PDF, **Appliquer le masque** remplace la préannotation affichée,
 relit le texte natif ou OCR à l'intérieur de chaque cadre, puis recrée tous les
 champs avec le statut `UNREVIEWED`. Rien n'est enregistré tant que

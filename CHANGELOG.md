@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Made Studio PDF references portable across Windows hosts and Docker, including
+  automatic recovery of legacy documents with foreign absolute paths.
 - Kept the complete order-line annotation block last in Studio and persisted
   annotations, including when users add general fields later.
 - Added named, immutable annotation masks that reuse canonical fields and

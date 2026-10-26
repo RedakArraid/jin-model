@@ -189,6 +189,15 @@ def test_annotation_mask_api_is_authenticated_csrf_protected_and_audited(tmp_pat
     listed = client.get("/studio/annotation-masks")
     assert listed.status_code == 200
     assert listed.json()["items"][0]["maskId"] == mask["maskId"]
+    with store._connect() as connection:
+        connection.execute(
+            "UPDATE studio_documents SET pdf_path=? WHERE document_id=?",
+            (
+                r"C:\foreign-host\jin-model\data\studio\documents\target\source.pdf",
+                target["documentId"],
+            ),
+        )
+    assert client.get(f"/studio/documents/{target['documentId']}/pdf").status_code == 200
     applied = client.post(
         f"/studio/documents/{target['documentId']}/annotation-masks/{mask['maskId']}/apply",
         headers={"X-CSRF-Token": user["csrfToken"]},
