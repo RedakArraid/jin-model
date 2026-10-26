@@ -25,6 +25,8 @@ spatiale, pas la version actuelle du runtime.
   usuelles.
 - [Installation et exploitation](RUNTIME_SETUP.md) : modes standalone et
   complet, endpoints, variables et vérifications.
+- [Préparation à la production](PRODUCTION_READINESS.md) : état vérifié,
+  portes de validation, shadow, monitoring et checklist VM.
 - [Qualité des sorties](OUTPUT_QUALITY.md) : porte qualité, lignes, dates,
   rôles, adresses, TVA et preuves.
 - [Apprentissage statistique](STATISTICAL_LEARNING.md) : séparation entre

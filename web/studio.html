@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>JIN Studio – Annotation et entraînement</title>
-  <link rel="stylesheet" href="studio.css?v=7" />
+  <link rel="stylesheet" href="studio.css?v=8" />
 </head>
 <body>
   <header class="topbar">
@@ -140,7 +140,12 @@
             <div id="annotationMessage" class="inline-notice hidden"></div>
             <div id="fieldList" class="field-list"></div>
             <div class="add-field-row">
+              <button id="addLineItemButton" class="button add-line-item-button" type="button">＋ Ajouter une ligne de commande</button>
               <button id="addFieldButton" class="button add-field-button" type="button">＋ Ajouter un champ</button>
+              <p class="line-item-add-help">
+                Chaque ligne reçoit un index JSON continu : la ligne 1 correspond à
+                <code>line_items[0]</code>, la ligne 2 à <code>line_items[1]</code>, etc.
+              </p>
             </div>
             <details class="json-preview">
               <summary>Aperçu JSON de l’annotation (mis à jour en direct)</summary>
@@ -281,6 +286,7 @@
     <article class="field-card">
       <div class="field-heading">
         <div>
+          <span class="line-item-badge hidden"></span>
           <select class="field-label" aria-label="Type de champ"></select>
           <input class="field-path" aria-label="Chemin canonique" />
         </div>
@@ -323,6 +329,7 @@
   </template>
 
   <script src="vendor/pdfjs-3.11.174/pdf.min.js"></script>
-  <script src="studio.js?v=10"></script>
+  <script src="studio_line_items.js?v=1"></script>
+  <script src="studio.js?v=11"></script>
 </body>
 </html>

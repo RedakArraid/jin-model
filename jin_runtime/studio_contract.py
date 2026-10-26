@@ -46,6 +46,12 @@ _DEFAULT_FIELD_PATHS = {
     "OFFER_NUMBER": "order.quote_number.value",
     "DEROGATION_NUMBER": "order.derogation_number.value",
 }
+_LINE_ITEM_LABELS = frozenset(
+    label for label in _DEFAULT_FIELD_PATHS if label.startswith("LINE_ITEM_")
+)
+_LINE_ITEM_PATH = re.compile(
+    r"(?:^|\.)(?:lines|line_items)\[(?P<index>\d+)\](?:\.|$)"
+)
 
 
 def _canonical_field_path(label: str) -> str:
@@ -314,6 +320,35 @@ def _normalize_field(item: Any, index: int) -> dict[str, Any]:
     return normalized
 
 
+def _validate_line_item_structure(fields: list[dict[str, Any]]) -> None:
+    """Keep repeated line annotations explicitly indexed and gap-free."""
+
+    indexes: set[int] = set()
+    for position, field in enumerate(fields):
+        label = field["label"]
+        path = field["path"]
+        match = _LINE_ITEM_PATH.search(path)
+        if label in _LINE_ITEM_LABELS and match is None:
+            raise StudioContractError(
+                f"field_annotations[{position}].path must contain "
+                "line_items[index] for a line-item label"
+            )
+        if match is not None and label not in _LINE_ITEM_LABELS:
+            raise StudioContractError(
+                f"field_annotations[{position}].label must be a line-item label "
+                "when its path belongs to line_items[index]"
+            )
+        if match is not None:
+            indexes.add(int(match.group("index")))
+
+    if indexes and indexes != set(range(max(indexes) + 1)):
+        missing = sorted(set(range(max(indexes) + 1)) - indexes)
+        raise StudioContractError(
+            "line-item annotation indexes must be contiguous from zero; "
+            f"missing indexes: {missing}"
+        )
+
+
 def annotation_digest(payload: Mapping[str, Any]) -> str:
     canonical = copy.deepcopy(dict(payload))
     canonical.pop("annotation_digest", None)
@@ -348,6 +383,7 @@ def normalize_studio_annotation(
     paths = [item["path"] for item in fields]
     if len(paths) != len(set(paths)):
         raise StudioContractError("field annotation paths must be unique")
+    _validate_line_item_structure(fields)
     if status == "HUMAN_VALIDATED":
         if not reviewer:
             raise StudioContractError("reviewed_by is required for human validation")

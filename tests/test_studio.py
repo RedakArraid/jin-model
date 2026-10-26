@@ -113,6 +113,82 @@ def test_confirmed_annotation_cannot_turn_an_empty_prediction_into_ground_truth(
         )
 
 
+def test_line_item_annotations_require_visible_contiguous_indexes():
+    payload = {
+        "status": "DRAFT",
+        "field_annotations": [
+            {
+                "path": "order.line_items[0].references.article_number",
+                "label": "LINE_ITEM_REFERENCE",
+                "status": "UNREVIEWED",
+                "extracted_value": "7736507169",
+                "corrected_value": None,
+            },
+            {
+                "path": "order.line_items[1].quantity",
+                "label": "LINE_ITEM_QUANTITY",
+                "status": "UNREVIEWED",
+                "extracted_value": 2,
+                "corrected_value": None,
+            },
+        ],
+    }
+
+    normalized = normalize_studio_annotation(
+        payload,
+        document_id="jdoc-12345678",
+        document_sha256="a" * 64,
+        revision=1,
+    )
+
+    assert [field["path"] for field in normalized["field_annotations"]] == [
+        "order.line_items[0].references.article_number",
+        "order.line_items[1].quantity",
+    ]
+
+
+def test_line_item_annotations_reject_missing_or_unindexed_lines():
+    missing_first_line = {
+        "status": "DRAFT",
+        "field_annotations": [
+            {
+                "path": "order.line_items[1].quantity",
+                "label": "LINE_ITEM_QUANTITY",
+                "status": "UNREVIEWED",
+                "extracted_value": 2,
+                "corrected_value": None,
+            }
+        ],
+    }
+    with pytest.raises(StudioContractError, match="contiguous from zero"):
+        normalize_studio_annotation(
+            missing_first_line,
+            document_id="jdoc-12345678",
+            document_sha256="a" * 64,
+            revision=1,
+        )
+
+    unindexed = {
+        "status": "DRAFT",
+        "field_annotations": [
+            {
+                "path": "manual.quantity",
+                "label": "LINE_ITEM_QUANTITY",
+                "status": "UNREVIEWED",
+                "extracted_value": 2,
+                "corrected_value": None,
+            }
+        ],
+    }
+    with pytest.raises(StudioContractError, match=r"line_items\[index\]"):
+        normalize_studio_annotation(
+            unindexed,
+            document_id="jdoc-12345678",
+            document_sha256="a" * 64,
+            revision=1,
+        )
+
+
 def test_store_keeps_immutable_revisions_and_exports_reviewed_dataset(tmp_path):
     store = StudioStore(tmp_path / "studio")
     document = store.create_document(

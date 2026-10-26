@@ -317,6 +317,32 @@ conservant, lorsque c'est pertinent, l'indice de ligne, d'adresse, de frais ou
 d'identifiant fiscal. Le bouton **＋ Ajouter un champ** se trouve sous le dernier
 champ afin que l'ajout reste accessible à la fin de la revue.
 
+### Lignes de commande
+
+Les lignes sont des groupes répétables et non une suite de champs indépendants.
+Studio affiche donc explicitement **Ligne de commande 1**, **Ligne de commande
+2**, etc. Le numéro visible est humain (il commence à 1), tandis que le chemin
+JSON reste un tableau indexé à partir de zéro :
+
+- ligne visible 1 : `order.line_items[0]` ;
+- ligne visible 2 : `order.line_items[1]` ;
+- ligne visible 3 : `order.line_items[2]`.
+
+Le bouton **Ajouter une ligne de commande** crée ensemble les six champs de
+base : référence, description, quantité, unité, prix unitaire et montant. Le
+bouton **+ Champ de ligne** ajoute ensuite le prochain champ manquant, notamment
+le numéro imprimé de ligne ou sa date de livraison. **Retirer la ligne** supprime
+le groupe complet et réindexe automatiquement les groupes suivants sans toucher
+aux valeurs ni aux rectangles.
+
+La préannotation ne conserve qu'une occurrence sémantique par ligne : par
+exemple `article_number` et `material_number` identiques ne créent plus deux
+champs « Référence article », et `unit_price` / `net_unit_price` identiques ne
+dupliquent plus le prix. L'enregistrement REST ou MCP refuse un label de ligne
+sans `line_items[index]` ainsi qu'une suite comportant un trou d'index. Cette
+validation empêche une deuxième ligne de retomber silencieusement dans
+`line_items[0]`.
+
 Le type de document constitue un cas particulier : sa valeur est normalisée
 (`purchase_order`, `invoice`, etc.) et n'existe pas nécessairement telle quelle
 sur la page. Il faut donc encadrer le titre qui apporte la preuve textuelle la
@@ -385,6 +411,9 @@ La promotion automatique reste bloquée tant qu'un incrément ne fournit pas :
 1. les métriques exact-match/F1 par champ et par famille documentaire ;
 2. un registre d'artefacts candidat/shadow/principal ;
 3. la comparaison au modèle actif et le rollback.
+
+L'état réel du corpus Studio et les portes à franchir avant une promotion sont
+maintenus dans [Préparation à la production](PRODUCTION_READINESS.md).
 
 ## API principale
 

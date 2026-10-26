@@ -21,6 +21,8 @@ const DOCUMENT_TYPE_OPTIONS = [
 const DOCUMENT_TYPE_VALUES = new Set(
   DOCUMENT_TYPE_OPTIONS.filter(([value]) => value !== '__other__').map(([value]) => value),
 );
+const lineItemTools = globalThis.JinStudioLineItems;
+if (!lineItemTools) throw new Error('Le module de gestion des lignes de commande est absent.');
 const MIN_ZOOM = .5;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = .25;
@@ -238,6 +240,12 @@ function extractFields(extraction) {
     });
   }
 
+  function addLineItemFields(lines) {
+    for (const field of lineItemTools.preannotate(lines, normalizedEvidence)) {
+      add(field.path, field.label, field.extracted_value, field.evidence);
+    }
+  }
+
   function visit(value, path, inheritedRole = '') {
     if (value == null) return;
     if (Array.isArray(value)) {
@@ -260,6 +268,10 @@ function extractFields(extraction) {
     }
     for (const [key, child] of Object.entries(value)) {
       if (ignored.has(key)) continue;
+      if (path === 'order' && key === 'line_items') {
+        if (Array.isArray(child)) addLineItemFields(child);
+        continue;
+      }
       visit(child, path ? `${path}.${key}` : key, contextualRole);
     }
   }
@@ -283,8 +295,20 @@ function catalogExample(label) {
 }
 
 function catalogDefaultPath(label) {
+  if (lineItemTools.isLineItemLabel(label)) return lineItemTools.canonicalPath(label, 0);
   return state.catalog.find(item => item.label === label)?.defaultPath
     || `manual.${String(label || 'field').toLowerCase()}`;
+}
+
+function fieldLineIndex(field) {
+  return lineItemTools.indexFromPath(field?.path);
+}
+
+function fieldDisplayName(field) {
+  const index = fieldLineIndex(field);
+  return index >= 0
+    ? `L${index + 1} · ${catalogName(field.label)}`
+    : catalogName(field.label);
 }
 
 function contextualPath(template, previousPath = '') {
@@ -326,6 +350,125 @@ function availableCanonicalPath(label, previousPath = '', excludedIndex = -1) {
   return base;
 }
 
+function createLineGroupHeader(lineIndex, editable) {
+  const fields = state.fields.filter(field => fieldLineIndex(field) === lineIndex);
+  const reviewed = fields.filter(field => field.status !== 'UNREVIEWED').length;
+  const header = document.createElement('section');
+  header.className = 'line-item-group-header';
+  header.dataset.lineIndex = String(lineIndex);
+
+  const identity = document.createElement('div');
+  const title = document.createElement('strong');
+  title.textContent = `Ligne de commande ${lineIndex + 1}`;
+  const path = document.createElement('code');
+  path.textContent = `order.line_items[${lineIndex}]`;
+  const progress = document.createElement('span');
+  progress.className = 'line-item-progress';
+  progress.textContent = `${reviewed}/${fields.length} champs vérifiés`;
+  identity.append(title, path, progress);
+
+  const actions = document.createElement('div');
+  actions.className = 'line-item-group-actions';
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'button secondary compact';
+  add.textContent = '+ Champ de ligne';
+  add.disabled = !editable;
+  add.addEventListener('click', event => {
+    event.stopPropagation();
+    addLineItemField(lineIndex);
+  });
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'button danger compact';
+  remove.textContent = 'Retirer la ligne';
+  remove.disabled = !editable;
+  remove.addEventListener('click', event => {
+    event.stopPropagation();
+    removeLineItem(lineIndex);
+  });
+  actions.append(add, remove);
+  header.append(identity, actions);
+  return header;
+}
+
+function addLineItemField(lineIndex) {
+  const existing = new Set(
+    state.fields
+      .filter(field => fieldLineIndex(field) === lineIndex)
+      .map(field => field.label),
+  );
+  const label = lineItemTools.FIELD_ORDER.find(candidate => !existing.has(candidate));
+  if (!label) {
+    return showMessage(
+      $('annotationMessage'),
+      `Tous les champs de la ligne ${lineIndex + 1} sont déjà présents.`,
+      'error',
+    );
+  }
+  const lastLineField = state.fields.reduce(
+    (last, field, index) => fieldLineIndex(field) === lineIndex ? index : last,
+    -1,
+  );
+  const insertionIndex = lastLineField + 1;
+  state.fields.splice(insertionIndex, 0, lineItemTools.createField(label, lineIndex));
+  state.selectedField = insertionIndex;
+  markDirty();
+  renderFields();
+  fieldList.querySelector(`[data-index="${insertionIndex}"]`)?.scrollIntoView({
+    behavior: 'smooth', block: 'center',
+  });
+}
+
+function addLineItem() {
+  const lineIndex = lineItemTools.nextIndex(state.fields);
+  const fields = lineItemTools.createLine(lineIndex);
+  const lastLineField = state.fields.reduce(
+    (last, field, index) => fieldLineIndex(field) >= 0 ? index : last,
+    -1,
+  );
+  const firstIndex = lastLineField >= 0 ? lastLineField + 1 : state.fields.length;
+  state.fields.splice(firstIndex, 0, ...fields);
+  state.selectedField = firstIndex;
+  markDirty();
+  renderFields();
+  fieldList.querySelector(`[data-index="${firstIndex}"]`)?.scrollIntoView({
+    behavior: 'smooth', block: 'center',
+  });
+  showMessage(
+    $('annotationMessage'),
+    `Ligne de commande ${lineIndex + 1} ajoutée avec l’index JSON line_items[${lineIndex}].`,
+    'success',
+  );
+}
+
+function compactLineItemIndexes() {
+  state.fields = lineItemTools.compact(state.fields);
+}
+
+function removeLineItem(lineIndex) {
+  const lineFields = state.fields.filter(field => fieldLineIndex(field) === lineIndex);
+  if (!lineFields.length) return;
+  if (state.fields.length === lineFields.length) {
+    return showMessage(
+      $('annotationMessage'),
+      'Une annotation doit conserver au moins un champ.',
+      'error',
+    );
+  }
+  const meaningful = lineFields.some(field => (
+    field.status !== 'UNREVIEWED' || field.corrected_value || field.comment
+  ));
+  if (meaningful && !window.confirm(
+    `Retirer entièrement la ligne de commande ${lineIndex + 1} et ses ${lineFields.length} champs ?`,
+  )) return;
+  state.fields = state.fields.filter(field => fieldLineIndex(field) !== lineIndex);
+  compactLineItemIndexes();
+  state.selectedField = Math.min(state.selectedField, state.fields.length - 1);
+  markDirty();
+  renderFields();
+}
+
 async function enterStudio(user) {
   state.user = user;
   state.csrfToken = user.csrfToken || '';
@@ -356,6 +499,7 @@ function applyPermissions() {
   const canAnnotate = hasPermission('annotations.draft');
   $('documentInput').parentElement.classList.toggle('hidden', !hasPermission('documents.write'));
   $('addFieldButton').classList.toggle('hidden', !canAnnotate);
+  $('addLineItemButton').classList.toggle('hidden', !canAnnotate);
   $('confirmAllButton').classList.toggle('hidden', !canAnnotate);
   $('saveDraftButton').classList.toggle('hidden', !canAnnotate);
   $('validateButton').classList.toggle('hidden', !hasPermission('annotations.validate'));
@@ -508,6 +652,7 @@ async function openDocument(documentId) {
   state.activeDocument = document;
   state.fields = document.latestAnnotation?.field_annotations?.map(item => structuredClone(item))
     || extractFields(document.extraction || {});
+  state.fields = lineItemTools.compact(state.fields);
   state.selectedField = state.fields.length ? 0 : -1;
   state.zoom = 1;
   state.pageTextItems = [];
@@ -618,13 +763,26 @@ function populateLabelSelect(select, current) {
 function renderFields() {
   const editable = editableAnnotation();
   fieldList.replaceChildren();
+  const renderedLineHeaders = new Set();
   state.fields.forEach((field, index) => {
+    const lineIndex = fieldLineIndex(field);
+    if (lineIndex >= 0 && !renderedLineHeaders.has(lineIndex)) {
+      fieldList.appendChild(createLineGroupHeader(lineIndex, editable));
+      renderedLineHeaders.add(lineIndex);
+    }
     const node = $('fieldTemplate').content.firstElementChild.cloneNode(true);
     node.dataset.index = String(index);
+    node.dataset.lineIndex = lineIndex >= 0 ? String(lineIndex) : '';
+    node.classList.toggle('line-item-field', lineIndex >= 0);
     node.classList.toggle('selected', index === state.selectedField);
     node.classList.toggle('reviewed', ['CONFIRMED', 'CORRECTED'].includes(field.status));
     node.classList.toggle('problem', ['ABSENT', 'AMBIGUOUS'].includes(field.status));
     const label = node.querySelector('.field-label');
+    const lineBadge = node.querySelector('.line-item-badge');
+    lineBadge.classList.toggle('hidden', lineIndex < 0);
+    lineBadge.textContent = lineIndex >= 0
+      ? `Ligne ${lineIndex + 1} · index JSON ${lineIndex}`
+      : '';
     populateLabelSelect(label, field.label);
     const helper = node.querySelector('.field-helper');
     const help = node.querySelector('.field-help');
@@ -673,6 +831,7 @@ function renderFields() {
     label.addEventListener('change', event => {
       field.label = event.target.value;
       field.path = availableCanonicalPath(field.label, field.path, index);
+      compactLineItemIndexes();
       markDirty();
       renderFields();
     });
@@ -742,6 +901,7 @@ function removeField(index) {
   const meaningful = field.status !== 'UNREVIEWED' || field.corrected_value || field.comment;
   if (meaningful && !window.confirm(`Retirer le champ « ${catalogName(field.label)} » ?`)) return;
   state.fields.splice(index, 1);
+  compactLineItemIndexes();
   state.selectedField = Math.min(index, state.fields.length - 1);
   markDirty();
   renderFields();
@@ -879,7 +1039,7 @@ function drawAnnotations(preview = null) {
     }
     context.fillStyle = index === state.selectedField ? '#2356d8' : '#0b8c65';
     context.font = '11px sans-serif';
-    context.fillText(catalogName(field.label), x + 3, Math.max(11, y - 3));
+    context.fillText(fieldDisplayName(field), x + 3, Math.max(11, y - 3));
   });
   if (preview) {
     context.strokeStyle = '#e35d10';
@@ -1031,6 +1191,10 @@ function annotationPayload(status) {
 async function saveAnnotation(status) {
   if (!state.activeDocument) return;
   const message = $('annotationMessage');
+  const lineErrors = lineItemTools.validate(state.fields);
+  if (lineErrors.length) {
+    return showMessage(message, lineErrors.join(' '), 'error');
+  }
   showMessage(message, status === 'DRAFT' ? 'Enregistrement…' : 'Validation…');
   try {
     await api(`/documents/${encodeURIComponent(state.activeDocument.documentId)}/annotation`, {
@@ -1464,6 +1628,7 @@ $('addFieldButton').addEventListener('click', () => {
   renderFields();
   fieldList.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 });
+$('addLineItemButton').addEventListener('click', addLineItem);
 $('saveDraftButton').addEventListener('click', () => saveAnnotation('DRAFT'));
 $('validateButton').addEventListener('click', () => saveAnnotation('HUMAN_VALIDATED'));
 $('createDatasetButton').addEventListener('click', createDataset);

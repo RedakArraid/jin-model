@@ -124,6 +124,10 @@ conteneur Azure Blob privé avec l'identité managée de la VM. La procédure de
 test local et de reprise est décrite dans
 [Sauvegarde et restauration](docs/BACKUP_AND_RESTORE.md).
 
+L'état de préparation, les critères de validation du premier dataset, le
+passage en shadow, la promotion et la checklist VM sont regroupés dans
+[Préparation à la production](docs/PRODUCTION_READINESS.md).
+
 Les intégrations distantes disposent aussi d'une API REST authentifiée sous
 `/api/studio` et d'un serveur MCP Streamable HTTP sous `/mcp`. Compose les garde
 sur `127.0.0.1` par défaut ; l'ouverture réseau doit passer par un VPN ou un

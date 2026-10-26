@@ -9,6 +9,8 @@
   through VM managed identity and a daily systemd timer template.
 - Made the web reverse proxy re-resolve recreated API and MCP containers and
   retried transient SQLite bind-mount failures.
+- Added a production-readiness roadmap covering ground truth, candidate
+  evaluation, shadow operation, model promotion, VM backups and monitoring.
 
 ## 5.19.0-studio-identity
 
