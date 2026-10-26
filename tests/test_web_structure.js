@@ -50,6 +50,8 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
     'mcpConfigLocation', 'mcpConnectionConfig', 'apiConnectionConfig', 'copyMcpConfigButton',
     'copyApiConfigButton',
     'addLineItemButton',
+    'annotationMaskSelect', 'saveAnnotationMaskButton', 'applyAnnotationMaskButton',
+    'annotationMaskMessage',
   ]) {
     assert.match(studioHtml, new RegExp(`id="${id}"`));
   }
@@ -71,8 +73,8 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
   assert.match(studioJs, /streamable-http/);
   assert.match(studioJs, /\/api\/studio/);
   assert.match(studioHtml, /studio_line_items\.js\?v=1/);
-  assert.match(studioHtml, /studio\.js\?v=11/);
-  assert.match(studioHtml, /studio\.css\?v=8/);
+  assert.match(studioHtml, /studio\.js\?v=12/);
+  assert.match(studioHtml, /studio\.css\?v=9/);
   assert.match(studioJs, /updateFieldFromRegion/);
   assert.match(studioJs, /value \/ \(index % 2 === 0 \? annotationCanvas\.width : annotationCanvas\.height\) \* 1000/);
   assert.match(studioCss, /\.canvas-stage \{ position: relative/);
@@ -87,6 +89,10 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
   assert.match(studioJs, /lineItemTools\.nextIndex\(state\.fields\)/);
   assert.match(studioJs, /Ligne de commande \$\{lineIndex \+ 1\}/);
   assert.match(studioHtml, /line_items\[0\].*line_items\[1\]/s);
+  assert.match(studioJs, /saveCurrentAsAnnotationMask/);
+  assert.match(studioJs, /applySelectedAnnotationMask/);
+  assert.match(studioJs, /field\.status = 'UNREVIEWED'/);
+  assert.match(studioHtml, /ne copie aucune ancienne valeur/);
 });
 
 test('the web proxy re-resolves recreated Docker services', () => {

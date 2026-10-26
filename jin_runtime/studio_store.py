@@ -9,11 +9,17 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 from jin_runtime.studio_contract import normalize_studio_annotation, utc_now
+from jin_runtime.studio_masks import (
+    apply_annotation_mask as apply_mask_to_document,
+    build_annotation_mask,
+    document_type_from_payload,
+)
 from jin_runtime.studio_security import (
     DUMMY_PASSWORD_HASH,
     StudioPrincipal,
@@ -86,13 +92,36 @@ class StudioStore:
         self.documents_dir.mkdir(parents=True, exist_ok=True)
         self.datasets_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.root / "studio.sqlite3"
+        self.schema_lock_path = self.root / ".schema-initialize.lock"
         self.shared_storage = str(
             os.getenv("JIN_STUDIO_SHARED_STORAGE") or ""
         ).strip().lower() in {"1", "true", "yes", "on"}
         self._lock = threading.RLock()
         self._apply_shared_permissions()
-        self._initialize()
+        with self._schema_initialization_lock():
+            self._initialize()
         self._apply_shared_permissions()
+
+    @contextmanager
+    def _schema_initialization_lock(self):
+        """Serialize schema migrations across API, MCP and trainer processes."""
+
+        self.schema_lock_path.touch(exist_ok=True)
+        handle = self.schema_lock_path.open("a+b")
+        locked = False
+        try:
+            if os.name == "posix":
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                locked = True
+            yield
+        finally:
+            if locked:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
 
     def _apply_shared_permissions(self) -> None:
         """Allow API and trainer user namespaces to share only Studio storage."""
@@ -108,6 +137,7 @@ class StudioStore:
             self.db_path,
             Path(f"{self.db_path}-wal"),
             Path(f"{self.db_path}-shm"),
+            self.schema_lock_path,
         ):
             if not path.exists():
                 continue
@@ -175,6 +205,22 @@ class StudioStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_studio_annotations_document
                     ON studio_annotations(document_id, revision DESC);
+
+                CREATE TABLE IF NOT EXISTS studio_annotation_masks (
+                    mask_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL COLLATE NOCASE,
+                    version INTEGER NOT NULL,
+                    document_type TEXT NOT NULL,
+                    source_document_id TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(name, version)
+                );
+                CREATE INDEX IF NOT EXISTS idx_studio_annotation_masks_name
+                    ON studio_annotation_masks(name, version DESC);
+                CREATE INDEX IF NOT EXISTS idx_studio_annotation_masks_type
+                    ON studio_annotation_masks(document_type, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS studio_datasets (
                     dataset_id TEXT PRIMARY KEY,
@@ -616,12 +662,16 @@ class StudioStore:
             datasets = connection.execute(
                 "SELECT COUNT(*) count FROM studio_datasets"
             ).fetchone()["count"]
+            masks = connection.execute(
+                "SELECT COUNT(*) count FROM studio_annotation_masks"
+            ).fetchone()["count"]
             runs = connection.execute(
                 "SELECT COUNT(*) count FROM studio_training_runs"
             ).fetchone()["count"]
         return {
             "documents": {row["status"]: row["count"] for row in documents},
             "annotations": annotation_count,
+            "annotationMasks": masks,
             "datasets": datasets,
             "trainingRuns": runs,
             "storage": str(self.root),
@@ -772,6 +822,110 @@ class StudioStore:
                 (document_id,),
             ).fetchall()
         return [_loads(row["payload_json"], {}) for row in rows]
+
+    def create_annotation_mask(
+        self,
+        *,
+        name: str,
+        source_document_id: str,
+        document_type: str,
+        field_annotations: list[dict[str, Any]],
+        created_by: str,
+    ) -> dict[str, Any]:
+        """Create an immutable, value-free mask from positioned annotation fields."""
+
+        with self._lock, self._connect() as connection:
+            document = self._row(connection, source_document_id)
+            pdf_path = Path(document["pdf_path"]).resolve()
+            if self.documents_dir not in pdf_path.parents or not pdf_path.exists():
+                raise StudioNotFoundError(source_document_id)
+            clean_name = str(name or "").strip()
+            latest = connection.execute(
+                "SELECT MAX(version) version FROM studio_annotation_masks "
+                "WHERE name=? COLLATE NOCASE",
+                (clean_name,),
+            ).fetchone()
+            version = int(latest["version"] or 0) + 1
+            mask_id = f"jmask-{uuid.uuid4().hex}"
+            source_payload = self._document(
+                document,
+                self._latest_annotation(connection, source_document_id),
+            )
+            mask = build_annotation_mask(
+                mask_id=mask_id,
+                name=clean_name,
+                version=version,
+                source_document_id=source_document_id,
+                source_filename=document["filename"],
+                created_by=created_by,
+                document_type=document_type or document_type_from_payload(source_payload),
+                field_annotations=field_annotations,
+                pdf_path=pdf_path,
+            )
+            connection.execute(
+                """INSERT INTO studio_annotation_masks
+                   (mask_id, name, version, document_type, source_document_id,
+                    created_by, payload_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    mask_id,
+                    mask["name"],
+                    version,
+                    mask["documentType"],
+                    source_document_id,
+                    created_by,
+                    _json(mask),
+                    mask["createdAt"],
+                ),
+            )
+        return mask
+
+    def list_annotation_masks(
+        self,
+        *,
+        document_type: str = "",
+        latest_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT current.payload_json FROM studio_annotation_masks current"
+        if latest_only:
+            query += (
+                " WHERE current.version=(SELECT MAX(candidate.version) "
+                "FROM studio_annotation_masks candidate "
+                "WHERE candidate.name=current.name COLLATE NOCASE)"
+            )
+        query += " ORDER BY current.name COLLATE NOCASE, current.version DESC"
+        with self._connect() as connection:
+            rows = connection.execute(query).fetchall()
+        masks = [_loads(row["payload_json"], {}) for row in rows]
+        requested_type = str(document_type or "").strip()
+        if requested_type:
+            masks = [
+                mask
+                for mask in masks
+                if not mask.get("documentType") or mask.get("documentType") == requested_type
+            ]
+        return masks
+
+    def get_annotation_mask(self, mask_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM studio_annotation_masks WHERE mask_id=?",
+                (str(mask_id or "").strip(),),
+            ).fetchone()
+        if row is None:
+            raise StudioNotFoundError(mask_id)
+        return _loads(row["payload_json"], {})
+
+    def apply_annotation_mask(self, *, document_id: str, mask_id: str) -> dict[str, Any]:
+        document = self.get_document(document_id)
+        mask = self.get_annotation_mask(mask_id)
+        result = apply_mask_to_document(
+            mask,
+            pdf_path=self.pdf_path(document_id),
+            target_document_type=document_type_from_payload(document),
+        )
+        result["documentId"] = document_id
+        return result
 
     def create_dataset(self, *, name: str, document_ids: list[str]) -> dict[str, Any]:
         clean_name = str(name or "").strip()

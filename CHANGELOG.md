@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added named, immutable annotation masks that reuse canonical fields and
+  normalized PDF regions while re-reading every value on the target document.
+- Added layout/type compatibility warnings plus REST, MCP and audit support for
+  mask creation and application; applied fields always remain unreviewed.
 - Added consistent, checksummed backups for JIN Studio documents, annotations,
   accounts, audit history, feedback and learned models, with safe empty-target
   restore drills and optional BAN inclusion.

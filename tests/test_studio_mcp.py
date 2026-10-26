@@ -72,6 +72,18 @@ def test_mcp_lists_documents_and_saves_audited_draft(tmp_path, monkeypatch):
         protocol = initialized.json()["result"]["protocolVersion"]
         rpc_headers = _headers() | {"MCP-Protocol-Version": protocol}
 
+        tools = client.post(
+            "/mcp",
+            headers=rpc_headers,
+            json={"jsonrpc": "2.0", "id": 11, "method": "tools/list", "params": {}},
+        )
+        tool_names = {item["name"] for item in tools.json()["result"]["tools"]}
+        assert {
+            "list_annotation_masks",
+            "create_annotation_mask",
+            "apply_annotation_mask",
+        } <= tool_names
+
         listed = client.post(
             "/mcp",
             headers=rpc_headers,
@@ -161,4 +173,3 @@ def test_remote_mcp_validation_is_disabled_by_default(tmp_path, monkeypatch):
     assert result.status_code == 200
     assert result.json()["result"]["isError"] is True
     assert store.get_document(document["documentId"])["status"] == "DRAFT"
-

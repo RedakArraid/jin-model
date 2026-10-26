@@ -17,6 +17,8 @@ de GenieCommande. L'interface est disponible sur `/studio.html` et son API sous
   rectangles sans modifier leurs coordonnées normalisées ;
 - affichage ou masquage des autres rectangles, sans jamais masquer le champ actif ;
 - ajout et retrait de champs, dont SIREN/SIRET génériques ou rattachés à un rôle ;
+- masques d'annotation nommés et versionnés pour réutiliser les champs et leurs
+  positions sur des documents de même mise en page ;
 - choix assisté du type de document, avec une valeur libre via « Autre » ;
 - brouillons et révisions immuables ;
 - comptes nominatifs, sessions sécurisées et droits par rôle ;
@@ -316,6 +318,42 @@ type d'un champ, son chemin canonique est recalculé automatiquement tout en
 conservant, lorsque c'est pertinent, l'indice de ligne, d'adresse, de frais ou
 d'identifiant fiscal. Le bouton **＋ Ajouter un champ** se trouve sous le dernier
 champ afin que l'ajout reste accessible à la fin de la revue.
+
+### Masques d'annotation
+
+Un masque accélère la revue de documents récurrents sans transformer une
+ancienne commande en vérité terrain pour la suivante. Après avoir positionné
+les cadres d'un document, **Enregistrer comme masque** demande un nom et crée
+une version immuable. Le masque conserve uniquement :
+
+- le label du champ et son chemin JSON canonique ;
+- le numéro de page et la boîte normalisée sur 1000 ;
+- le type de document et une signature géométrique sans contenu ;
+- le document source, l'auteur, la version et la date de création.
+
+Les valeurs extraites, corrigées et les commentaires ne sont jamais copiés
+dans le masque. Une nouvelle sauvegarde sous le même nom crée `v2`, `v3`, etc.
+La liste courante présente seulement la dernière version de chaque nom ; les
+versions précédentes restent accessibles par API ou MCP pour l'audit.
+
+Sur un autre PDF, **Appliquer le masque** remplace la préannotation affichée,
+relit le texte natif ou OCR à l'intérieur de chaque cadre, puis recrée tous les
+champs avec le statut `UNREVIEWED`. Rien n'est enregistré tant que
+l'annotateur n'utilise pas **Enregistrer le brouillon** ou **Valider pour
+l'apprentissage**. Studio avertit avant application et après relecture lorsque
+le type, le nombre de pages, l'orientation ou le ratio des pages diffèrent.
+
+Les lignes de commande présentes dans un masque conservent leurs indices JSON
+continus. Le masque reproduit les lignes positionnées dans le document source ;
+l'annotateur doit ensuite ajouter ou retirer les lignes lorsque leur nombre
+varie sur le document cible.
+
+Les opérations sont disponibles à distance avec
+`GET/POST /api/studio/annotation-masks` et
+`POST /api/studio/documents/{document_id}/annotation-masks/{mask_id}/apply`.
+Les outils MCP correspondants sont `list_annotation_masks`,
+`create_annotation_mask` et `apply_annotation_mask`. La création et
+l'application sont inscrites dans le journal d'audit.
 
 ### Lignes de commande
 

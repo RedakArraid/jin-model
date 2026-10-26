@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>JIN Studio – Annotation et entraînement</title>
-  <link rel="stylesheet" href="studio.css?v=8" />
+  <link rel="stylesheet" href="studio.css?v=9" />
 </head>
 <body>
   <header class="topbar">
@@ -137,6 +137,29 @@
                 <input id="annotationNote" type="text" maxlength="4000" placeholder="Facultatif" />
               </label>
             </div>
+            <section class="annotation-mask-panel" aria-labelledby="annotationMaskTitle">
+              <div class="annotation-mask-heading">
+                <div>
+                  <strong id="annotationMaskTitle">Masque d’annotation</strong>
+                  <span>Réutilisez les champs et leurs positions sur une commande de même mise en page.</span>
+                </div>
+                <button id="saveAnnotationMaskButton" class="button secondary compact" type="button">
+                  Enregistrer comme masque
+                </button>
+              </div>
+              <div class="annotation-mask-controls">
+                <select id="annotationMaskSelect" aria-label="Masque d’annotation disponible">
+                  <option value="">Aucun masque disponible</option>
+                </select>
+                <button id="applyAnnotationMaskButton" class="button primary compact" type="button" disabled>
+                  Appliquer le masque
+                </button>
+              </div>
+              <p class="annotation-mask-help">
+                Le masque ne copie aucune ancienne valeur : JIN relit chaque cadre dans le nouveau PDF et remet tous les champs à « À vérifier ».
+              </p>
+              <div id="annotationMaskMessage" class="inline-notice hidden"></div>
+            </section>
             <div id="annotationMessage" class="inline-notice hidden"></div>
             <div id="fieldList" class="field-list"></div>
             <div class="add-field-row">
@@ -330,6 +353,6 @@
 
   <script src="vendor/pdfjs-3.11.174/pdf.min.js"></script>
   <script src="studio_line_items.js?v=1"></script>
-  <script src="studio.js?v=11"></script>
+  <script src="studio.js?v=12"></script>
 </body>
 </html>

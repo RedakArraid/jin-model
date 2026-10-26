@@ -21,6 +21,9 @@ un journal d'audit. Elle conserve les garde-fous métier de 5.18 :
 
 - l'annotation humaine des PDF, les révisions immuables et les datasets
   versionnés sont gérés hors de GenieCommande ;
+- les masques d'annotation nommés réutilisent les cadres sur les commandes de
+  même mise en page, relisent les nouvelles valeurs et imposent une nouvelle
+  validation humaine ;
 - les entraînements LayoutLMv3 sont mis en file et exécutés dans un worker
   Docker isolé du runtime d'extraction ;
 

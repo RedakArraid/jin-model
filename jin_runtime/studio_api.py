@@ -10,6 +10,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 from jin_runtime.studio_contract import FIELD_CATALOG, StudioContractError
+from jin_runtime.studio_masks import StudioMaskError
 from jin_runtime.studio_security import (
     ROLE_PERMISSIONS,
     StudioPrincipal,
@@ -307,6 +308,77 @@ def create_studio_router(store: StudioStore | None = None) -> APIRouter:
             raise HTTPException(status_code=404, detail="Studio document not found") from exc
         except StudioRegionError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.get("/annotation-masks")
+    def list_annotation_masks(
+        request: Request,
+        document_type: str = "",
+        all_versions: bool = False,
+    ) -> dict[str, Any]:
+        """List reusable annotation layouts without source document values."""
+        _authorize(request, repository, "studio.read")
+        items = repository.list_annotation_masks(
+            document_type=document_type,
+            latest_only=not all_versions,
+        )
+        return {"items": items, "count": len(items)}
+
+    @router.post("/annotation-masks", status_code=201)
+    async def create_annotation_mask(request: Request) -> dict[str, Any]:
+        principal = _authorize(request, repository, "annotations.draft", csrf=True)
+        payload = await _request_json_object(request, field="Masque d'annotation")
+        try:
+            mask = repository.create_annotation_mask(
+                name=str(payload.get("name") or ""),
+                source_document_id=str(payload.get("sourceDocumentId") or ""),
+                document_type=str(payload.get("documentType") or ""),
+                field_annotations=list(payload.get("fieldAnnotations") or []),
+                created_by=principal.username,
+            )
+        except StudioNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Document source introuvable") from exc
+        except (StudioMaskError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        _audit(
+            repository,
+            request,
+            principal,
+            "annotation_mask.create",
+            "annotation_mask",
+            mask["maskId"],
+            {
+                "name": mask["name"],
+                "version": mask["version"],
+                "fieldCount": mask["fieldCount"],
+                "sourceDocumentId": mask["sourceDocumentId"],
+            },
+        )
+        return mask
+
+    @router.post("/documents/{document_id}/annotation-masks/{mask_id}/apply")
+    def apply_annotation_mask(document_id: str, mask_id: str, request: Request) -> dict[str, Any]:
+        """Read mask regions from a target PDF and return an unreviewed proposal."""
+        principal = _authorize(request, repository, "annotations.draft", csrf=True)
+        try:
+            result = repository.apply_annotation_mask(document_id=document_id, mask_id=mask_id)
+        except StudioNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Document ou masque introuvable") from exc
+        except StudioMaskError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        _audit(
+            repository,
+            request,
+            principal,
+            "annotation_mask.apply",
+            "document",
+            document_id,
+            {
+                "maskId": mask_id,
+                "appliedFieldCount": result["appliedFieldCount"],
+                "compatibility": result["compatibility"],
+            },
+        )
+        return result
 
     @router.put("/documents/{document_id}/annotation", status_code=201)
     async def save_annotation(document_id: str, request: Request) -> dict[str, Any]:

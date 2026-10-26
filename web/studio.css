@@ -206,6 +206,14 @@ input:focus, select:focus { outline: 3px solid rgba(35, 86, 216, .13); border-co
 .identity-field { display: grid; gap: 5px; align-content: center; }
 .identity-field span { color: var(--muted); font-size: 12px; font-weight: 650; }
 .identity-field strong { min-height: 38px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; background: #eef2f8; }
+.annotation-mask-panel { display: grid; gap: 10px; margin: 12px 16px 2px; padding: 13px; border: 1px solid #a9c0ef; border-radius: 10px; background: #f5f8ff; }
+.annotation-mask-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.annotation-mask-heading > div { display: grid; gap: 3px; }
+.annotation-mask-heading strong { color: #19396f; font-size: 14px; }
+.annotation-mask-heading span { color: var(--muted); font-size: 11px; font-weight: 500; }
+.annotation-mask-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.annotation-mask-help { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.annotation-mask-panel .inline-notice { margin: 0; }
 label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 650; }
 .field-list { display: grid; gap: 10px; padding: 14px 16px 8px; }
 .add-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 16px 14px; }
@@ -338,6 +346,8 @@ summary { cursor: pointer; font-weight: 650; }
   .annotation-workspace { display: block; }
   .pdf-panel { height: 65vh; }
   .reviewer-row, .field-values, .evidence-grid { grid-template-columns: 1fr; }
+  .annotation-mask-heading { align-items: stretch; flex-direction: column; }
+  .annotation-mask-controls { grid-template-columns: 1fr; }
   .field-heading { align-items: flex-start; }
   .field-heading-actions { align-items: stretch; flex-direction: column; }
   .field-status { width: 150px; }

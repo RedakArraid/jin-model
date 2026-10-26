@@ -42,6 +42,7 @@ const state = {
   passwordMinLength: 8,
   catalog: [],
   documents: [],
+  annotationMasks: [],
   datasets: [],
   trainingRuns: [],
   users: [],
@@ -482,7 +483,7 @@ async function enterStudio(user) {
   applyPermissions();
   const catalog = await api('/field-catalog');
   state.catalog = catalog.fields || [];
-  await Promise.all([loadDocuments(), loadDatasets(), loadTrainingRuns()]);
+  await Promise.all([loadDocuments(), loadAnnotationMasks(), loadDatasets(), loadTrainingRuns()]);
   if (hasPermission('users.manage')) await Promise.all([
     loadUsers(),
     loadAuditEvents(),
@@ -501,6 +502,8 @@ function applyPermissions() {
   $('addFieldButton').classList.toggle('hidden', !canAnnotate);
   $('addLineItemButton').classList.toggle('hidden', !canAnnotate);
   $('confirmAllButton').classList.toggle('hidden', !canAnnotate);
+  $('saveAnnotationMaskButton').classList.toggle('hidden', !canAnnotate);
+  $('applyAnnotationMaskButton').classList.toggle('hidden', !canAnnotate);
   $('saveDraftButton').classList.toggle('hidden', !canAnnotate);
   $('validateButton').classList.toggle('hidden', !hasPermission('annotations.validate'));
   $('createDatasetButton').classList.toggle('hidden', !hasPermission('datasets.write'));
@@ -665,11 +668,13 @@ async function openDocument(documentId) {
   $('activeStatus').textContent = statusLabel(document.status);
   $('activeStatus').className = `badge ${document.status === 'DRAFT' ? 'draft' : ''}`;
   $('activeStatus').title = '';
+  showMessage($('annotationMaskMessage'), '');
   annotationEmpty.classList.add('hidden');
   annotationWorkspace.classList.remove('hidden');
   renderDocumentList();
   renderFields();
   await loadPdf(documentId);
+  renderAnnotationMasks();
 }
 
 function editableAnnotation() {
@@ -695,6 +700,8 @@ function normalizedComparable(value) {
 }
 
 function inferDocumentTypeFromText(value) {
+  const canonical = valueText(value).trim();
+  if (DOCUMENT_TYPE_VALUES.has(canonical)) return canonical;
   const text = normalizedComparable(value)
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   if (/annulation.*commande/.test(text)) return 'order_cancellation';
@@ -727,6 +734,167 @@ function normalizeSelectedValue(field, rawValue) {
     return compact.length >= 10 ? compact : value;
   }
   return value;
+}
+
+function currentDocumentType() {
+  const field = state.fields.find(item => item.label === 'DOCUMENT_TYPE');
+  if (field) {
+    const raw = field.status === 'CORRECTED' ? field.corrected_value : field.extracted_value;
+    const normalized = normalizeSelectedValue(field, raw);
+    if (normalized) return normalized;
+  }
+  return valueText(
+    state.activeDocument?.extraction?.document?.type
+      || state.activeDocument?.extraction?.document_type,
+  ).trim();
+}
+
+function maskCompatibility(mask) {
+  const reasons = [];
+  const type = currentDocumentType();
+  if (mask.documentType && type && mask.documentType !== type) reasons.push('type différent');
+  if (state.pdf?.numPages && Number(mask.pageCount) !== state.pdf.numPages) {
+    reasons.push('nombre de pages différent');
+  }
+  return reasons;
+}
+
+async function loadAnnotationMasks() {
+  const payload = await api('/annotation-masks');
+  state.annotationMasks = payload.items || [];
+  renderAnnotationMasks();
+}
+
+function renderAnnotationMasks() {
+  const select = $('annotationMaskSelect');
+  if (!select) return;
+  const previous = select.value;
+  select.replaceChildren();
+  const empty = document.createElement('option');
+  empty.value = '';
+  empty.textContent = state.annotationMasks.length
+    ? 'Choisir un masque…'
+    : 'Aucun masque disponible';
+  select.appendChild(empty);
+  const sorted = [...state.annotationMasks].sort((left, right) => {
+    const compatible = Number(maskCompatibility(left).length > 0)
+      - Number(maskCompatibility(right).length > 0);
+    return compatible || String(left.name).localeCompare(String(right.name), 'fr');
+  });
+  for (const mask of sorted) {
+    const reasons = maskCompatibility(mask);
+    const option = document.createElement('option');
+    option.value = mask.maskId;
+    option.textContent = [
+      reasons.length ? '⚠' : '✓',
+      `${mask.name} · v${mask.version}`,
+      mask.documentType || 'type libre',
+      `${mask.fieldCount} champ${mask.fieldCount > 1 ? 's' : ''}`,
+      `${mask.pageCount} page${mask.pageCount > 1 ? 's' : ''}`,
+      reasons.length ? `(${reasons.join(', ')})` : '',
+    ].filter(Boolean).join(' · ');
+    select.appendChild(option);
+  }
+  if (state.annotationMasks.some(mask => mask.maskId === previous)) select.value = previous;
+  $('applyAnnotationMaskButton').disabled = !select.value || !hasPermission('annotations.draft');
+}
+
+async function saveCurrentAsAnnotationMask() {
+  if (!state.activeDocument) return;
+  const positioned = state.fields.filter(field => (
+    Number(field.evidence?.page) > 0
+    && Array.isArray(field.evidence?.bbox)
+    && field.evidence.bbox.length === 4
+  ));
+  if (!positioned.length) {
+    return showMessage(
+      $('annotationMaskMessage'),
+      'Tracez au moins un cadre dans le PDF avant de créer un masque.',
+      'error',
+    );
+  }
+  const suggestedName = [
+    currentDocumentType() || 'Commande',
+    state.activeDocument.filename.replace(/\.pdf$/i, ''),
+  ].join(' · ').slice(0, 100);
+  const name = window.prompt('Nom du masque d’annotation', suggestedName);
+  if (!name) return;
+  const omitted = state.fields.length - positioned.length;
+  if (omitted && !window.confirm(
+    `${omitted} champ(s) sans cadre PDF ne seront pas enregistrés dans le masque. Continuer ?`,
+  )) return;
+  showMessage($('annotationMaskMessage'), 'Enregistrement du masque…');
+  try {
+    const mask = await api('/annotation-masks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: name.trim(),
+        sourceDocumentId: state.activeDocument.documentId,
+        documentType: currentDocumentType(),
+        fieldAnnotations: positioned,
+      }),
+    });
+    await loadAnnotationMasks();
+    $('annotationMaskSelect').value = mask.maskId;
+    renderAnnotationMasks();
+    $('annotationMaskSelect').value = mask.maskId;
+    $('applyAnnotationMaskButton').disabled = false;
+    showMessage(
+      $('annotationMaskMessage'),
+      `Masque « ${mask.name} » v${mask.version} enregistré avec ${mask.fieldCount} champ(s).`,
+      'success',
+    );
+  } catch (error) {
+    showMessage($('annotationMaskMessage'), error.message, 'error');
+  }
+}
+
+async function applySelectedAnnotationMask() {
+  const maskId = $('annotationMaskSelect').value;
+  const mask = state.annotationMasks.find(item => item.maskId === maskId);
+  if (!state.activeDocument || !mask) return;
+  const reasons = maskCompatibility(mask);
+  const warning = reasons.length
+    ? `\nAttention : ${reasons.join(', ')}. Les cadres devront être contrôlés.`
+    : '';
+  if (!window.confirm(
+    `Appliquer le masque « ${mask.name} » v${mask.version} ?\n`
+    + `Les ${state.fields.length} champs actuels seront remplacés par ${mask.fieldCount} champs non vérifiés.`
+    + warning,
+  )) return;
+  showMessage($('annotationMaskMessage'), 'Application du masque et relecture des zones…');
+  $('applyAnnotationMaskButton').disabled = true;
+  try {
+    const result = await api(
+      `/documents/${encodeURIComponent(state.activeDocument.documentId)}`
+      + `/annotation-masks/${encodeURIComponent(maskId)}/apply`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+    );
+    if (!result.fields?.length) throw new Error('Aucun champ du masque ne peut être appliqué à ce PDF.');
+    state.fields = lineItemTools.compact(result.fields.map(item => {
+      const field = structuredClone(item);
+      const normalized = normalizeSelectedValue(field, field.extracted_value);
+      if (normalized) field.extracted_value = normalized;
+      field.status = 'UNREVIEWED';
+      field.corrected_value = null;
+      return field;
+    }));
+    state.selectedField = 0;
+    markDirty();
+    renderFields();
+    await selectField(0);
+    const details = result.warnings?.length ? ` ${result.warnings.join(' ')}` : '';
+    showMessage(
+      $('annotationMaskMessage'),
+      `${result.appliedFieldCount} champ(s) relus. Vérifiez chaque valeur avant validation.${details}`,
+      result.warnings?.length ? 'error' : 'success',
+    );
+  } catch (error) {
+    showMessage($('annotationMaskMessage'), error.message, 'error');
+  } finally {
+    $('applyAnnotationMaskButton').disabled = !$('annotationMaskSelect').value;
+  }
 }
 
 function populateDocumentTypeSelect(select, other, currentValue) {
@@ -1614,6 +1782,21 @@ $('copyApiConfigButton').addEventListener('click', () => copyGeneratedConfig('ap
 $('documentInput').addEventListener('change', event => uploadDocument(event.target.files?.[0]));
 $('documentSearch').addEventListener('input', renderDocumentList);
 $('documentStatusFilter').addEventListener('change', renderDocumentList);
+$('annotationMaskSelect').addEventListener('change', event => {
+  const mask = state.annotationMasks.find(item => item.maskId === event.target.value);
+  $('applyAnnotationMaskButton').disabled = !mask || !hasPermission('annotations.draft');
+  if (!mask) return showMessage($('annotationMaskMessage'), '');
+  const reasons = maskCompatibility(mask);
+  showMessage(
+    $('annotationMaskMessage'),
+    reasons.length
+      ? `Compatibilité à contrôler : ${reasons.join(', ')}.`
+      : `Masque compatible : ${mask.fieldCount} champ(s), ${mask.pageCount} page(s).`,
+    reasons.length ? 'error' : 'success',
+  );
+});
+$('saveAnnotationMaskButton').addEventListener('click', saveCurrentAsAnnotationMask);
+$('applyAnnotationMaskButton').addEventListener('click', applySelectedAnnotationMask);
 $('confirmAllButton').addEventListener('click', () => {
   state.fields.forEach(field => { if (field.status === 'UNREVIEWED') field.status = 'CONFIRMED'; });
   markDirty();

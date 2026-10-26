@@ -183,6 +183,63 @@ def create_mcp_server(store: StudioStore | None = None) -> MCPServer:
         return document
 
     @server.tool()
+    def list_annotation_masks(
+        document_type: str = "",
+        include_previous_versions: bool = False,
+    ) -> dict[str, Any]:
+        """List reusable, value-free annotation masks, optionally by document type."""
+        items = repository.list_annotation_masks(
+            document_type=document_type,
+            latest_only=not include_previous_versions,
+        )
+        return {"items": items, "count": len(items)}
+
+    @server.tool()
+    def create_annotation_mask(
+        name: str,
+        source_document_id: str,
+        field_annotations: list[dict[str, Any]],
+        document_type: str = "",
+    ) -> dict[str, Any]:
+        """Save field labels, paths and boxes as a named mask; values are discarded."""
+        mask = repository.create_annotation_mask(
+            name=name,
+            source_document_id=source_document_id,
+            document_type=document_type,
+            field_annotations=field_annotations,
+            created_by="mcp-service",
+        )
+        _audit(
+            repository,
+            "annotation_mask.create",
+            "annotation_mask",
+            mask["maskId"],
+            {
+                "name": mask["name"],
+                "version": mask["version"],
+                "fieldCount": mask["fieldCount"],
+            },
+        )
+        return mask
+
+    @server.tool()
+    def apply_annotation_mask(document_id: str, mask_id: str) -> dict[str, Any]:
+        """Read a mask on a target PDF and return UNREVIEWED fields without saving them."""
+        result = repository.apply_annotation_mask(document_id=document_id, mask_id=mask_id)
+        _audit(
+            repository,
+            "annotation_mask.apply",
+            "document",
+            document_id,
+            {
+                "maskId": mask_id,
+                "appliedFieldCount": result["appliedFieldCount"],
+                "compatibility": result["compatibility"],
+            },
+        )
+        return result
+
+    @server.tool()
     def save_annotation_draft(
         document_id: str,
         field_annotations: list[dict[str, Any]],

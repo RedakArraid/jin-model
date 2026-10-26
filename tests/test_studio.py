@@ -43,6 +43,13 @@ def test_store_retries_transient_shared_database_open_errors(tmp_path, monkeypat
     assert attempts == 3
 
 
+def test_store_creates_a_shared_schema_initialization_lock(tmp_path):
+    store = StudioStore(tmp_path / "studio")
+
+    assert store.schema_lock_path.is_file()
+    assert store.status()["annotationMasks"] == 0
+
+
 def test_every_annotatable_field_has_precise_selection_help():
     assert FIELD_CATALOG
     assert all(item.get("help", "").startswith("Encadrez") for item in FIELD_CATALOG)
