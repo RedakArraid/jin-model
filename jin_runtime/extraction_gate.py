@@ -58,8 +58,21 @@ def apply_extraction_gate(payload: dict[str, Any]) -> dict[str, Any]:
             reasons.append({"code": code, "path": "purchase_order.number"})
         require(bool(po), "ORDER_EXTRACTION_MISSING", "business_extractions.purchase_order")
         header = po.get("purchase_order") or po
+        current_order_number = _value(header.get("number") or header.get("order_number"))
+        # Header reconciliation can replace a weak core candidate after the
+        # core validation has already run.  Keep the diagnostic values aligned
+        # with the final, source-backed number exposed to API consumers.
+        validation_checks = ((po.get("validation") or {}).get("checks") or {})
+        if current_order_number not in (None, ""):
+            for check_name in (
+                "purchase_order_number_type",
+                "purchase_order_contact_collision",
+            ):
+                check = validation_checks.get(check_name)
+                if isinstance(check, dict):
+                    check["value"] = current_order_number
         require(
-            bool(_value(header.get("number") or header.get("order_number")))
+            bool(current_order_number)
             or len(grouped_references) >= 2,
             "ORDER_NUMBER_MISSING",
             "purchase_order.number",

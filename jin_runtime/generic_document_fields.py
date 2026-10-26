@@ -231,6 +231,24 @@ def _reconcile_registration_role(
 ) -> None:
     assignment = registration.get("role_assignment") or {}
     role = str(registration.get("role") or "unknown")
+    context = str(
+        (registration.get("evidence") or {}).get("role_context")
+        or (registration.get("evidence") or {}).get("source_text")
+        or ""
+    )
+    identity_scores = {"buyer": 0.0, "supplier": 0.0}
+    for party_role in ("buyer", "bill_to", "ship_to", "supplier"):
+        party = purchase_order.get(party_role)
+        if not isinstance(party, dict):
+            continue
+        business_role = "supplier" if party_role == "supplier" else "buyer"
+        identity_scores[business_role] = max(
+            identity_scores[business_role],
+            *(
+                _party_name_match_score(name, context)
+                for name in (party.get("legal_name"), party.get("name"))
+            ),
+        )
     candidates: list[tuple[float, int, str, str, str]] = []
     if role in {"buyer", "supplier"}:
         method = str(assignment.get("method") or "explicit_role_context_v1")
@@ -241,6 +259,16 @@ def _reconcile_registration_role(
             # placement is therefore weaker than the customer-issuer prior;
             # an explicit supplier heading remains authoritative below.
             score = min(score, 0.89)
+        if (
+            role == "supplier"
+            and identity_scores["buyer"] >= 0.97
+            and identity_scores["supplier"] < 0.97
+        ):
+            # Dense PDF text streams can interleave the document title
+            # ``BON DE COMMANDE FOURNISSEUR`` into the customer's own legal
+            # footer.  A matching customer identity beside the registration
+            # is stronger than that isolated role word.
+            score = min(score, 0.94)
         candidates.append((
             score,
             1,
@@ -249,11 +277,6 @@ def _reconcile_registration_role(
             method,
         ))
 
-    context = str(
-        (registration.get("evidence") or {}).get("role_context")
-        or (registration.get("evidence") or {}).get("source_text")
-        or ""
-    )
     for party_role in ("buyer", "bill_to", "ship_to", "supplier"):
         party = purchase_order.get(party_role)
         if not isinstance(party, dict):
@@ -528,6 +551,8 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
 
     for registration in registrations_by_siren.values():
         _reconcile_registration_role(registration, purchase_order, is_purchase_order)
+    for tax_identifier in tax_by_value.values():
+        _reconcile_registration_role(tax_identifier, purchase_order, is_purchase_order)
 
     # A valid, explicitly labelled SIREN/SIRET can deterministically corroborate
     # or derive the French VAT number. Derived values remain clearly identified as
@@ -544,10 +569,19 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
             existing["confidence"] = max(float(existing.get("confidence") or 0), 0.998)
             existing["validation_status"] = "CHECKSUM_AND_REGISTRATION_MATCH"
             existing["supporting_evidence"] = support
+            registration_assignment = registration.get("role_assignment") or {}
+            identity_backed_role = (
+                registration_assignment.get("method") == "party_name_context_match_v1"
+                and float(registration.get("role_confidence") or 0) >= 0.97
+            )
             if (
                 existing.get("role") == "unknown"
                 or float(registration.get("role_confidence") or 0)
                 > float(existing.get("role_confidence") or 0)
+                or (
+                    identity_backed_role
+                    and existing.get("role") != registration.get("role")
+                )
             ):
                 existing["role"] = registration["role"]
                 existing["party_role"] = registration.get("party_role")
@@ -625,6 +659,16 @@ def enrich_generic_document_fields(payload: dict[str, Any]) -> dict[str, Any]:
                 registration = item.get("siret") or item.get("siren")
                 if registration and not party.get("company_registration_number"):
                     party["company_registration_number"] = registration
+                if float(item.get("role_confidence") or 0) >= 0.97:
+                    opposite_role = "supplier" if role == "buyer" else "buyer"
+                    opposite = purchase_order.get(opposite_role)
+                    if isinstance(opposite, dict):
+                        opposite_vat = re.sub(
+                            r"[^A-Z0-9]", "",
+                            str(opposite.get("vat_number") or "").upper(),
+                        )
+                        if opposite_vat == item["vat_number"]:
+                            opposite.pop("vat_number", None)
     document_references = payload.setdefault("document_references", {})
     if customer_order:
         document_references["customer_order_number"] = customer_order

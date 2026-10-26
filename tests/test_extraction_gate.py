@@ -35,6 +35,23 @@ class ExtractionGateTests(unittest.TestCase):
         self.assertEqual(out["extraction_decision"]["status"], "CHECKS_PASSED")
         self.assertIn("not a guarantee", out["extraction_decision"]["qualification"])
 
+    def test_validation_diagnostics_follow_reconciled_order_number(self):
+        payload = complete_order()
+        checks = payload["business_extractions"]["purchase_order"]["validation"].setdefault(
+            "checks", {}
+        )
+        checks["purchase_order_number_type"] = {"value": "WEAK-OLD", "valid": True}
+        checks["purchase_order_contact_collision"] = {
+            "value": "WEAK-OLD",
+            "valid": True,
+            "collisions": [],
+        }
+
+        apply_extraction_gate(payload)
+
+        self.assertEqual(checks["purchase_order_number_type"]["value"], "PO-123")
+        self.assertEqual(checks["purchase_order_contact_collision"]["value"], "PO-123")
+
     def test_financial_mismatch_overrides_high_core_confidence(self):
         payload = complete_order()
         payload["quality"]["overall_confidence"] = .99

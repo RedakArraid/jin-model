@@ -48,6 +48,10 @@ _EXPLICIT_CODE_RES = (
         re.I,
     ),
 )
+_EXPLICIT_CUSTOMER_CODE_RE = re.compile(
+    r"\bCODE\s+CLIENT\s*[:#-]?\s*(?P<code>[A-Z0-9][A-Z0-9._/-]{1,19})\b",
+    re.I,
+)
 _STOP_CODES = {
     "ADRESSE", "AGENCE", "ATTN", "BAT", "BATIMENT", "BP", "CEDEX", "CENTRE",
     "CLIENT", "CODE", "CS", "DEPOT", "DESTINATAIRE", "FR", "FRANCE", "LIVRAISON",
@@ -71,6 +75,7 @@ def _code(value: Any) -> str | None:
 
 def _valid_code(
     value: Any, *, explicit: bool = False, corroborated_numeric: bool = False,
+    explicit_customer: bool = False,
 ) -> bool:
     code = _code(value)
     if not code or not _CODE_TOKEN_RE.fullmatch(code) or _fold(code) in _STOP_CODES:
@@ -82,7 +87,11 @@ def _valid_code(
         # Accept it only behind an explicit label or when another independent
         # source (the order-number prefix) corroborates the isolated delivery
         # token.  Long digit strings remain transaction/contact identifiers.
-        return bool((explicit or corroborated_numeric) and 2 <= len(code) <= 7)
+        numeric_limit = 12 if explicit_customer else 7
+        return bool(
+            (explicit or corroborated_numeric or explicit_customer)
+            and 2 <= len(code) <= numeric_limit
+        )
     if re.fullmatch(r"\d{8,}", code):
         return False
     return explicit or any(char.isalpha() for char in code)
@@ -225,6 +234,18 @@ def _explicit_candidates(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for block in blocks:
         text = " ".join(str(block.get("text") or "").split())
+        for match in _EXPLICIT_CUSTOMER_CODE_RE.finditer(text):
+            code = _code(match.group("code"))
+            if code and _valid_code(code, explicit_customer=True):
+                candidates.append({
+                    "value": code,
+                    "site": "buyer",
+                    "confidence": 0.995,
+                    "reason": "explicit_customer_code_label",
+                    "evidence": _block_evidence(
+                        block, "explicit_customer_code_v1"
+                    ),
+                })
         for pattern in _EXPLICIT_CODE_RES:
             for match in pattern.finditer(text):
                 code = _code(match.group("code"))
@@ -280,6 +301,51 @@ def _explicit_candidates(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 ),
                 "corroborating_evidence": [
                     _block_evidence(label, "customer_agency_role_label_v2")
+                ],
+            })
+
+    # Customer ERP layouts frequently print the exact ``Code client`` caption
+    # above its value rather than on the same text row.  This is a buyer code,
+    # not a delivery-site code.  Pair only the exact caption with the nearest
+    # isolated token immediately below it so arbitrary header numbers cannot
+    # be promoted.
+    for label in blocks:
+        if _fold(label.get("text")) != "CODE CLIENT":
+            continue
+        label_page, label_bbox = _source_page_bbox(label)
+        if not isinstance(label_bbox, (list, tuple)) or len(label_bbox) != 4:
+            continue
+        label_center_x = (float(label_bbox[0]) + float(label_bbox[2])) / 2
+        below: list[tuple[float, float, dict[str, Any], str]] = []
+        for block in blocks:
+            if block is label:
+                continue
+            page, bbox = _source_page_bbox(block)
+            if page != label_page or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                continue
+            code = _code(block.get("text"))
+            vertical_gap = float(bbox[1]) - float(label_bbox[3])
+            block_center_x = (float(bbox[0]) + float(bbox[2])) / 2
+            horizontal_distance = abs(block_center_x - label_center_x)
+            if (
+                code
+                and _valid_code(code, explicit_customer=True)
+                and 0 <= vertical_gap <= 36
+                and horizontal_distance <= 90
+            ):
+                below.append((vertical_gap, horizontal_distance, block, code))
+        if below:
+            _, _, block, code = min(below, key=lambda item: (item[0], item[1]))
+            candidates.append({
+                "value": code,
+                "site": "buyer",
+                "confidence": 0.995,
+                "reason": "paired_customer_code_label_and_value",
+                "evidence": _block_evidence(
+                    block, "paired_customer_code_label_value_v1"
+                ),
+                "corroborating_evidence": [
+                    _block_evidence(label, "customer_code_role_label_v1")
                 ],
             })
     return candidates
@@ -465,7 +531,7 @@ def _select(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
         "value": best_value,
         "raw_value": best_value,
         "normalized_value": best_value,
-        "site": "ship_to",
+        "site": primary.get("site") or "ship_to",
         "confidence": best_score,
         "final_confidence": best_score,
         "validation_status": "SOURCE_CORROBORATED" if source_corroborated else "SOURCE_SUPPORTED",
@@ -497,6 +563,13 @@ def enrich_customer_agency_codes(payload: dict[str, Any]) -> dict[str, Any]:
         header["customer_agency_code"] = selected
 
     code = selected["value"]
+    if selected.get("site") == "buyer":
+        buyer = po.get("buyer")
+        if isinstance(buyer, dict):
+            buyer["customer_agency_code"] = code
+            buyer["customer_agency_code_evidence"] = selected.get("evidence")
+        return payload
+
     ship_to = po.get("ship_to")
     if isinstance(ship_to, dict):
         ship_to["customer_agency_code"] = code

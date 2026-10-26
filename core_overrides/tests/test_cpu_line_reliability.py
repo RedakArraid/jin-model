@@ -30,6 +30,8 @@ from uda.business import (
     _dual_reference_stacked_native_table_items_v67,
     _dual_reference_receipt_date_items_v5169,
     _enhance_requested_delivery_date_v5169,
+    _enhance_strict_totals_v47,
+    _enhance_totals_from_native_tables,
     _enhance_order_header_from_page_layout,
     _enhance_inline_transaction_header_v46,
     _enhance_strict_order_number_v47,
@@ -41,12 +43,14 @@ from uda.business import (
     _native_table_line_items_and_charges,
     _normalize_labeled_party_code_v5166,
     _party_from_labeled_zone_v48,
+    _partial_line_hypothesis_rejection_v5175,
     _repair_dimension_ocr_v5166,
     _repair_native_long_decimal_line_prices_v5170,
     _repair_order_date_delivery_collision_v5170,
     _repair_order_number_evidence_bbox_v5172,
     _repair_purchase_order_party_roles_v5170,
     _repair_supplier_purchase_order_addressee_v5173,
+    _rexellike_product_fee_table,
     _separate_promotional_continuation_notes_v5171,
     _repair_scan_currency_suffix_artifacts_v64,
     _repair_legal_footer_validation_v65,
@@ -859,6 +863,59 @@ def test_labelled_shipping_charge_is_recovered_outside_line_hypotheses():
     assert po.totals.total_shipping == 35.0
 
 
+def test_structured_net_total_is_not_overwritten_by_product_subtotal_fallback():
+    page = _page([(
+        700,
+        [("TOTAL", 390, 430), ("HT", 435, 455), ("2.572,24", 520, 570)],
+    )])
+    po = SimpleNamespace(
+        lines=[LineItem(quantity=1, unit_price=2572.24, line_total=2572.24)],
+        additional_charges=[],
+        totals=Totals(
+            subtotal=2572.24,
+            total_product_lines=2572.24,
+            total_net=2616.55,
+            total_before_tax=2616.55,
+            currency="EUR",
+        ),
+    )
+
+    _enhance_strict_totals_v47(po, [page], {})
+
+    assert po.totals.subtotal == 2572.24
+    assert po.totals.total_net == 2616.55
+    assert po.totals.total_before_tax == 2616.55
+
+
+def test_native_summary_freight_is_merged_once_as_a_shipping_charge():
+    table = SimpleNamespace(
+        data=[
+            ["Total Brut HT Lignes produit", "+ Total taxes lignes",
+             "+ Frais de port", "TOTAL NET HT"],
+            ["2.572,24", "9,31", "35,00", "2.616,55"],
+        ],
+        source=SimpleNamespace(page=2),
+        confidence=0.98,
+    )
+    po = SimpleNamespace(
+        additional_charges=[],
+        totals=Totals(currency="EUR"),
+    )
+
+    _enhance_totals_from_native_tables(po, [table])
+    _enhance_totals_from_native_tables(po, [table])
+
+    assert po.totals.subtotal == 2572.24
+    assert po.totals.total_tax == 9.31
+    assert po.totals.total_freight == 35
+    assert po.totals.total_net == 2616.55
+    assert len(po.additional_charges) == 1
+    charge = po.additional_charges[0]
+    assert charge.charge_type == "shipping"
+    assert charge.amount == 35
+    assert charge.evidence.extraction_method == "explicit_native_summary_charge_v5175"
+
+
 def test_charge_recovery_ignores_summary_grid_and_exact_source_duplicate():
     page = _page([
         (359, [("Eco", 59, 82), ("Contribution", 86, 145), ("unit.", 150, 176),
@@ -1056,6 +1113,84 @@ def test_hypothesis_total_fit_rewards_complete_table_and_penalizes_sparse_subset
     assert sparse_fit["valid"] is False
     assert sparse_fit["adjustment"] < 0
     assert sparse_fit["document_sum"] == 614.03
+
+
+def test_partial_invalid_hypothesis_cannot_replace_supported_complete_table():
+    current_result = (
+        0.45,
+        {"supported_lines": 6},
+        {"valid": False},
+        1.0,
+    )
+    sparse_result = (
+        1.48,
+        {"supported_lines": 3},
+        {"valid": False},
+        0.3333,
+    )
+
+    rejection = _partial_line_hypothesis_rejection_v5175(
+        "native_table", sparse_result, 3, current_result, 9, {}
+    )
+
+    assert rejection["reason"] == "partial_coverage_vs_current_supported_lines"
+    assert rejection["candidate_supported_lines"] == 3
+    assert rejection["current_supported_lines"] == 6
+
+
+def test_partial_hypothesis_is_allowed_when_it_matches_printed_total():
+    current_result = (0.45, {"supported_lines": 6}, {"valid": False}, 1.0)
+    reconciled_result = (1.48, {"supported_lines": 3}, {"valid": True}, 0.3333)
+
+    assert _partial_line_hypothesis_rejection_v5175(
+        "native_table", reconciled_result, 3, current_result, 9, {}
+    ) is None
+
+
+def test_product_fee_table_ignores_interleaved_supplier_offer_annotations():
+    table = SimpleNamespace(
+        data=[
+            [
+                "Lig.", "Produit", "Qte", "Condit.", "Prix Unitaire",
+                "Montant ligne HT", "Date de livraison",
+            ],
+            [
+                "4\n5\n6\n7\n8\n9",
+                "\n".join([
+                    "7733703987 00481 G10-4 - HOMECOM EASY WI-FI",
+                    "Communication au Fournisseur :",
+                    "OFFRE DU 011026 PAR MAIL 7733703987",
+                    "7709003525 MELANGEUR ONDEA C LC10/LC11",
+                    "7736995063 AZ 417 - ALLONGE 750 MM 60/100",
+                    "7736507169 ONDEA HYDROSMART LC15-5 HFP N",
+                    "D3EES14080 DEEE APPAREIL DE CHAUFFAGE ELECTRIQUE > 5KG",
+                    "7736507485 CADRE ECARTEUR ONDEA HYDROSMART BAS NOX2",
+                    "7738111017 THERMOSTAT CR10H",
+                    "D3EES95010 DEEE EQUIPEMENT DE CONTROLE ET DE SURVEILLANCE",
+                ]),
+                "2\n1\n1\n1\n1\n1\n1\n1",
+                "PIECE\nPIECE\nPIECE\nPIECE\nPIECE\nPIECE",
+                "40,00000\n28,64250\n46,23000\n683,40000\n1,75000\n48,74250\n53,96000\n0,14000",
+                "80,00000\n28,64250\n46,23000\n683,40000\n1,75000\n48,74250\n53,96000\n0,14000",
+                "12-10-2026\n12-10-2026\n12-10-2026\n12-10-2026\n12-10-2026\n12-10-2026",
+            ],
+        ],
+        source=SimpleNamespace(page=2),
+        confidence=0.98,
+    )
+
+    lines, charges = _rexellike_product_fee_table(table)
+
+    assert [line.line_number for line in lines] == ["4", "5", "6", "7", "8", "9"]
+    assert [line.material_number for line in lines] == [
+        "7733703987", "7709003525", "7736995063",
+        "7736507169", "7736507485", "7738111017",
+    ]
+    assert [line.line_total for line in lines] == pytest.approx([
+        80, 28.6425, 46.23, 683.4, 48.7425, 53.96,
+    ])
+    assert [charge.amount for charge in charges] == pytest.approx([1.75, 0.14])
+    assert lines[0].raw_text.startswith("4 | 7733703987")
 
 
 def test_complete_dual_reference_table_beats_sparse_material_anchor_hypothesis():
@@ -1900,6 +2035,31 @@ def test_compact_deee_reference_is_environmental_fee_attached_to_previous_produc
     assert charge.amount == 7.69
     assert charge.parent_line_number == "3"
     assert charge.parent_material_number == "8719999999"
+
+
+def test_charge_separation_preserves_source_backed_non_one_line_numbers():
+    lines = [
+        LineItem(
+            line_number="2", material_number="7733703987", description="PRODUIT A",
+            quantity=1, unit_price=10, line_total=10, currency="EUR", page=1,
+            raw_text="2 | 7733703987 | PRODUIT A | 1 | 10,00 | 10,00",
+        ),
+        LineItem(
+            line_number="3", material_number="7709003525", description="PRODUIT B",
+            quantity=2, unit_price=12, line_total=24, currency="EUR", page=1,
+            raw_text="3 | 7709003525 | PRODUIT B | 2 | 12,00 | 24,00",
+        ),
+    ]
+    po = SimpleNamespace(
+        lines=lines,
+        additional_charges=[],
+        totals=Totals(total_net=34, currency="EUR"),
+    )
+
+    po, counts = _separate_additional_charge_lines_v62(po, {})
+
+    assert counts == {}
+    assert [line.line_number for line in po.lines] == ["2", "3"]
 
 
 def _compact_header_page(prefix="CF", title="COMMANDE FOURNISSEUR", label=None):

@@ -259,6 +259,34 @@ class CustomerAgencyCodeTests(unittest.TestCase):
             "isolated_numeric_agency_in_delivery_zone",
         )
 
+    def test_split_code_client_is_a_buyer_code_not_a_delivery_site(self):
+        payload = iserba_payload(delivery_code=None)
+        po = payload["business_extractions"]["purchase_order"]
+        po["buyer"] = {"name": "REXEL FRANCE"}
+        payload["blocks"] = [
+            {
+                "text": "Code client",
+                "source": {"page": 1, "bbox": [36, 190, 80, 207]},
+            },
+            {
+                "text": "15900721",
+                "source": {"page": 1, "bbox": [25, 210, 60, 227]},
+            },
+        ]
+
+        enrich_customer_agency_codes(payload)
+
+        field = po["customer_agency_code"]
+        self.assertEqual(field["value"], "15900721")
+        self.assertEqual(field["site"], "buyer")
+        self.assertEqual(field["validation_status"], "SOURCE_CORROBORATED")
+        self.assertEqual(
+            field["extraction_reason"],
+            "paired_customer_code_label_and_value",
+        )
+        self.assertEqual(po["buyer"]["customer_agency_code"], "15900721")
+        self.assertNotIn("customer_agency_code", po["ship_to"])
+
 
 if __name__ == "__main__":
     unittest.main()

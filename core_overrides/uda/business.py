@@ -3438,6 +3438,22 @@ def _rexellike_product_fee_table(table, default_currency: str = "EUR"):
             continue
         events = []
         for raw in products:
+            folded_raw = _fold(raw)
+            if (
+                re.match(
+                    r"^communication\s+au\s+(?:fournisseur|transporteur|supplier|vendor)\b",
+                    folded_raw,
+                )
+                or re.match(
+                    r"^(?:offre|devis|quote)\b.*\b(?:par|via)\s+"
+                    r"(?:mail|email|courriel|telephone|fax)\b",
+                    folded_raw,
+                )
+            ):
+                # Commercial annotations may be vertically interleaved in the
+                # product cell without any quantity/price/amount counterpart.
+                # Keeping them as events shifts every subsequent monetary row.
+                continue
             m = re.match(r"^([A-Z0-9][A-Z0-9._/-]{3,30})\s+(.+)$", raw.strip(), flags=re.I)
             if not m:
                 continue
@@ -3494,7 +3510,10 @@ def _rexellike_product_fee_table(table, default_currency: str = "EUR"):
                 description=ev["description"], quantity=qty, ordered_quantity=qty, uom=uom,
                 unit_price=price, net_unit_price=price, line_total=amount, line_net_amount=amount,
                 currency=default_currency, requested_delivery_date=delivery_date,
-                raw_text=f"{ev['code']} {ev['description']} | {qty} | {uom or ''} | {price} | {amount} | {raw_date or ''}",
+                raw_text=(
+                    f"{line_no} | {ev['code']} {ev['description']} | {qty} | "
+                    f"{uom or ''} | {price} | {amount} | {raw_date or ''}"
+                ),
                 page=table.source.page, confidence=float(table.confidence)*0.99,
             )
             out.append(current); prod_i += 1
@@ -3785,6 +3804,32 @@ def _enhance_header_terms_addresses_v45(po, tables):
 
 def _enhance_totals_from_native_tables(po, tables, default_currency: str = "EUR"):
     import re
+    from po_ocr.models import AdditionalCharge, Evidence
+
+    def merge_summary_charge(*, kind, amount, label, table):
+        if amount in (None, 0):
+            return
+        for charge in getattr(po, "additional_charges", []) or []:
+            if (
+                charge.charge_type == kind
+                and charge.amount is not None
+                and abs(float(charge.amount) - float(amount)) <= 0.01
+            ):
+                return
+        po.additional_charges.append(AdditionalCharge(
+            charge_type=kind,
+            description=label,
+            amount=float(amount),
+            currency=po.totals.currency or default_currency,
+            page=table.source.page,
+            confidence=float(table.confidence) * 0.995,
+            evidence=Evidence(
+                page=table.source.page,
+                source_text=f"{label} | {amount}",
+                extraction_method="explicit_native_summary_charge_v5175",
+            ),
+        ))
+
     # Structured summary rows first: map each header to the value below it. This is
     # far safer than choosing the right-most number from a row that also contains weight.
     for table in tables:
@@ -3806,6 +3851,10 @@ def _enhance_totals_from_native_tables(po, tables, default_currency: str = "EUR"
                         po.totals.total_admin_fees=v
                     elif "frais de port" in h:
                         po.totals.total_freight=v
+                        merge_summary_charge(
+                            kind="shipping", amount=v,
+                            label="Frais de port", table=table,
+                        )
                     elif "frais d'embal" in h or "frais embal" in h:
                         po.totals.total_packaging=v
                     elif "autres frais" in h:
@@ -5443,6 +5492,43 @@ def _sanitize_non_product_lines_v61(lines, config: dict):
     return kept, dict(sorted(rejected.items()))
 
 
+def _source_backed_line_number_v5175(line) -> bool:
+    """Return true when the printed row itself supports its line number."""
+    number = str(getattr(line, "line_number", "") or "").strip()
+    source = str(getattr(line, "raw_text", "") or "").strip()
+    if not number or not source:
+        return False
+    return bool(re.match(
+        rf"^\s*{re.escape(number)}(?:\s|[.)|:\-])",
+        source,
+        flags=re.I,
+    ))
+
+
+def _renumber_unbacked_lines_v5175(lines) -> None:
+    """Keep printed numbering and synthesize numbers only when it is absent."""
+    items = list(lines or [])
+    backed = [_source_backed_line_number_v5175(line) for line in items]
+    if not any(backed):
+        for index, line in enumerate(items, 1):
+            line.line_number = str(index)
+        return
+    used = {
+        str(line.line_number).strip()
+        for line, is_backed in zip(items, backed)
+        if is_backed
+    }
+    next_number = 1
+    for line, is_backed in zip(items, backed):
+        if is_backed:
+            continue
+        while str(next_number) in used:
+            next_number += 1
+        line.line_number = str(next_number)
+        used.add(str(next_number))
+        next_number += 1
+
+
 def _separate_additional_charge_lines_v62(po, config: dict):
     """Move explicit freight/tax/fee rows out of product lines for every parser."""
     if not config.get("layout", {}).get("separate_additional_charge_lines", True):
@@ -5554,8 +5640,7 @@ def _separate_additional_charge_lines_v62(po, config: dict):
 
     po.lines = kept
     po.additional_charges = existing
-    for index, line in enumerate(po.lines, 1):
-        line.line_number = str(index)
+    _renumber_unbacked_lines_v5175(po.lines)
     shipping_amounts = [
         float(charge.amount)
         for charge in existing
@@ -5995,6 +6080,17 @@ def _enhance_strict_totals_v47(po, pages, config: dict):
     existing=po.totals.total_net if po.totals.total_net is not None else po.totals.subtotal
     line_vals=[x.line_total for x in po.lines if x.line_total is not None]
     calc=sum(float(x) for x in line_vals) + sum(float(x.amount or 0.0) for x in getattr(po,"additional_charges",[]))
+    structured_product_total = getattr(po.totals, "total_product_lines", None)
+    if existing is not None and structured_product_total is not None:
+        structured_tolerance = max(
+            float(config.get("validation",{}).get("amount_absolute_tolerance",0.03)),
+            abs(float(existing))*float(config.get("validation",{}).get("amount_relative_tolerance",0.005)),
+        )
+        if abs(float(existing) - float(structured_product_total)) > structured_tolerance:
+            # A structured summary has already distinguished the product
+            # subtotal from TOTAL NET HT. The text fallback must not collapse
+            # both fields onto ``Total Brut HT Lignes produit``.
+            return po
     if existing is not None and line_vals and config.get("layout",{}).get("strict_total_prefer_reconciled_existing",True):
         tol=max(float(config.get("validation",{}).get("amount_absolute_tolerance",0.03)),
                 abs(float(existing))*float(config.get("validation",{}).get("amount_relative_tolerance",0.005)))
@@ -6345,8 +6441,7 @@ def _sanitize_legal_footer_lines_v48(po, config: dict):
             raw=" ".join(str(line.raw_text or line.description or "").split())
             if raw and raw not in bucket:
                 bucket.append(raw[:1000])
-    for i,line in enumerate(po.lines,1):
-        line.line_number=str(i)
+    _renumber_unbacked_lines_v5175(po.lines)
     return po
 
 
@@ -6938,6 +7033,56 @@ def _recover_roles_v48(po,tables,pages,config:dict):
     po=_sanitize_party_addresses_v48(po,config)
     return po
 
+
+def _partial_line_hypothesis_rejection_v5175(
+    name: str,
+    candidate_result,
+    candidate_line_count: int,
+    current_result,
+    current_line_count: int,
+    config: dict,
+):
+    """Reject an invalid parser hypothesis that silently drops most rows.
+
+    Parser source bonuses are useful tie-breakers, but must not allow a clean
+    three-row fragment to replace a source-supported nine-row table.  A partial
+    hypothesis is still allowed when its values reconcile to the printed total,
+    since the larger candidate may then contain genuine pseudo-lines.
+    """
+    if name == "current" or not current_result:
+        return None
+    layout = config.get("layout", {})
+    minimum_current = int(layout.get(
+        "line_hypothesis_partial_guard_min_supported", 4
+    ))
+    minimum_deficit = int(layout.get(
+        "line_hypothesis_partial_guard_supported_deficit", 2
+    ))
+    maximum_coverage = float(layout.get(
+        "line_hypothesis_partial_guard_max_coverage", 0.70
+    ))
+    current_supported = int((current_result[1] or {}).get("supported_lines", 0))
+    candidate_supported = int((candidate_result[1] or {}).get("supported_lines", 0))
+    candidate_total_fit = candidate_result[2] or {}
+    relative_coverage = candidate_line_count / max(1, current_line_count)
+    if (
+        current_supported >= minimum_current
+        and current_supported - candidate_supported >= minimum_deficit
+        and relative_coverage < maximum_coverage
+        and not candidate_total_fit.get("valid")
+    ):
+        return {
+            "reason": "partial_coverage_vs_current_supported_lines",
+            "candidate_lines": candidate_line_count,
+            "current_lines": current_line_count,
+            "candidate_supported_lines": candidate_supported,
+            "current_supported_lines": current_supported,
+            "relative_line_coverage": round(relative_coverage, 4),
+            "printed_total_reconciled": False,
+        }
+    return None
+
+
 def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict):
     """V4.7 post-processor: strict semantic guards + native/geometry hypothesis fusion."""
     import re
@@ -7116,7 +7261,34 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
         )
         for name,ls,ch,sb in hypotheses
     ]
-    ranked=sorted(((result[0],name,ls,ch) for result,name,ls,ch in evaluated),reverse=True,key=lambda x:x[0])
+    current_evaluation = next(
+        (result for result, name, _, _ in evaluated if name == "current"),
+        None,
+    )
+    eligible_evaluations = []
+    for result, name, candidate_lines, candidate_charges in evaluated:
+        rejection = _partial_line_hypothesis_rejection_v5175(
+            name,
+            result,
+            len(candidate_lines),
+            current_evaluation,
+            len(po.lines),
+            config,
+        )
+        if rejection:
+            suppressed_hypotheses[name] = rejection
+            continue
+        eligible_evaluations.append(
+            (result, name, candidate_lines, candidate_charges)
+        )
+    ranked=sorted(
+        (
+            (result[0],name,ls,ch)
+            for result,name,ls,ch in eligible_evaluations
+        ),
+        reverse=True,
+        key=lambda x:x[0],
+    )
     parser_diag={
         "selected":"current",
         "scores":{name:round(result[0],4) for result,name,_,_ in evaluated},

@@ -207,6 +207,41 @@ class GenericDocumentFieldsTests(unittest.TestCase):
             "FR89542097944",
         )
 
+    def test_customer_identity_beats_interleaved_supplier_words_in_legal_footer(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{
+                "page": 1,
+                "text": (
+                    "REXEL BON France DE - COMMANDE 13 Boulevard du Fort de Vaux "
+                    "N SIREN FOURNISSEUR : 309 304 616 "
+                    "N TVA IC FOURNISSEUR : FR 26 309 304 616"
+                ),
+            }],
+            "business_extractions": {"purchase_order": {
+                "buyer": {"name": "REXEL FRANCE"},
+                "supplier": {
+                    "name": "BOSCH THERMOTECHNOLOGIE",
+                    "vat_number": "FR26309304616",
+                },
+                "lines": [],
+            }},
+        }
+
+        out = enrich_generic_document_fields(payload)
+
+        identifier = out["document_tax_identifiers"][0]
+        self.assertEqual(identifier["vat_number"], "FR26309304616")
+        self.assertEqual(identifier["role"], "buyer")
+        self.assertEqual(identifier["party_role"], "buyer")
+        self.assertEqual(
+            identifier["role_assignment"]["method"],
+            "party_name_context_match_v1",
+        )
+        order = out["business_extractions"]["purchase_order"]
+        self.assertEqual(order["buyer"]["vat_number"], "FR26309304616")
+        self.assertNotIn("vat_number", order["supplier"])
+
     def test_unqualified_registration_on_non_order_keeps_unknown_role(self):
         payload = {
             "document": {"primary_document_type": "remittance_advice"},
