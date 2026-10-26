@@ -2,6 +2,29 @@
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdfjs-3.11.174/pdf.worker.min.js';
 
+const DOCUMENT_TYPE_OPTIONS = [
+  ['purchase_order', 'Bon de commande'],
+  ['purchase_order_with_terms', 'Bon de commande avec conditions'],
+  ['purchase_order_bundle', 'Regroupement de commandes'],
+  ['request_for_quotation', 'Demande de prix'],
+  ['quotation', 'Devis / offre'],
+  ['order_confirmation', 'Confirmation de commande'],
+  ['order_cancellation', 'Annulation de commande'],
+  ['invoice', 'Facture'],
+  ['credit_note', 'Avoir'],
+  ['delivery_note', 'Bon de livraison'],
+  ['contract', 'Contrat'],
+  ['legal_terms', 'Conditions contractuelles'],
+  ['generic_document', 'Document générique'],
+  ['__other__', 'Autre…'],
+];
+const DOCUMENT_TYPE_VALUES = new Set(
+  DOCUMENT_TYPE_OPTIONS.filter(([value]) => value !== '__other__').map(([value]) => value),
+);
+const MIN_ZOOM = .5;
+const MAX_ZOOM = 4;
+const ZOOM_STEP = .25;
+
 const state = {
   user: null,
   csrfToken: '',
@@ -19,6 +42,11 @@ const state = {
   pdfUrl: '',
   page: 1,
   rendering: false,
+  pendingRender: false,
+  zoom: 1,
+  pageTextItems: [],
+  regionRequest: 0,
+  dirty: false,
   trainingPoll: null,
 };
 
@@ -36,6 +64,7 @@ const annotationWorkspace = $('annotationWorkspace');
 const fieldList = $('fieldList');
 const annotationCanvas = $('annotationCanvas');
 const pdfCanvas = $('pdfCanvas');
+const canvasStage = $('canvasStage');
 
 function hasPermission(permission) {
   const permissions = state.user?.permissions || [];
@@ -81,34 +110,84 @@ function valueText(value) {
   return JSON.stringify(value);
 }
 
-function inferLabel(path) {
+function inferLabel(path, explicitRole = '') {
   const normalized = path.toLowerCase();
   const line = /(?:^|\.)(?:lines|line_items)\[\d+\]/.test(normalized);
+  const roleMatch = normalized.match(/(?:^|\.)(buyer|supplier|ship_to|deliver_to|delivery_address|bill_to|invoice_to|payer|ship_from)(?:\.|\[|$)/);
+  const role = explicitRole || (roleMatch ? {
+    buyer: 'BUYER', supplier: 'SUPPLIER', ship_to: 'SHIP_TO',
+    deliver_to: 'SHIP_TO', delivery_address: 'SHIP_TO', bill_to: 'BILL_TO',
+    invoice_to: 'BILL_TO', payer: 'PAYER', ship_from: 'SHIP_FROM',
+  }[roleMatch[1]] : '');
+  const component = normalized.split('.').pop().replace(/\[\d+\]$/, '');
   if (/document.*(?:type|class)/.test(normalized)) return 'DOCUMENT_TYPE';
   if (/purchase_order.*number|order_number/.test(normalized)) return 'ORDER_NUMBER';
   if (/purchase_order.*date|order_date/.test(normalized)) return 'ORDER_DATE';
   if (/customer_reference/.test(normalized)) return 'CUSTOMER_REFERENCE';
+  if (/customer_agency_code|customer_code/.test(normalized)) return 'CUSTOMER_CODE';
+  if (!line && /requested_delivery_date|expected_delivery_date|required_date|delivery_date/.test(normalized)) return 'DELIVERY_DATE';
   if (/offer_number|quote_number/.test(normalized)) return 'OFFER_NUMBER';
   if (/derogation_number/.test(normalized)) return 'DEROGATION_NUMBER';
+  if (line && /line_number/.test(normalized)) return 'LINE_ITEM_NUMBER';
   if (line && /material_number|article_number|product_code|reference/.test(normalized)) return 'LINE_ITEM_REFERENCE';
   if (line && /description/.test(normalized)) return 'LINE_ITEM_DESCRIPTION';
   if (line && /quantity/.test(normalized)) return 'LINE_ITEM_QUANTITY';
   if (line && /(?:^|\.)(?:uom|unit)$/.test(normalized)) return 'LINE_ITEM_UNIT';
   if (line && /unit_price|net_unit_price/.test(normalized)) return 'LINE_ITEM_UNIT_PRICE';
   if (line && /line_total|amounts\.total|amounts\.net/.test(normalized)) return 'LINE_ITEM_TOTAL';
+  if (line && /requested_delivery_date|delivery_date/.test(normalized)) return 'LINE_ITEM_DELIVERY_DATE';
+  if (/additional_charges\[\d+\]/.test(normalized) && /amount|\.net|\.total/.test(normalized)) return 'ADDITIONAL_CHARGE_AMOUNT';
+  if (/additional_charges\[\d+\]/.test(normalized) && /description|label|charge_type|\.type/.test(normalized)) return 'ADDITIONAL_CHARGE_LABEL';
+  if (/totals.*subtotal/.test(normalized)) return 'TOTAL_SUBTOTAL';
   if (/total.*(?:net|before_tax)|subtotal/.test(normalized)) return 'TOTAL_NET';
   if (/total.*vat|total_tax/.test(normalized)) return 'TOTAL_VAT';
-  if (/total.*(?:gross|amount_due|grand)/.test(normalized)) return 'TOTAL_GROSS';
+  if (/totals.*amount_due/.test(normalized)) return 'TOTAL_AMOUNT_DUE';
+  if (/total.*(?:gross|grand)/.test(normalized)) return 'TOTAL_GROSS';
+  if (role && /(?:name|legal_name|party_name|recipient)$/.test(component)) return `${role}_NAME`;
+  if (role && /(?:code|party_code)$/.test(component)) return `${role}_CODE`;
+  if (role && component === 'vat_number') return `${role}_VAT_NUMBER`;
+  if (role && component === 'siren') return `${role}_SIREN`;
+  if (role && component === 'siret') return `${role}_SIRET`;
+  if (role && ['phone', 'fax', 'email'].includes(component)) return `${role}_CONTACT_${component.toUpperCase()}`;
+  const roleAddressComponents = {
+    building: 'BUILDING', residence: 'RESIDENCE', entry: 'ENTRY', floor: 'FLOOR',
+    unit: 'UNIT', house_number: 'HOUSE_NUMBER', house_number_suffix: 'HOUSE_NUMBER_SUFFIX',
+    street_type: 'STREET_TYPE', street_name: 'STREET_NAME', street: 'STREET',
+    industrial_zone: 'INDUSTRIAL_ZONE', activity_park: 'ACTIVITY_PARK',
+    place_name: 'PLACE_NAME', postal_box: 'POSTAL_BOX', tsa: 'TSA', cs: 'CS',
+    postal_routing_code: 'POSTAL_ROUTING_CODE', postal_code: 'POSTAL_CODE',
+    city: 'CITY', cedex_number: 'CEDEX_NUMBER', country: 'COUNTRY',
+    country_code: 'COUNTRY_CODE',
+  };
+  if (role && roleAddressComponents[component] && /address|components/.test(normalized)) {
+    return `${role}_${roleAddressComponents[component]}`;
+  }
+  if (!role && component === 'vat_number') return 'VAT_NUMBER';
+  if (!role && component === 'siren') return 'SIREN';
+  if (!role && component === 'siret') return 'SIRET';
   const address = /delivery_address|addresses\[\d+\]/.test(normalized);
   if (address && /building/.test(normalized)) return 'ADDRESS_BUILDING';
-  if (address && /house_number_suffix/.test(normalized)) return 'ADDRESS_HOUSE_NUMBER';
+  if (address && /residence/.test(normalized)) return 'ADDRESS_RESIDENCE';
+  if (address && /entry/.test(normalized)) return 'ADDRESS_ENTRY';
+  if (address && /floor/.test(normalized)) return 'ADDRESS_FLOOR';
+  if (address && /(?:^|\.)unit$/.test(normalized)) return 'ADDRESS_UNIT';
+  if (address && /house_number_suffix/.test(normalized)) return 'ADDRESS_HOUSE_NUMBER_SUFFIX';
   if (address && /house_number/.test(normalized)) return 'ADDRESS_HOUSE_NUMBER';
   if (address && /street_type/.test(normalized)) return 'ADDRESS_STREET_TYPE';
   if (address && /street_name|address_line1|\.street$/.test(normalized)) return 'ADDRESS_STREET_NAME';
+  if (address && /industrial_zone/.test(normalized)) return 'ADDRESS_INDUSTRIAL_ZONE';
+  if (address && /activity_park/.test(normalized)) return 'ADDRESS_ACTIVITY_PARK';
+  if (address && /place_name/.test(normalized)) return 'ADDRESS_PLACE_NAME';
+  if (address && /postal_box/.test(normalized)) return 'ADDRESS_POSTAL_BOX';
+  if (address && /(?:^|\.)tsa$/.test(normalized)) return 'ADDRESS_TSA';
+  if (address && /postal_routing_code/.test(normalized)) return 'ADDRESS_POSTAL_ROUTING_CODE';
+  if (address && /(?:^|\.)cs$/.test(normalized)) return 'ADDRESS_CS';
   if (address && /postal_code/.test(normalized)) return 'ADDRESS_POSTAL_CODE';
   if (address && /city/.test(normalized)) return 'ADDRESS_CITY';
   if (address && /cedex/.test(normalized)) return 'ADDRESS_CEDEX_NUMBER';
-  if (address && /country_code|\.country$/.test(normalized)) return 'ADDRESS_COUNTRY_CODE';
+  if (address && /insee_code/.test(normalized)) return 'ADDRESS_INSEE_CODE';
+  if (address && /country_code/.test(normalized)) return 'ADDRESS_COUNTRY_CODE';
+  if (address && /\.country$/.test(normalized)) return 'ADDRESS_COUNTRY';
   return '';
 }
 
@@ -123,6 +202,7 @@ function normalizedEvidence(value) {
 function extractFields(extraction) {
   const found = [];
   const seen = new Set();
+  const seenIdentifiers = new Set();
   const ignored = new Set([
     'confidence', 'source', 'bbox', 'page', 'evidence', 'normalization', 'verification',
     'requires_review', 'raw_value', 'source_text', 'source_path', 'cell_id',
@@ -130,7 +210,11 @@ function extractFields(extraction) {
 
   function add(path, label, value, evidence = null) {
     if (!label || seen.has(path) || value == null || value === '') return;
+    const identifier = /(?:^|_)(?:VAT_NUMBER|SIREN|SIRET)$/.test(label);
+    const identifierKey = `${label}:${normalizedComparable(value)}`;
+    if (identifier && seenIdentifiers.has(identifierKey)) return;
     seen.add(path);
+    if (identifier) seenIdentifiers.add(identifierKey);
     found.push({
       path,
       label,
@@ -142,23 +226,29 @@ function extractFields(extraction) {
     });
   }
 
-  function visit(value, path) {
+  function visit(value, path, inheritedRole = '') {
     if (value == null) return;
     if (Array.isArray(value)) {
-      value.forEach((item, index) => visit(item, `${path}[${index}]`));
+      value.forEach((item, index) => visit(item, `${path}[${index}]`, inheritedRole));
       return;
     }
     if (typeof value !== 'object') {
-      add(path, inferLabel(path), value);
+      add(path, inferLabel(path, inheritedRole), value);
       return;
     }
+    const roleName = String(value.role || value.party_role || '').toLowerCase();
+    const contextualRole = {
+      buyer: 'BUYER', supplier: 'SUPPLIER', ship_to: 'SHIP_TO', deliver_to: 'SHIP_TO',
+      delivery_address: 'SHIP_TO', bill_to: 'BILL_TO', invoice_to: 'BILL_TO',
+      payer: 'PAYER', ship_from: 'SHIP_FROM',
+    }[roleName] || inheritedRole;
     if (Object.prototype.hasOwnProperty.call(value, 'value')) {
-      add(path, inferLabel(path), value.value, normalizedEvidence(value));
+      add(path, inferLabel(path, contextualRole), value.value, normalizedEvidence(value));
       return;
     }
     for (const [key, child] of Object.entries(value)) {
       if (ignored.has(key)) continue;
-      visit(child, path ? `${path}.${key}` : key);
+      visit(child, path ? `${path}.${key}` : key, contextualRole);
     }
   }
 
@@ -277,7 +367,7 @@ async function changeOwnPassword() {
 }
 
 async function loadDocuments() {
-  const payload = await api('/documents');
+  const payload = await api('/documents?limit=1000');
   state.documents = payload.items || [];
   renderDocumentList();
 }
@@ -303,7 +393,14 @@ function renderDocumentList() {
     date.textContent = String(item.updatedAt || '').slice(0, 10);
     meta.append(statusEl, date);
     button.append(name, meta);
-    button.addEventListener('click', () => openDocument(item.documentId));
+    button.addEventListener('click', () => {
+      if (
+        state.dirty
+        && state.activeDocument?.documentId !== item.documentId
+        && !window.confirm('Des modifications ne sont pas enregistrées. Changer de document ?')
+      ) return;
+      openDocument(item.documentId);
+    });
     documentList.appendChild(button);
   }
   documentCount.textContent = `${state.documents.length} document${state.documents.length > 1 ? 's' : ''}`;
@@ -342,6 +439,9 @@ async function openDocument(documentId) {
   state.fields = document.latestAnnotation?.field_annotations?.map(item => structuredClone(item))
     || extractFields(document.extraction || {});
   state.selectedField = state.fields.length ? 0 : -1;
+  state.zoom = 1;
+  state.pageTextItems = [];
+  state.dirty = false;
   $('reviewerIdentity').textContent = `${state.user.displayName || state.user.username} · ${state.user.username}`;
   $('annotationNote').value = document.latestAnnotation?.note || '';
   $('annotationNote').disabled = !(hasPermission('annotations.draft') || hasPermission('annotations.validate'));
@@ -349,11 +449,89 @@ async function openDocument(documentId) {
   $('activeHash').textContent = `SHA-256 ${document.pdfSha256}`;
   $('activeStatus').textContent = statusLabel(document.status);
   $('activeStatus').className = `badge ${document.status === 'DRAFT' ? 'draft' : ''}`;
+  $('activeStatus').title = '';
   annotationEmpty.classList.add('hidden');
   annotationWorkspace.classList.remove('hidden');
   renderDocumentList();
   renderFields();
   await loadPdf(documentId);
+}
+
+function editableAnnotation() {
+  return hasPermission('annotations.draft') || hasPermission('annotations.validate');
+}
+
+function updateJsonPreview() {
+  const preview = $('annotationJsonPreview');
+  if (!preview || !state.activeDocument) return;
+  preview.textContent = JSON.stringify(annotationPayload('DRAFT'), null, 2);
+}
+
+function markDirty() {
+  if (!state.activeDocument) return;
+  state.dirty = true;
+  $('activeStatus').classList.add('dirty');
+  $('activeStatus').title = 'Modifications locales non enregistrées';
+  updateJsonPreview();
+}
+
+function normalizedComparable(value) {
+  return valueText(value).normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function inferDocumentTypeFromText(value) {
+  const text = normalizedComparable(value)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (/annulation.*commande/.test(text)) return 'order_cancellation';
+  if (/confirmation.*commande|accuse.*commande/.test(text)) return 'order_confirmation';
+  if (/demande.*(?:prix|offre)|request for quotation|\brfq\b/.test(text)) return 'request_for_quotation';
+  if (/bon.*livraison|delivery note|packing list/.test(text)) return 'delivery_note';
+  if (/avoir|credit note/.test(text)) return 'credit_note';
+  if (/facture|invoice/.test(text)) return 'invoice';
+  if (/devis|quotation|\boffre\b|\bquote\b/.test(text)) return 'quotation';
+  if (/bon.*commande|purchase order|commande fournisseur/.test(text)) return 'purchase_order';
+  if (/conditions generales|terms and conditions/.test(text)) return 'legal_terms';
+  if (/contrat|contract|agreement/.test(text)) return 'contract';
+  return '';
+}
+
+function normalizeSelectedValue(field, rawValue) {
+  let value = String(rawValue || '').replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!value) return '';
+  if (field.label === 'DOCUMENT_TYPE') return inferDocumentTypeFromText(value);
+  if (field.label.endsWith('_SIREN') || field.label === 'SIREN') {
+    const digits = value.replace(/\D/g, '');
+    return digits.length === 9 ? digits : value;
+  }
+  if (field.label.endsWith('_SIRET') || field.label === 'SIRET') {
+    const digits = value.replace(/\D/g, '');
+    return digits.length === 14 ? digits : value;
+  }
+  if (field.label.endsWith('_VAT_NUMBER') || field.label === 'VAT_NUMBER') {
+    const compact = value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    return compact.length >= 10 ? compact : value;
+  }
+  return value;
+}
+
+function populateDocumentTypeSelect(select, other, currentValue) {
+  select.replaceChildren();
+  for (const [value, name] of DOCUMENT_TYPE_OPTIONS) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = name;
+    select.appendChild(option);
+  }
+  const current = valueText(currentValue).trim();
+  if (DOCUMENT_TYPE_VALUES.has(current)) {
+    select.value = current;
+    other.value = '';
+    other.classList.add('hidden');
+  } else {
+    select.value = '__other__';
+    other.value = current;
+    other.classList.remove('hidden');
+  }
 }
 
 function populateLabelSelect(select, current) {
@@ -368,7 +546,7 @@ function populateLabelSelect(select, current) {
 }
 
 function renderFields() {
-  const editable = hasPermission('annotations.draft') || hasPermission('annotations.validate');
+  const editable = editableAnnotation();
   fieldList.replaceChildren();
   state.fields.forEach((field, index) => {
     const node = $('fieldTemplate').content.firstElementChild.cloneNode(true);
@@ -382,6 +560,9 @@ function renderFields() {
     const status = node.querySelector('.field-status');
     const extracted = node.querySelector('.extracted-value');
     const corrected = node.querySelector('.corrected-value');
+    const documentType = node.querySelector('.document-type-select');
+    const documentTypeOther = node.querySelector('.document-type-other');
+    const remove = node.querySelector('.delete-field');
     const page = node.querySelector('.evidence-page');
     const bbox = node.querySelector('.evidence-bbox');
     const comment = node.querySelector('.field-comment');
@@ -389,7 +570,15 @@ function renderFields() {
     status.value = field.status;
     extracted.value = valueText(field.extracted_value);
     corrected.value = valueText(field.corrected_value);
-    corrected.disabled = field.status !== 'CORRECTED';
+    const isDocumentType = field.label === 'DOCUMENT_TYPE';
+    corrected.classList.toggle('hidden', isDocumentType);
+    documentType.classList.toggle('hidden', !isDocumentType);
+    if (isDocumentType) populateDocumentTypeSelect(
+      documentType,
+      documentTypeOther,
+      field.corrected_value ?? field.extracted_value,
+    );
+    else documentTypeOther.classList.add('hidden');
     page.value = field.evidence?.page || '';
     bbox.value = field.evidence?.bbox?.join(',') || '';
     comment.value = field.comment || '';
@@ -397,34 +586,86 @@ function renderFields() {
     path.disabled = !editable;
     status.disabled = !editable;
     corrected.disabled = !editable || field.status !== 'CORRECTED';
+    documentType.disabled = !editable || field.status !== 'CORRECTED';
+    documentTypeOther.disabled = !editable || field.status !== 'CORRECTED';
+    remove.disabled = !editable;
     page.disabled = !editable;
     bbox.disabled = !editable;
     comment.disabled = !editable;
-    node.addEventListener('click', () => {
-      if (state.selectedField === index) return;
-      state.selectedField = index;
-      fieldList.querySelectorAll('.field-card').forEach((item, itemIndex) => {
-        item.classList.toggle('selected', itemIndex === index);
-      });
-      drawAnnotations();
+    node.addEventListener('click', () => selectField(index));
+    label.addEventListener('change', event => {
+      field.label = event.target.value;
+      markDirty();
+      renderFields();
     });
-    label.addEventListener('change', event => { field.label = event.target.value; });
-    path.addEventListener('input', event => { field.path = event.target.value; });
+    path.addEventListener('input', event => { field.path = event.target.value; markDirty(); });
     status.addEventListener('change', event => {
       field.status = event.target.value;
+      if (isDocumentType && field.status === 'CORRECTED' && !field.corrected_value) {
+        field.corrected_value = documentType.value === '__other__'
+          ? documentTypeOther.value
+          : documentType.value;
+      }
       corrected.disabled = !editable || field.status !== 'CORRECTED';
+      documentType.disabled = !editable || field.status !== 'CORRECTED';
+      documentTypeOther.disabled = !editable || field.status !== 'CORRECTED';
       renderProgress();
       node.classList.toggle('reviewed', ['CONFIRMED', 'CORRECTED'].includes(field.status));
       node.classList.toggle('problem', ['ABSENT', 'AMBIGUOUS'].includes(field.status));
+      markDirty();
     });
-    corrected.addEventListener('input', event => { field.corrected_value = event.target.value; });
+    corrected.addEventListener('input', event => { field.corrected_value = event.target.value; markDirty(); });
+    documentType.addEventListener('change', event => {
+      const custom = event.target.value === '__other__';
+      documentTypeOther.classList.toggle('hidden', !custom);
+      field.corrected_value = custom ? documentTypeOther.value : event.target.value;
+      markDirty();
+      if (custom) documentTypeOther.focus();
+    });
+    documentTypeOther.addEventListener('input', event => {
+      field.corrected_value = event.target.value;
+      markDirty();
+    });
     page.addEventListener('input', () => updateEvidence(field, page.value, bbox.value));
     bbox.addEventListener('input', () => updateEvidence(field, page.value, bbox.value));
-    comment.addEventListener('input', event => { field.comment = event.target.value; });
+    comment.addEventListener('input', event => { field.comment = event.target.value; markDirty(); });
+    remove.addEventListener('click', event => {
+      event.stopPropagation();
+      removeField(index);
+    });
     fieldList.appendChild(node);
   });
   renderProgress();
   drawAnnotations();
+  updateJsonPreview();
+}
+
+async function selectField(index) {
+  if (index < 0 || index >= state.fields.length) return;
+  state.selectedField = index;
+  fieldList.querySelectorAll('.field-card').forEach((item, itemIndex) => {
+    item.classList.toggle('selected', itemIndex === index);
+  });
+  const targetPage = Number(state.fields[index].evidence?.page || 0);
+  if (state.pdf && targetPage > 0 && targetPage <= state.pdf.numPages && targetPage !== state.page) {
+    state.page = targetPage;
+    await renderPdfPage();
+  } else {
+    drawAnnotations();
+  }
+}
+
+function removeField(index) {
+  if (state.fields.length <= 1) {
+    return showMessage($('annotationMessage'), 'Une annotation doit conserver au moins un champ.', 'error');
+  }
+  const field = state.fields[index];
+  const meaningful = field.status !== 'UNREVIEWED' || field.corrected_value || field.comment;
+  if (meaningful && !window.confirm(`Retirer le champ « ${catalogName(field.label)} » ?`)) return;
+  state.fields.splice(index, 1);
+  state.selectedField = Math.min(index, state.fields.length - 1);
+  markDirty();
+  renderFields();
 }
 
 function updateEvidence(field, pageValue, bboxValue) {
@@ -434,12 +675,14 @@ function updateEvidence(field, pageValue, bboxValue) {
   } else {
     field.evidence = null;
   }
+  markDirty();
   drawAnnotations();
 }
 
 function renderProgress() {
   const reviewed = state.fields.filter(field => field.status !== 'UNREVIEWED').length;
   $('reviewProgress').textContent = `${reviewed}/${state.fields.length} champs vérifiés`;
+  updateJsonPreview();
 }
 
 async function loadPdf(documentId) {
@@ -449,30 +692,86 @@ async function loadPdf(documentId) {
   state.pdfUrl = URL.createObjectURL(blob);
   state.pdf = await pdfjsLib.getDocument(state.pdfUrl).promise;
   state.page = 1;
+  state.zoom = 1;
+  state.pageTextItems = [];
   $('pageCount').textContent = String(state.pdf.numPages);
   await renderPdfPage();
 }
 
 async function renderPdfPage() {
-  if (!state.pdf || state.rendering) return;
+  if (!state.pdf) return;
+  if (state.rendering) {
+    state.pendingRender = true;
+    return;
+  }
   state.rendering = true;
   try {
     const page = await state.pdf.getPage(state.page);
     const base = page.getViewport({ scale: 1 });
     const available = Math.max(360, $('pdfCanvasWrap').clientWidth - 40);
-    const scale = Math.min(1.7, Math.max(.7, available / base.width));
+    const fitScale = Math.min(1.7, Math.max(.7, available / base.width));
+    const scale = fitScale * state.zoom;
     const viewport = page.getViewport({ scale });
     const context = pdfCanvas.getContext('2d');
-    pdfCanvas.width = viewport.width;
-    pdfCanvas.height = viewport.height;
-    annotationCanvas.width = viewport.width;
-    annotationCanvas.height = viewport.height;
+    const width = Math.max(1, Math.round(viewport.width));
+    const height = Math.max(1, Math.round(viewport.height));
+    pdfCanvas.width = width;
+    pdfCanvas.height = height;
+    annotationCanvas.width = width;
+    annotationCanvas.height = height;
+    canvasStage.style.width = `${width}px`;
+    canvasStage.style.height = `${height}px`;
     await page.render({ canvasContext: context, viewport }).promise;
+    const textContent = await page.getTextContent();
+    state.pageTextItems = textContent.items
+      .filter(item => String(item.str || '').trim())
+      .map(item => {
+        const transform = pdfjsLib.Util.transform(viewport.transform, item.transform);
+        const itemHeight = Math.max(4, Math.hypot(transform[2], transform[3]));
+        const itemWidth = Math.max(2, Number(item.width || 0) * scale);
+        return {
+          text: String(item.str).trim(),
+          x0: transform[4],
+          y0: transform[5] - itemHeight,
+          x1: transform[4] + itemWidth,
+          y1: transform[5] + itemHeight * .2,
+        };
+      });
     $('currentPage').textContent = String(state.page);
+    $('zoomLevel').textContent = `${Math.round(state.zoom * 100)} %`;
     drawAnnotations();
   } finally {
     state.rendering = false;
+    if (state.pendingRender) {
+      state.pendingRender = false;
+      window.setTimeout(() => renderPdfPage(), 0);
+    }
   }
+}
+
+async function setZoom(value) {
+  state.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(value * 100) / 100));
+  await renderPdfPage();
+}
+
+async function focusSelectedField() {
+  const field = state.fields[state.selectedField];
+  if (!field?.evidence?.bbox) {
+    return showMessage($('annotationMessage'), 'Ce champ ne possède pas encore de zone PDF.', 'error');
+  }
+  const page = Number(field.evidence.page || 0);
+  if (page && page !== state.page) state.page = page;
+  if (state.zoom < 2) state.zoom = 2;
+  await renderPdfPage();
+  const [x0, y0, x1, y1] = field.evidence.bbox;
+  const wrap = $('pdfCanvasWrap');
+  const centerX = canvasStage.offsetLeft + (x0 + x1) / 2000 * annotationCanvas.width;
+  const centerY = canvasStage.offsetTop + (y0 + y1) / 2000 * annotationCanvas.height;
+  wrap.scrollTo({
+    left: Math.max(0, centerX - wrap.clientWidth / 2),
+    top: Math.max(0, centerY - wrap.clientHeight / 2),
+    behavior: 'smooth',
+  });
 }
 
 function drawAnnotations(preview = null) {
@@ -490,6 +789,14 @@ function drawAnnotations(preview = null) {
     const height = (y1 - y0) / 1000 * annotationCanvas.height;
     context.fillRect(x, y, width, height);
     context.strokeRect(x, y, width, height);
+    if (index === state.selectedField) {
+      context.fillStyle = '#2356d8';
+      for (const [handleX, handleY] of [[x, y], [x + width, y], [x, y + height], [x + width, y + height]]) {
+        context.beginPath();
+        context.arc(handleX, handleY, 4, 0, Math.PI * 2);
+        context.fill();
+      }
+    }
     context.fillStyle = index === state.selectedField ? '#2356d8' : '#0b8c65';
     context.font = '11px sans-serif';
     context.fillText(catalogName(field.label), x + 3, Math.max(11, y - 3));
@@ -504,39 +811,125 @@ function drawAnnotations(preview = null) {
 }
 
 let drawStart = null;
-annotationCanvas.addEventListener('pointerdown', event => {
-  if (state.selectedField < 0 || !(hasPermission('annotations.draft') || hasPermission('annotations.validate'))) return;
+
+function canvasPoint(event) {
   const rect = annotationCanvas.getBoundingClientRect();
-  drawStart = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  return {
+    x: (event.clientX - rect.left) * annotationCanvas.width / rect.width,
+    y: (event.clientY - rect.top) * annotationCanvas.height / rect.height,
+  };
+}
+
+function selectedPageText(box) {
+  const [x0, y0, x1, y1] = box;
+  const selected = state.pageTextItems.filter(item => {
+    const overlapX = Math.max(0, Math.min(x1, item.x1) - Math.max(x0, item.x0));
+    const overlapY = Math.max(0, Math.min(y1, item.y1) - Math.max(y0, item.y0));
+    const area = Math.max(1, (item.x1 - item.x0) * (item.y1 - item.y0));
+    return overlapX * overlapY / area >= .2
+      || ((item.x0 + item.x1) / 2 >= x0 && (item.x0 + item.x1) / 2 <= x1
+        && (item.y0 + item.y1) / 2 >= y0 && (item.y0 + item.y1) / 2 <= y1);
+  }).sort((left, right) => left.y0 - right.y0 || left.x0 - right.x0);
+  const lines = [];
+  for (const item of selected) {
+    const center = (item.y0 + item.y1) / 2;
+    let line = lines.find(candidate => Math.abs(candidate.center - center) <= Math.max(4, (item.y1 - item.y0) * .65));
+    if (!line) {
+      line = { center, items: [] };
+      lines.push(line);
+    }
+    line.items.push(item);
+  }
+  return lines
+    .sort((left, right) => left.center - right.center)
+    .map(line => line.items.sort((left, right) => left.x0 - right.x0).map(item => item.text).join(' '))
+    .join('\n').trim();
+}
+
+async function updateFieldFromRegion(fieldIndex, canvasBox, normalizedBox) {
+  const field = state.fields[fieldIndex];
+  const documentId = state.activeDocument?.documentId;
+  const requestId = ++state.regionRequest;
+  if (!field || !documentId) return;
+  const localText = selectedPageText(canvasBox);
+  let text = localText;
+  let source = localText ? 'pdf.js' : 'none';
+  showMessage($('annotationMessage'), 'Lecture de la zone en cours…');
+  try {
+    const result = await api(`/documents/${encodeURIComponent(documentId)}/region-text`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page: state.page, bbox: normalizedBox }),
+    });
+    if (state.activeDocument?.documentId !== documentId || state.regionRequest !== requestId) return;
+    if (result.text) {
+      text = result.text;
+      source = result.source || 'zone PDF';
+    }
+  } catch (error) {
+    if (!localText) {
+      showMessage($('annotationMessage'), `Zone mémorisée, mais sa lecture a échoué : ${error.message}`, 'error');
+      return;
+    }
+  }
+  if (state.fields[fieldIndex] !== field || state.regionRequest !== requestId) return;
+  const value = normalizeSelectedValue(field, text);
+  if (!value) {
+    showMessage(
+      $('annotationMessage'),
+      field.label === 'DOCUMENT_TYPE'
+        ? 'Zone mémorisée. Choisissez le type dans la liste corrigée.'
+        : 'Zone mémorisée, mais aucun texte lisible n’y a été trouvé.',
+      'error',
+    );
+    renderFields();
+    return;
+  }
+  if (normalizedComparable(value) === normalizedComparable(field.extracted_value)) {
+    field.status = 'CONFIRMED';
+    field.corrected_value = null;
+  } else {
+    field.status = 'CORRECTED';
+    field.corrected_value = value;
+  }
+  markDirty();
+  renderFields();
+  showMessage($('annotationMessage'), `Valeur relue depuis la zone (${source}) et JSON mis à jour.`, 'success');
+}
+
+annotationCanvas.addEventListener('pointerdown', event => {
+  if (state.selectedField < 0 || !editableAnnotation()) return;
+  drawStart = canvasPoint(event);
   annotationCanvas.setPointerCapture(event.pointerId);
 });
 annotationCanvas.addEventListener('pointermove', event => {
   if (!drawStart) return;
-  const rect = annotationCanvas.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
+  const { x, y } = canvasPoint(event);
   drawAnnotations({
     x: Math.min(drawStart.x, x), y: Math.min(drawStart.y, y),
     width: Math.abs(x - drawStart.x), height: Math.abs(y - drawStart.y),
   });
 });
-annotationCanvas.addEventListener('pointerup', event => {
+annotationCanvas.addEventListener('pointerup', async event => {
   if (!drawStart || state.selectedField < 0) return;
-  const rect = annotationCanvas.getBoundingClientRect();
-  const end = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  const end = canvasPoint(event);
   const x0 = Math.min(drawStart.x, end.x);
   const y0 = Math.min(drawStart.y, end.y);
   const x1 = Math.max(drawStart.x, end.x);
   const y1 = Math.max(drawStart.y, end.y);
   drawStart = null;
   if (x1 - x0 < 5 || y1 - y0 < 5) return drawAnnotations();
-  state.fields[state.selectedField].evidence = {
+  const fieldIndex = state.selectedField;
+  const normalizedBox = [x0, y0, x1, y1].map((value, index) => Math.round(
+    value / (index % 2 === 0 ? annotationCanvas.width : annotationCanvas.height) * 1000,
+  ));
+  state.fields[fieldIndex].evidence = {
     page: state.page,
-    bbox: [x0, y0, x1, y1].map((value, index) => Math.round(
-      value / (index % 2 === 0 ? annotationCanvas.width : annotationCanvas.height) * 1000,
-    )),
+    bbox: normalizedBox,
   };
+  markDirty();
   renderFields();
+  await updateFieldFromRegion(fieldIndex, [x0, y0, x1, y1], normalizedBox);
 });
 
 function annotationPayload(status) {
@@ -635,7 +1028,7 @@ function renderTraining() {
     const text = document.createElement('p'); text.className = 'muted-text'; text.textContent = `${dataset.documentCount} documents, ${dataset.regionCount} zones humaines.`;
     card.append(title, text);
     if (hasPermission('training.write')) {
-      const button = document.createElement('button'); button.className = 'button primary'; button.textContent = 'Lancer l’entraînement';
+      const button = document.createElement('button'); button.className = 'button primary'; button.textContent = 'Entraîner un candidat';
       button.addEventListener('click', () => prepareTraining(dataset.datasetId));
       card.appendChild(button);
     }
@@ -840,19 +1233,41 @@ $('documentSearch').addEventListener('input', renderDocumentList);
 $('documentStatusFilter').addEventListener('change', renderDocumentList);
 $('confirmAllButton').addEventListener('click', () => {
   state.fields.forEach(field => { if (field.status === 'UNREVIEWED') field.status = 'CONFIRMED'; });
+  markDirty();
   renderFields();
 });
 $('addFieldButton').addEventListener('click', () => {
   const index = state.fields.length;
-  state.fields.push({ path: `manual.field[${index}]`, label: state.catalog[0]?.label || 'DOCUMENT_TYPE', status: 'UNREVIEWED', extracted_value: '', corrected_value: null, evidence: null, comment: '' });
+  const unique = `${Date.now()}-${index}`;
+  state.fields.push({ path: `manual.field[${unique}]`, label: 'ORDER_NUMBER', status: 'UNREVIEWED', extracted_value: '', corrected_value: null, evidence: null, comment: '' });
   state.selectedField = index;
+  markDirty();
   renderFields();
+  fieldList.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 });
 $('saveDraftButton').addEventListener('click', () => saveAnnotation('DRAFT'));
 $('validateButton').addEventListener('click', () => saveAnnotation('HUMAN_VALIDATED'));
 $('createDatasetButton').addEventListener('click', createDataset);
 $('previousPageButton').addEventListener('click', async () => { if (state.page > 1) { state.page -= 1; await renderPdfPage(); } });
 $('nextPageButton').addEventListener('click', async () => { if (state.pdf && state.page < state.pdf.numPages) { state.page += 1; await renderPdfPage(); } });
+$('zoomOutButton').addEventListener('click', () => setZoom(state.zoom - ZOOM_STEP));
+$('zoomInButton').addEventListener('click', () => setZoom(state.zoom + ZOOM_STEP));
+$('fitWidthButton').addEventListener('click', () => setZoom(1));
+$('focusFieldButton').addEventListener('click', focusSelectedField);
+$('annotationNote').addEventListener('input', markDirty);
+
+document.addEventListener('keydown', event => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && state.activeDocument) {
+    event.preventDefault();
+    saveAnnotation('DRAFT');
+  }
+});
+
+window.addEventListener('beforeunload', event => {
+  if (!state.dirty) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
 
 document.querySelectorAll('.section-tab').forEach(button => button.addEventListener('click', () => {
   document.querySelectorAll('.section-tab').forEach(item => item.classList.toggle('active', item === button));

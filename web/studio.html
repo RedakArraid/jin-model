@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>JIN Studio – Annotation et entraînement</title>
-  <link rel="stylesheet" href="studio.css?v=2" />
+  <link rel="stylesheet" href="studio.css?v=3" />
 </head>
 <body>
   <header class="topbar">
@@ -36,6 +36,13 @@
     </section>
 
     <section id="studioApp" class="hidden">
+      <ol class="workflow-strip" aria-label="Cycle d'apprentissage JIN">
+        <li><strong>1. Annoter</strong><span>Corriger les valeurs et les zones.</span></li>
+        <li><strong>2. Valider</strong><span>Validation humaine document par document.</span></li>
+        <li><strong>3. Dataset</strong><span>Créer une version depuis les documents validés.</span></li>
+        <li><strong>4. Entraîner</strong><span>Lancer un modèle candidat.</span></li>
+        <li><strong>5. Évaluer</strong><span>Promouvoir seulement après non-régression.</span></li>
+      </ol>
       <nav class="section-tabs" aria-label="Sections JIN Studio">
         <button class="section-tab active" data-section="annotations">Annotations</button>
         <button class="section-tab" data-section="datasets">Datasets</button>
@@ -86,11 +93,20 @@
               <button id="previousPageButton" class="button secondary compact">←</button>
               <span>Page <strong id="currentPage">1</strong> / <span id="pageCount">1</span></span>
               <button id="nextPageButton" class="button secondary compact">→</button>
-              <span class="muted-text">Sélectionnez un champ puis tracez sa zone sur le PDF.</span>
+              <div class="zoom-controls" role="group" aria-label="Zoom du document">
+                <button id="zoomOutButton" class="button secondary compact" title="Réduire">−</button>
+                <span id="zoomLevel" class="zoom-level">100 %</span>
+                <button id="zoomInButton" class="button secondary compact" title="Agrandir">+</button>
+                <button id="fitWidthButton" class="button secondary compact">Ajuster</button>
+                <button id="focusFieldButton" class="button secondary compact">Cadrer le champ</button>
+              </div>
+              <span class="muted-text pdf-help">Sélectionnez un champ puis tracez sa zone : sa valeur sera relue automatiquement.</span>
             </div>
             <div id="pdfCanvasWrap" class="pdf-canvas-wrap">
-              <canvas id="pdfCanvas"></canvas>
-              <canvas id="annotationCanvas"></canvas>
+              <div id="canvasStage" class="canvas-stage">
+                <canvas id="pdfCanvas"></canvas>
+                <canvas id="annotationCanvas"></canvas>
+              </div>
             </div>
           </section>
 
@@ -117,6 +133,10 @@
             </div>
             <div id="annotationMessage" class="inline-notice hidden"></div>
             <div id="fieldList" class="field-list"></div>
+            <details class="json-preview">
+              <summary>Aperçu JSON de l’annotation (mis à jour en direct)</summary>
+              <pre id="annotationJsonPreview"></pre>
+            </details>
             <div class="annotation-actions">
               <button id="saveDraftButton" class="button secondary">Enregistrer le brouillon</button>
               <button id="validateButton" class="button primary">Valider pour l’apprentissage</button>
@@ -141,7 +161,7 @@
         <div class="section-header">
           <div>
             <h2>Entraînements</h2>
-            <p>Les jeux validés sont entraînés par un worker isolé, sans ralentir le moteur d’extraction.</p>
+            <p>Les jeux validés entraînent un candidat isolé. Le runtime actif n’est jamais remplacé automatiquement.</p>
           </div>
         </div>
         <div id="trainingMessage" class="inline-notice hidden"></div>
@@ -195,17 +215,24 @@
           <select class="field-label" aria-label="Type de champ"></select>
           <input class="field-path" aria-label="Chemin canonique" />
         </div>
-        <select class="field-status">
-          <option value="UNREVIEWED">À vérifier</option>
-          <option value="CONFIRMED">Correct</option>
-          <option value="CORRECTED">Corrigé</option>
-          <option value="ABSENT">Absent du document</option>
-          <option value="AMBIGUOUS">Ambigu</option>
-        </select>
+        <div class="field-heading-actions">
+          <select class="field-status">
+            <option value="UNREVIEWED">À vérifier</option>
+            <option value="CONFIRMED">Correct</option>
+            <option value="CORRECTED">Corrigé</option>
+            <option value="ABSENT">Absent du document</option>
+            <option value="AMBIGUOUS">Ambigu</option>
+          </select>
+          <button class="delete-field button danger compact" type="button" title="Retirer ce champ">Retirer</button>
+        </div>
       </div>
       <div class="field-values">
         <label>Valeur JIN<input class="extracted-value" readonly /></label>
-        <label>Valeur corrigée<input class="corrected-value" /></label>
+        <label>Valeur corrigée
+          <input class="corrected-value" />
+          <select class="document-type-select hidden" aria-label="Type de document corrigé"></select>
+          <input class="document-type-other hidden" placeholder="Précisez le type de document" />
+        </label>
       </div>
       <details>
         <summary>Preuve dans le PDF</summary>
@@ -219,6 +246,6 @@
   </template>
 
   <script src="vendor/pdfjs-3.11.174/pdf.min.js"></script>
-  <script src="studio.js?v=2"></script>
+  <script src="studio.js?v=4"></script>
 </body>
 </html>

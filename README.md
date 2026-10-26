@@ -118,6 +118,13 @@ PDF, les révisions, la création des datasets et les entraînements isolés,
 sans alourdir le parcours ADV de GenieCommande. Voir
 [la documentation JIN Studio](docs/JIN_STUDIO.md).
 
+Les intégrations distantes disposent aussi d'une API REST authentifiée sous
+`/api/studio` et d'un serveur MCP Streamable HTTP sous `/mcp`. Compose les garde
+sur `127.0.0.1` par défaut ; l'ouverture réseau doit passer par un VPN ou un
+reverse proxy HTTPS. Une annotation sauvegardée ne modifie jamais directement
+le runtime : validation humaine, dataset versionné, entraînement candidat,
+évaluation et promotion restent des étapes séparées.
+
 ## Historique des capacités spatiales et d'apprentissage
 
 Les sections V5.2 à V5.7 ci-dessous décrivent les étapes historiques qui ont

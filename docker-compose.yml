@@ -1,5 +1,6 @@
 services:
   api:
+    image: jin-model-api
     runtime: "${CONTAINER_RUNTIME:-runc}"
     build:
       context: .
@@ -17,6 +18,7 @@ services:
       JIN_FEEDBACK_RETRAIN_ON_WRITE: "0"
       JIN_STUDIO_TOKEN: ${JIN_STUDIO_TOKEN:-}
       JIN_STUDIO_SERVICE_TOKEN: ${JIN_STUDIO_SERVICE_TOKEN:-}
+      JIN_STUDIO_SERVICE_TOKEN_FILE: /app/data/studio/service-token
       JIN_STUDIO_PASSWORD_MIN_LENGTH: ${JIN_STUDIO_PASSWORD_MIN_LENGTH:-8}
       JIN_STUDIO_SESSION_HOURS: ${JIN_STUDIO_SESSION_HOURS:-12}
       JIN_STUDIO_COOKIE_SECURE: ${JIN_STUDIO_COOKIE_SECURE:-auto}
@@ -47,6 +49,43 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+
+  mcp:
+    image: jin-model-api
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: "${HTTP_PROXY:-}"
+        HTTPS_PROXY: "${HTTPS_PROXY:-}"
+        NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1}"
+    container_name: jin-model-mcp
+    restart: unless-stopped
+    command: ["python", "-m", "jin_runtime.studio_mcp"]
+    environment:
+      JIN_STUDIO_DIR: /app/data/studio
+      JIN_STUDIO_SHARED_STORAGE: "1"
+      JIN_STUDIO_SERVICE_TOKEN: ${JIN_STUDIO_SERVICE_TOKEN:-}
+      JIN_STUDIO_TOKEN: ${JIN_STUDIO_TOKEN:-}
+      JIN_FEEDBACK_TOKEN: ${JIN_FEEDBACK_TOKEN:-}
+      JIN_STUDIO_SERVICE_TOKEN_FILE: /app/data/studio/service-token
+      JIN_STUDIO_MCP_TOKEN: ${JIN_STUDIO_MCP_TOKEN:-}
+      JIN_STUDIO_MCP_ALLOW_VALIDATION: ${JIN_STUDIO_MCP_ALLOW_VALIDATION:-0}
+      JIN_STUDIO_MCP_ALLOWED_HOSTS: ${JIN_STUDIO_MCP_ALLOWED_HOSTS:-mcp,mcp:*,localhost,localhost:*,127.0.0.1,127.0.0.1:*}
+      JIN_STUDIO_MCP_ALLOWED_ORIGINS: ${JIN_STUDIO_MCP_ALLOWED_ORIGINS:-}
+      JIN_STUDIO_MIN_TRAINING_DOCUMENTS: ${JIN_STUDIO_MIN_TRAINING_DOCUMENTS:-20}
+    volumes:
+      - ./data:/app/data
+    expose:
+      - "8001"
+    networks:
+      - inference
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   trainer:
     profiles: ["training"]
@@ -82,8 +121,10 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      mcp:
+        condition: service_healthy
     ports:
-      - "127.0.0.1:${JIN_WEB_PORT:-8080}:80"
+      - "${JIN_WEB_BIND:-127.0.0.1}:${JIN_WEB_PORT:-8080}:80"
     networks:
       - default
       - inference

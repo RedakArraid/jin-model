@@ -453,6 +453,39 @@ def _clean_party_code(value: Any) -> Any:
     return max(candidates, key=lambda item: item[0])[1] if candidates else value
 
 
+def _valid_luhn_identifier(value: str) -> bool:
+    if not value.isdigit():
+        return False
+    total = 0
+    parity = len(value) % 2
+    for index, char in enumerate(value):
+        digit = int(char)
+        if index % 2 == parity:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
+
+
+def _party_registration_identifiers(source: dict[str, Any]) -> dict[str, str]:
+    """Publish checksum-valid SIREN/SIRET as first-class clean fields."""
+    raw_candidates = (
+        source.get("siret"),
+        source.get("company_registration_number"),
+        source.get("siren"),
+    )
+    for raw in raw_candidates:
+        number = re.sub(r"\D", "", str(raw or ""))
+        if len(number) == 14:
+            siren = number[:9]
+            if _valid_luhn_identifier(number) and _valid_luhn_identifier(siren):
+                return {"siren": siren, "siret": number}
+        elif len(number) == 9 and _valid_luhn_identifier(number):
+            return {"siren": number}
+    return {}
+
+
 def _party(source: dict[str, Any]) -> dict[str, Any]:
     raw_name = source.get("name")
     name = _clean_party_name(raw_name)
@@ -478,6 +511,7 @@ def _party(source: dict[str, Any]) -> dict[str, Any]:
         "address": _address_components(source),
         "vat_number": source.get("vat_number"),
         "company_registration_number": source.get("company_registration_number"),
+        **_party_registration_identifiers(source),
     })
 
 

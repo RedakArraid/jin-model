@@ -18,16 +18,13 @@ from jin_runtime.studio_security import (
     service_principal,
     session_duration_hours,
 )
+from jin_runtime.studio_service_auth import configured_service_token
+from jin_runtime.studio_region_text import StudioRegionError, extract_pdf_region_text
 from jin_runtime.studio_store import StudioConflictError, StudioNotFoundError, StudioStore
 
 
 def _configured_service_token() -> str:
-    return str(
-        os.getenv("JIN_STUDIO_SERVICE_TOKEN")
-        or os.getenv("JIN_STUDIO_TOKEN")
-        or os.getenv("JIN_FEEDBACK_TOKEN")
-        or ""
-    ).strip()
+    return configured_service_token()
 
 
 def _cookie_name() -> str:
@@ -72,7 +69,7 @@ def _authenticate(request: Request, repository: StudioStore) -> StudioPrincipal:
     raise HTTPException(
         status_code=401,
         detail="Authentification JIN Studio requise",
-        headers={"WWW-Authenticate": "Session"},
+        headers={"WWW-Authenticate": "Bearer"},
     )
 
 
@@ -148,6 +145,8 @@ def create_studio_router(store: StudioStore | None = None) -> APIRouter:
                 for role, permissions in ROLE_PERMISSIONS.items()
             ],
             "hasUsers": repository.user_count() > 0,
+            "serviceAccessConfigured": bool(_configured_service_token()),
+            "mcpEndpoint": "/mcp",
         }
 
     @router.post("/auth/login")
@@ -287,6 +286,23 @@ def create_studio_router(store: StudioStore | None = None) -> APIRouter:
             filename=document["filename"],
             content_disposition_type="inline",
         )
+
+    @router.post("/documents/{document_id}/region-text")
+    async def document_region_text(document_id: str, request: Request) -> dict[str, Any]:
+        """Read the value inside a human-drawn box, with OCR as a scan fallback."""
+        _authorize(request, repository, "annotations.draft", csrf=True)
+        payload = await _request_json_object(request, field="Zone PDF")
+        try:
+            path = repository.pdf_path(document_id)
+            return extract_pdf_region_text(
+                path,
+                page_number=payload.get("page"),
+                bbox=payload.get("bbox"),
+            )
+        except StudioNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Studio document not found") from exc
+        except StudioRegionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.put("/documents/{document_id}/annotation", status_code=201)
     async def save_annotation(document_id: str, request: Request) -> dict[str, Any]:

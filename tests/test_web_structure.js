@@ -7,6 +7,9 @@ const { test } = require('node:test');
 
 const html = fs.readFileSync(path.join(__dirname, '../web/index.html'), 'utf8');
 const js = fs.readFileSync(path.join(__dirname, '../web/app.js'), 'utf8');
+const studioHtml = fs.readFileSync(path.join(__dirname, '../web/studio.html'), 'utf8');
+const studioJs = fs.readFileSync(path.join(__dirname, '../web/studio.js'), 'utf8');
+const studioCss = fs.readFileSync(path.join(__dirname, '../web/studio.css'), 'utf8');
 
 test('every static DOM id used by the frontend exists', () => {
   const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map(match => match[1]));
@@ -28,4 +31,25 @@ test('commercial metadata, tax provenance and both JSON exports are visible', ()
   assert.match(html, /Les ports, taxes et contributions sont exclus de cette liste/);
   assert.match(html, /styles\.css\?v=5\.13\.3/);
   assert.match(html, /app\.js\?v=5\.16\.9/);
+});
+
+test('JIN Studio JavaScript only references DOM ids present in its page', () => {
+  const ids = new Set([...studioHtml.matchAll(/id="([^"]+)"/g)].map(match => match[1]));
+  const used = [...studioJs.matchAll(/\$\(['"]([^'"]+)['"]\)/g)].map(match => match[1]);
+  const missing = [...new Set(used.filter(id => !ids.has(id)))];
+  assert.deepEqual(missing, []);
+});
+
+test('JIN Studio exposes synchronized values, removable fields and coordinate-safe zoom', () => {
+  for (const id of [
+    'zoomOutButton', 'zoomInButton', 'fitWidthButton', 'focusFieldButton',
+    'canvasStage', 'annotationJsonPreview',
+  ]) {
+    assert.match(studioHtml, new RegExp(`id="${id}"`));
+  }
+  assert.match(studioHtml, /document-type-select/);
+  assert.match(studioHtml, /delete-field/);
+  assert.match(studioJs, /updateFieldFromRegion/);
+  assert.match(studioJs, /value \/ \(index % 2 === 0 \? annotationCanvas\.width : annotationCanvas\.height\) \* 1000/);
+  assert.match(studioCss, /\.canvas-stage \{ position: relative/);
 });

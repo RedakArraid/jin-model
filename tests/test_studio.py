@@ -96,6 +96,10 @@ def test_studio_api_is_authenticated_and_supports_annotation_flow(tmp_path, monk
     app.include_router(create_studio_router(StudioStore(tmp_path / "studio")))
     client = TestClient(app)
 
+    config = client.get("/studio/auth/config")
+    assert config.status_code == 200
+    assert config.json()["serviceAccessConfigured"] is True
+    assert config.json()["mcpEndpoint"] == "/mcp"
     assert client.get("/studio/status").status_code == 401
     headers = {"Authorization": "Bearer studio-secret"}
     created = client.post(
@@ -133,6 +137,31 @@ def test_studio_api_is_authenticated_and_supports_annotation_flow(tmp_path, monk
         "/studio/datasets", headers=headers, json=[document_id]
     )
     assert invalid_dataset.status_code == 400
+
+
+def test_studio_api_accepts_the_generated_file_backed_machine_token(
+    tmp_path, monkeypatch
+):
+    for name in (
+        "JIN_STUDIO_SERVICE_TOKEN",
+        "JIN_STUDIO_TOKEN",
+        "JIN_FEEDBACK_TOKEN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    token_file = tmp_path / "shared" / "service-token"
+    monkeypatch.setenv("JIN_STUDIO_SERVICE_TOKEN_FILE", str(token_file))
+    app = FastAPI()
+    app.include_router(create_studio_router(StudioStore(tmp_path / "studio")))
+    client = TestClient(app)
+
+    assert client.get("/studio/status").status_code == 401
+    token = token_file.read_text(encoding="utf-8").strip()
+    response = client.get(
+        "/studio/status", headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["enabled"] is True
 
 
 def test_passwords_are_scrypt_hashed_and_never_stored_in_plain_text():

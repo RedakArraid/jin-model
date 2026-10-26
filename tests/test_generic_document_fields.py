@@ -29,6 +29,9 @@ class GenericDocumentFieldsTests(unittest.TestCase):
         buyer = out["business_extractions"]["purchase_order"]["buyer"]
         self.assertEqual(buyer["vat_number"], "FR71775708373")
         self.assertEqual(buyer["company_registration_number"], "77570837300011")
+        clean_buyer = build_clean_output(out)["order"]["parties"]["buyer"]
+        self.assertEqual(clean_buyer["siren"], "775708373")
+        self.assertEqual(clean_buyer["siret"], "77570837300011")
 
     def test_structured_checksum_valid_siret_derives_vat_when_text_stream_missed_it(self):
         payload = {

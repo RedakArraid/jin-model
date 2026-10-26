@@ -57,6 +57,8 @@ main { min-height: calc(100vh - 86px); }
 .button.primary { color: white; background: var(--primary); }
 .button.primary:hover { background: var(--primary-dark); }
 .button.secondary { color: var(--ink); background: white; border-color: var(--line); }
+.button.danger { color: var(--danger); background: white; border-color: #f0bac1; }
+.button.danger:hover { background: #fff0f2; }
 .topbar .button.secondary { color: white; background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.26); }
 .button.compact { min-height: 34px; padding: 7px 11px; font-size: 13px; }
 
@@ -73,6 +75,7 @@ main { min-height: calc(100vh - 86px); }
 }
 .badge.muted { color: #e3e8f3; background: rgba(255,255,255,.12); }
 .badge.draft { color: var(--warning); background: #fff1d6; }
+.badge.dirty::after { content: " • non enregistré"; }
 
 .login-card {
   width: min(720px, calc(100% - 32px));
@@ -105,6 +108,19 @@ input:focus, select:focus { outline: 3px solid rgba(35, 86, 216, .13); border-co
   border-bottom: 1px solid var(--line);
   background: white;
 }
+.workflow-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--line);
+  list-style: none;
+}
+.workflow-strip li { display: grid; gap: 3px; padding: 11px 14px; background: #f9fbff; }
+.workflow-strip strong { color: var(--primary); font-size: 12px; }
+.workflow-strip span { color: var(--muted); font-size: 11px; }
 .section-tab {
   padding: 11px 16px;
   border: 0;
@@ -173,10 +189,14 @@ input:focus, select:focus { outline: 3px solid rgba(35, 86, 216, .13); border-co
 .panel-toolbar.sticky { position: sticky; top: 0; z-index: 4; background: white; }
 .panel-toolbar strong { display: block; max-width: 440px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hash { display: block; margin-top: 3px; color: var(--muted); font: 10px ui-monospace, monospace; }
-.pdf-controls { display: flex; align-items: center; gap: 9px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.pdf-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.zoom-controls { display: inline-flex; align-items: center; gap: 5px; margin-left: 6px; }
+.zoom-level { min-width: 54px; color: var(--muted); text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; }
+.pdf-help { flex: 1 1 240px; text-align: right; }
 .pdf-canvas-wrap { position: relative; flex: 1; overflow: auto; padding: 16px; background: #e9edf4; }
-#pdfCanvas, #annotationCanvas { display: block; margin: 0 auto; box-shadow: 0 5px 18px rgba(20,32,55,.16); }
-#annotationCanvas { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); box-shadow: none; cursor: crosshair; }
+.canvas-stage { position: relative; margin: 0 auto; box-shadow: 0 5px 18px rgba(20,32,55,.16); }
+#pdfCanvas, #annotationCanvas { display: block; }
+#annotationCanvas { position: absolute; inset: 0; box-shadow: none; cursor: crosshair; touch-action: none; }
 .field-card.selected { outline: 3px solid rgba(35,86,216,.2); border-color: var(--primary); }
 
 .fields-panel { padding-bottom: 88px; }
@@ -192,8 +212,11 @@ label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weig
 .field-label { display: block; min-height: 31px; padding: 5px 7px; font-weight: 750; }
 .field-path { min-height: 27px; margin-top: 4px; padding: 4px 7px; color: var(--muted); font: 10px ui-monospace, monospace; }
 .field-status { width: 180px; }
+.field-heading-actions { display: flex; align-items: center; gap: 7px; }
+.delete-field { min-height: 38px; }
 .field-values { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 11px; }
-.corrected-value:disabled { color: #98a2b3; background: #f3f5f8; }
+.corrected-value:disabled, .document-type-select:disabled, .document-type-other:disabled { color: #98a2b3; background: #f3f5f8; }
+.document-type-other { margin-top: 6px; }
 details { margin-top: 10px; color: var(--muted); font-size: 12px; }
 summary { cursor: pointer; font-weight: 650; }
 .evidence-grid { display: grid; grid-template-columns: 80px 1fr 1fr; gap: 9px; margin-top: 9px; }
@@ -207,6 +230,8 @@ summary { cursor: pointer; font-weight: 650; }
   border-top: 1px solid var(--line);
   background: rgba(255,255,255,.96);
 }
+.json-preview { margin: 0 16px 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: #f8faff; }
+.json-preview pre { max-height: 310px; margin: 10px 0 0; overflow: auto; color: #253858; font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
 
 .inline-notice { margin: 10px 0; padding: 9px 11px; border-radius: 8px; color: #26436f; background: #eaf1ff; font-size: 12px; }
 .inline-notice.error { color: var(--danger); background: #ffeaed; }
@@ -272,9 +297,12 @@ summary { cursor: pointer; font-weight: 650; }
   .pdf-panel { height: 65vh; }
   .reviewer-row, .field-values, .evidence-grid { grid-template-columns: 1fr; }
   .field-heading { align-items: flex-start; }
+  .field-heading-actions { align-items: stretch; flex-direction: column; }
   .field-status { width: 150px; }
+  .pdf-help { flex-basis: 100%; text-align: left; }
   .section-header { align-items: flex-start; flex-direction: column; }
   .login-form, .user-create-card { grid-template-columns: 1fr; }
   .section-tabs { overflow-x: auto; }
+  .workflow-strip { grid-template-columns: 1fr; }
   .audit-row { grid-template-columns: 1fr; gap: 3px; }
 }
