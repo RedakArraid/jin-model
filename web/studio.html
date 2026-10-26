@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>JIN Studio – Annotation et entraînement</title>
-  <link rel="stylesheet" href="studio.css?v=5" />
+  <link rel="stylesheet" href="studio.css?v=6" />
 </head>
 <body>
   <header class="topbar">
@@ -184,13 +184,57 @@
             <p class="muted-text">Le nouveau secret n’est affiché qu’une fois. Sa création révoque immédiatement l’ancien jeton API et, sauf configuration d’un secret MCP distinct, le jeton MCP.</p>
           </div>
           <button id="rotateServiceTokenButton" class="button danger" type="button">Générer / remplacer le jeton</button>
-          <div id="serviceTokenResult" class="service-token-result hidden">
-            <label>Nouveau jeton machine<input id="serviceTokenValue" type="text" readonly autocomplete="off" spellcheck="false" /></label>
+          <div id="serviceTokenResult" class="service-token-result">
+            <label>Jeton pour la configuration
+              <input id="serviceTokenValue" type="password" autocomplete="new-password" spellcheck="false" placeholder="Générez ou collez un jeton existant" />
+            </label>
             <div class="top-actions">
-              <button id="copyServiceTokenButton" class="button primary compact" type="button">Copier</button>
-              <button id="hideServiceTokenButton" class="button secondary compact" type="button">Masquer</button>
+              <button id="copyServiceTokenButton" class="button primary compact" type="button">Copier le jeton</button>
+              <button id="toggleServiceTokenButton" class="button secondary compact" type="button">Afficher</button>
+              <button id="hideServiceTokenButton" class="button secondary compact" type="button">Effacer</button>
             </div>
+            <p class="muted-text service-token-privacy">Un jeton collé reste uniquement dans cette page et n’est pas renvoyé au serveur.</p>
           </div>
+          <section class="connection-builder" aria-labelledby="connectionBuilderTitle">
+            <div>
+              <h3 id="connectionBuilderTitle">Configuration de connexion</h3>
+              <p class="muted-text">Indiquez l’adresse HTTPS ou VPN réellement accessible depuis le client distant. Les configurations sont mises à jour automatiquement.</p>
+            </div>
+            <div class="connection-base-row">
+              <label>Adresse publique de JIN Studio
+                <input id="connectionBaseUrl" type="url" autocomplete="url" spellcheck="false" placeholder="https://jin.exemple" />
+              </label>
+              <label>Format MCP
+                <select id="mcpConfigFormat">
+                  <option value="codex">Codex config.toml</option>
+                  <option value="json">JSON MCP générique</option>
+                </select>
+              </label>
+            </div>
+            <div class="connection-config-grid">
+              <article class="connection-config-card">
+                <div class="connection-config-heading">
+                  <div>
+                    <h4>Configuration MCP</h4>
+                    <p id="mcpConfigLocation" class="muted-text">Pour Codex : à coller dans <code>~/.codex/config.toml</code>.</p>
+                  </div>
+                  <button id="copyMcpConfigButton" class="button primary compact" type="button">Copier</button>
+                </div>
+                <textarea id="mcpConnectionConfig" readonly spellcheck="false" aria-label="Configuration MCP générée"></textarea>
+              </article>
+              <article class="connection-config-card">
+                <div class="connection-config-heading">
+                  <div>
+                    <h4>Configuration API REST</h4>
+                    <p class="muted-text">Base API et en-tête Bearer pour un client distant.</p>
+                  </div>
+                  <button id="copyApiConfigButton" class="button primary compact" type="button">Copier</button>
+                </div>
+                <textarea id="apiConnectionConfig" readonly spellcheck="false" aria-label="Configuration API générée"></textarea>
+              </article>
+            </div>
+            <p class="connection-secret-warning">Ces configurations contiennent le jeton en clair lorsqu’il est renseigné. Conservez-les dans un emplacement protégé.</p>
+          </section>
           <div id="serviceTokenMessage" class="inline-notice hidden"></div>
         </article>
         <form id="createUserForm" class="user-create-card">
@@ -268,6 +312,6 @@
   </template>
 
   <script src="vendor/pdfjs-3.11.174/pdf.min.js"></script>
-  <script src="studio.js?v=7"></script>
+  <script src="studio.js?v=8"></script>
 </body>
 </html>

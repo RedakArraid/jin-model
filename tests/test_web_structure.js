@@ -45,6 +45,9 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
     'zoomOutButton', 'zoomInButton', 'fitWidthButton', 'focusFieldButton',
     'canvasStage', 'annotationJsonPreview', 'serviceTokenStatus',
     'rotateServiceTokenButton', 'serviceTokenResult', 'serviceTokenValue',
+    'toggleServiceTokenButton', 'connectionBaseUrl', 'mcpConfigFormat',
+    'mcpConfigLocation', 'mcpConnectionConfig', 'apiConnectionConfig', 'copyMcpConfigButton',
+    'copyApiConfigButton',
   ]) {
     assert.match(studioHtml, new RegExp(`id="${id}"`));
   }
@@ -57,6 +60,13 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
   assert.match(studioJs, /field\.path = availableCanonicalPath\(field\.label, field\.path, index\)/);
   assert.doesNotMatch(studioJs, /Le jeton est géré hors de JIN Studio/);
   assert.match(studioJs, /rotateServiceTokenFromUi/);
+  assert.match(studioJs, /renderConnectionConfigs/);
+  assert.match(studioJs, /\[mcp_servers\.jin_studio\]/);
+  assert.match(studioJs, /http_headers/);
+  assert.match(studioJs, /streamable-http/);
+  assert.match(studioJs, /\/api\/studio/);
+  assert.match(studioHtml, /studio\.js\?v=8/);
+  assert.match(studioHtml, /studio\.css\?v=6/);
   assert.match(studioJs, /updateFieldFromRegion/);
   assert.match(studioJs, /value \/ \(index % 2 === 0 \? annotationCanvas\.width : annotationCanvas\.height\) \* 1000/);
   assert.match(studioCss, /\.canvas-stage \{ position: relative/);

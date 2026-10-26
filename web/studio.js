@@ -1164,10 +1164,12 @@ async function rotateServiceTokenFromUi() {
       body: JSON.stringify({ confirm: true }),
     });
     $('serviceTokenValue').value = payload.token;
-    $('serviceTokenResult').classList.remove('hidden');
+    $('serviceTokenValue').type = 'password';
+    $('toggleServiceTokenButton').textContent = 'Afficher';
+    renderConnectionConfigs();
     showMessage(
       $('serviceTokenMessage'),
-      'Jeton créé. Copiez-le maintenant : il ne sera plus affiché après masquage ou rechargement.',
+      'Jeton créé. Copiez-le maintenant : il ne sera plus affiché après effacement ou rechargement.',
       'success',
     );
     await Promise.all([loadServiceTokenStatus(), loadAuditEvents()]);
@@ -1190,8 +1192,74 @@ async function copyServiceToken() {
 
 function hideServiceToken() {
   $('serviceTokenValue').value = '';
-  $('serviceTokenResult').classList.add('hidden');
-  showMessage($('serviceTokenMessage'), '', '');
+  $('serviceTokenValue').type = 'password';
+  $('toggleServiceTokenButton').textContent = 'Afficher';
+  renderConnectionConfigs();
+  showMessage($('serviceTokenMessage'), 'Jeton effacé de cette page. Le jeton actif côté serveur n’a pas été révoqué.', 'success');
+}
+
+function toggleServiceTokenVisibility() {
+  const input = $('serviceTokenValue');
+  const reveal = input.type === 'password';
+  input.type = reveal ? 'text' : 'password';
+  $('toggleServiceTokenButton').textContent = reveal ? 'Masquer' : 'Afficher';
+}
+
+function normalizedConnectionBaseUrl() {
+  let value = $('connectionBaseUrl').value.trim() || window.location.origin;
+  if (!/^https?:\/\//i.test(value)) value = `https://${value}`;
+  return value.replace(/\/+$/, '');
+}
+
+function connectionTokenOrPlaceholder() {
+  return $('serviceTokenValue').value.trim() || '<JETON_JIN_STUDIO>';
+}
+
+function renderConnectionConfigs() {
+  const baseUrl = normalizedConnectionBaseUrl();
+  const token = connectionTokenOrPlaceholder();
+  const authorization = `Bearer ${token}`;
+  const mcpUrl = `${baseUrl}/mcp`;
+  const usesGenericJson = $('mcpConfigFormat').value === 'json';
+
+  if (usesGenericJson) {
+    $('mcpConnectionConfig').value = JSON.stringify({
+      mcpServers: {
+        'jin-studio': {
+          type: 'streamable-http',
+          url: mcpUrl,
+          headers: { Authorization: authorization },
+        },
+      },
+    }, null, 2);
+  } else {
+    $('mcpConnectionConfig').value = [
+      '[mcp_servers.jin_studio]',
+      `url = ${JSON.stringify(mcpUrl)}`,
+      `http_headers = { Authorization = ${JSON.stringify(authorization)} }`,
+      'required = true',
+    ].join('\n');
+  }
+  $('mcpConfigLocation').textContent = usesGenericJson
+    ? 'À coller dans la section MCP du client compatible Streamable HTTP.'
+    : 'Pour Codex : à coller dans ~/.codex/config.toml.';
+
+  $('apiConnectionConfig').value = JSON.stringify({
+    baseUrl: `${baseUrl}/api/studio`,
+    headers: { Authorization: authorization },
+  }, null, 2);
+}
+
+async function copyGeneratedConfig(elementId, description) {
+  const element = $(elementId);
+  try {
+    await navigator.clipboard.writeText(element.value);
+    showMessage($('serviceTokenMessage'), `${description} copiée dans le presse-papiers.`, 'success');
+  } catch (_) {
+    element.focus();
+    element.select();
+    showMessage($('serviceTokenMessage'), 'Copie automatique indisponible : utilisez Ctrl+C.', 'error');
+  }
 }
 
 async function loadUsers() {
@@ -1352,7 +1420,13 @@ $('createUserForm').addEventListener('submit', createUser);
 $('refreshAuditButton').addEventListener('click', () => loadAuditEvents().catch(error => showMessage($('userMessage'), error.message, 'error')));
 $('rotateServiceTokenButton').addEventListener('click', rotateServiceTokenFromUi);
 $('copyServiceTokenButton').addEventListener('click', copyServiceToken);
+$('toggleServiceTokenButton').addEventListener('click', toggleServiceTokenVisibility);
 $('hideServiceTokenButton').addEventListener('click', hideServiceToken);
+$('connectionBaseUrl').addEventListener('input', renderConnectionConfigs);
+$('serviceTokenValue').addEventListener('input', renderConnectionConfigs);
+$('mcpConfigFormat').addEventListener('change', renderConnectionConfigs);
+$('copyMcpConfigButton').addEventListener('click', () => copyGeneratedConfig('mcpConnectionConfig', 'Configuration MCP'));
+$('copyApiConfigButton').addEventListener('click', () => copyGeneratedConfig('apiConnectionConfig', 'Configuration API'));
 $('documentInput').addEventListener('change', event => uploadDocument(event.target.files?.[0]));
 $('documentSearch').addEventListener('input', renderDocumentList);
 $('documentStatusFilter').addEventListener('change', renderDocumentList);
@@ -1408,4 +1482,6 @@ api('/auth/config').then(config => {
     $('setupHint').classList.remove('hidden');
   }
 }).catch(() => {});
+$('connectionBaseUrl').value = window.location.origin;
+renderConnectionConfigs();
 restoreSession();

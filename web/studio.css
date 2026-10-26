@@ -273,7 +273,17 @@ summary { cursor: pointer; font-weight: 650; }
 .service-token-card p { margin: 4px 0; }
 .service-token-result { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(260px, 1fr) auto; gap: 12px; align-items: end; padding: 13px; border: 1px solid #8fb4ff; border-radius: 9px; background: #f4f7ff; }
 .service-token-result input { font-family: ui-monospace, monospace; }
+.service-token-privacy { grid-column: 1 / -1; }
 .service-token-card .inline-notice { grid-column: 1 / -1; }
+.connection-builder { grid-column: 1 / -1; display: grid; gap: 14px; padding-top: 16px; border-top: 1px solid var(--line); }
+.connection-builder h3, .connection-config-card h4 { margin: 0 0 4px; }
+.connection-base-row { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(190px, .35fr); gap: 12px; }
+.connection-config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.connection-config-card { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #f8faff; }
+.connection-config-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
+.connection-config-heading p { margin: 0; }
+.connection-config-card textarea { width: 100%; min-height: 185px; resize: vertical; color: #d8e6ff; background: #15213b; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.connection-secret-warning { margin: 0; color: var(--warning); font-size: 12px; font-weight: 700; }
 .user-create-card h3 { margin: 0 0 4px; }
 .user-create-card p { margin: 0; }
 .role-picker { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
@@ -297,6 +307,7 @@ summary { cursor: pointer; font-weight: 650; }
   .user-create-card { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
   .user-card { grid-template-columns: 1fr; }
   .user-actions { justify-content: flex-start; }
+  .connection-config-grid { grid-template-columns: 1fr; }
   #annotationsSection { grid-template-columns: 245px minmax(0, 1fr); }
   .annotation-workspace { display: block; overflow: auto; }
   .pdf-panel { height: 60vh; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -314,7 +325,7 @@ summary { cursor: pointer; font-weight: 650; }
   .field-status { width: 150px; }
   .pdf-help { flex-basis: 100%; text-align: left; }
   .section-header { align-items: flex-start; flex-direction: column; }
-  .login-form, .user-create-card, .service-token-card, .service-token-result { grid-template-columns: 1fr; }
+  .login-form, .user-create-card, .service-token-card, .service-token-result, .connection-base-row { grid-template-columns: 1fr; }
   .service-token-result { grid-column: auto; }
   .section-tabs { overflow-x: auto; }
   .workflow-strip { grid-template-columns: 1fr; }

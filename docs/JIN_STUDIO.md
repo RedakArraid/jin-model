@@ -101,6 +101,22 @@ dès que `JIN_STUDIO_SERVICE_TOKEN_FILE` est configuré. La génération crée a
 un jeton géré par Studio dans ce fichier partagé ; il devient immédiatement
 prioritaire pour l'API et pour MCP lorsque celui-ci partage le jeton Studio.
 
+Ce même bloc **Accès distant API / MCP** contient un générateur de
+configuration. Renseigner l'adresse HTTPS ou VPN de la VM, puis générer un
+jeton ou coller un jeton existant dans le champ prévu. Studio produit alors :
+
+- un bloc `~/.codex/config.toml` compatible avec le transport MCP Streamable
+  HTTP de Codex ;
+- au choix, la variante JSON MCP générique ;
+- la base URL et l'en-tête Bearer de l'API REST.
+
+Les configurations se mettent à jour immédiatement quand l'URL, le jeton ou le
+format change. Pour un accès distant, remplacer impérativement l'adresse
+locale proposée par l'adresse réellement joignable via le VPN ou le reverse
+proxy HTTPS. Le jeton collé n'est pas envoyé au serveur par ce générateur,
+mais il apparaît en clair dans la configuration produite : le fichier copié
+doit donc être protégé.
+
 Après rotation, mettre à jour tous les clients. Les deux façades utilisent :
 
 - API REST : `https://<hôte>/api/studio` ;
