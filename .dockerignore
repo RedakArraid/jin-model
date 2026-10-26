@@ -4,6 +4,7 @@ ARCHIVES*/
 Commandes*/
 data/
 feedback/
+backups/
 corpus/
 *.zip
 **/__pycache__/

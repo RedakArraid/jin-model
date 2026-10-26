@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily JIN Model off-VM backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=20m
+Persistent=true
+Unit=jin-model-backup.service
+
+[Install]
+WantedBy=timers.target

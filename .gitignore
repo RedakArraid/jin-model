@@ -2,6 +2,7 @@ model/
 data/
 feedback/
 artifacts/
+backups/
 *.zip
 dist/
 .env

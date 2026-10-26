@@ -132,6 +132,38 @@ services:
       - ./web:/usr/share/nginx/html:ro
       - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
 
+  backup:
+    profiles: ["ops"]
+    image: jin-model-backup
+    build:
+      context: .
+      dockerfile: Dockerfile.backup
+    environment:
+      JIN_BACKUP_GIT_REVISION: ${JIN_BACKUP_GIT_REVISION:-}
+    command:
+      - create
+      - --project-root
+      - /app
+      - --output-root
+      - /app/backups
+      - --studio-root
+      - /app/data/studio
+      - --learning-root
+      - /app/data/learning
+      - --feedback-root
+      - /app/training/feedback
+      - --reference-root
+      - /app/data/reference
+      - --runtime-core-root
+      - /app/model
+    volumes:
+      - ./data:/app/data:ro
+      - ./feedback:/app/training/feedback:ro
+      - ./model:/app/model:ro
+      - ${JIN_BACKUP_ROOT:-./backups}:/app/backups
+    network_mode: none
+    restart: "no"
+
 networks:
   inference:
     internal: true

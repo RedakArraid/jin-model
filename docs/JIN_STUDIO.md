@@ -224,6 +224,10 @@ training/<run-id>/
 Les volumes `data/` restent ignorés par Git. Les PDF client et annotations ne
 doivent pas être ajoutés au dépôt source.
 
+La conservation hors VM et les exercices de reprise sont décrits dans
+[Sauvegarde et restauration](BACKUP_AND_RESTORE.md). La sauvegarde couvre ce
+stockage, la base SQLite, les modèles appris et le feedback humain.
+
 ## Campagne de préannotation assistée
 
 Une campagne peut partir d'une liste JSON de chemins PDF relatifs à un dossier

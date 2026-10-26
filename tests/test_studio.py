@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,27 @@ from jin_runtime.studio_training_worker import validated_command
 
 
 PDF = b"%PDF-1.4\n% JIN Studio test\n%%EOF\n"
+
+
+def test_store_retries_transient_shared_database_open_errors(tmp_path, monkeypatch):
+    store = StudioStore(tmp_path / "studio")
+    real_connect = sqlite3.connect
+    attempts = 0
+
+    def flaky_connect(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise sqlite3.OperationalError("unable to open database file")
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr("jin_runtime.studio_store.sqlite3.connect", flaky_connect)
+    monkeypatch.setattr("jin_runtime.studio_store.time.sleep", lambda _seconds: None)
+
+    with store._connect() as connection:
+        assert connection.execute("SELECT 1").fetchone()[0] == 1
+
+    assert attempts == 3
 
 
 def test_every_annotatable_field_has_precise_selection_help():

@@ -33,6 +33,9 @@ spatiale, pas la version actuelle du runtime.
   validation, idempotence et entraînement batch.
 - [JIN Studio](JIN_STUDIO.md) : annotation spatiale, révisions immuables,
   datasets versionnés et entraînements candidats isolés.
+- [Sauvegarde et restauration](BACKUP_AND_RESTORE.md) : copie cohérente des
+  PDF, annotations, comptes, cœur JIN, modèles appris et externalisation hors
+  VM.
 - [Version 5.19.0](RELEASE_V5_19_0.md) : identité, rôles et audit JIN Studio.
 - [Version 5.18.0](RELEASE_V5_18_0.md) : création initiale de JIN Studio.
 - [Version 5.17.0](RELEASE_V5_17_0.md) : garde-fous financiers et rôles métier.

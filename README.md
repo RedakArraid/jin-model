@@ -118,6 +118,12 @@ PDF, les révisions, la création des datasets et les entraînements isolés,
 sans alourdir le parcours ADV de GenieCommande. Voir
 [la documentation JIN Studio](docs/JIN_STUDIO.md).
 
+Les PDF, annotations, comptes, cœur JIN, modèles appris et feedback peuvent être
+sauvegardés sans arrêter l'API, vérifiés par SHA-256 puis externalisés vers un
+conteneur Azure Blob privé avec l'identité managée de la VM. La procédure de
+test local et de reprise est décrite dans
+[Sauvegarde et restauration](docs/BACKUP_AND_RESTORE.md).
+
 Les intégrations distantes disposent aussi d'une API REST authentifiée sous
 `/api/studio` et d'un serveur MCP Streamable HTTP sous `/mcp`. Compose les garde
 sur `127.0.0.1` par défaut ; l'ouverture réseau doit passer par un VPN ou un

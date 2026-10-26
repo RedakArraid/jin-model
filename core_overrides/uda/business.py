@@ -811,19 +811,41 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                 if len(pairs)>=2 and max(x for x,u in pairs)-min(x for x,u in pairs)<pg.width*0.03:
                     anchors["quantity"]=statistics.median(x for x,u in pairs)
                     anchors["uom"]=statistics.median(u for x,u in pairs)
-            if all(k in anchors for k in ("quantity","price","amount")):
+            # Some purchase-order tables deliberately omit a line-amount column
+            # and print only quantity, unit and unit price.  Requiring ``amount``
+            # discarded every continuation page of those otherwise explicit
+            # tables and left the generic first-page parser as the sole
+            # hypothesis.  Reference + description + quantity + price are
+            # already four independent header anchors; an amount can be derived
+            # later from quantity * unit price.
+            has_price_only_layout = (
+                "amount" not in anchors
+                and all(k in anchors for k in (
+                    "reference", "description", "quantity", "price"
+                ))
+            )
+            if (
+                all(k in anchors for k in ("quantity", "price", "amount"))
+                or has_price_only_layout
+            ):
                 header_idx=idx; break
         if header_idx is None:
             continue
 
         # Boundaries are midway between numeric anchors. Left columns remain flexible.
-        qx,px,ax=anchors["quantity"],anchors["price"],anchors["amount"]
+        qx,px=anchors["quantity"],anchors["price"]
+        ax=anchors.get("amount")
+        price_only_layout=ax is None
         # Item descriptions commonly extend far beyond the header label itself.  Use a
         # narrow guard immediately before the quantity anchor rather than the midpoint
         # between DESCRIPTION and QUANTITY, otherwise trailing brand/model words can be
         # mistaken for the quantity column.
         q_left=qx-max(20.0, pg.width*0.06)
-        qp=(qx+px)/2; pa=(px+ax)/2
+        qp=(qx+px)/2
+        # With no printed amount, keep the complete right-hand price column in
+        # ``pws`` and leave ``aws`` empty.  The line total is computed only after
+        # the quantity/price anchors have been validated.
+        pa=(px+ax)/2 if ax is not None else pg.width+1.0
         ref_x=anchors.get("reference", 30.0)
         desc_x=anchors.get("description", q_left-30)
         family_x=anchors.get("product_family")
@@ -868,7 +890,30 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                     groups.append([w])
             parsed_groups=[(number_from_words(g), statistics.fmean(center(w) for w in g)) for g in groups]
             parsed_groups=[(v,x) for v,x in parsed_groups if v is not None]
-            if len(parsed_groups)==3:
+            if price_only_layout and len(parsed_groups)>=2:
+                # Description numbers (dimensions, replacement references,
+                # model numbers) remain left of ``q_left`` and cannot compete.
+                # Select the aligned quantity and price groups rather than using
+                # textual order, which also tolerates a stray numeric suffix at
+                # the far right of a PDF row.
+                quantity_idx=min(
+                    range(len(parsed_groups)),
+                    key=lambda i:abs(parsed_groups[i][1]-qx),
+                )
+                price_choices=[
+                    i for i in range(len(parsed_groups))
+                    if i != quantity_idx and parsed_groups[i][1]>parsed_groups[quantity_idx][1]
+                ]
+                if not price_choices:
+                    continue
+                price_idx=min(
+                    price_choices,
+                    key=lambda i:abs(parsed_groups[i][1]-px),
+                )
+                qty=parsed_groups[quantity_idx][0]
+                price=parsed_groups[price_idx][0]
+                amount=None
+            elif len(parsed_groups)==3:
                 qty,price,amount=[v for v,x in parsed_groups]
             elif len(parsed_groups)>3:
                 # A gross/list price or discount can occupy an extra column. Keep
@@ -892,6 +937,28 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                     cont_words=[w.text for w in left if sec_x is None or center(w)>=sec_desc_boundary]
                     cont=" ".join(cont_words).strip()
                     if cont in {current.material_number,current.supplier_material_number}:
+                        continue
+                    # Commercial conditions and explicit offer/derogation
+                    # references belong to their dedicated extractors, not to
+                    # the product designation.  Likewise, once a footer or a
+                    # delivery-instruction block begins, it must not be glued
+                    # onto the last item of the page.
+                    folded_cont=_fold(cont)
+                    commercial_note=bool(re.search(
+                        r"^(?:promo\b|o\.?d\.?p\.?\b|offre\b|derogation\b|"
+                        r"suivant\s+(?:offre|devis)\b|nca[- /])",
+                        folded_cont,
+                    ))
+                    footer_or_instruction=bool(re.search(
+                        r"^(?:franco\b|nb\s*:|sans\s+retour\b|instructions?\b|"
+                        r"prise\s+de\s+rendez[- ]vous\b|par\s+mail\b|"
+                        r"ou\s+par\s+tel\b|horaire\s+d[' ]?acces\b|\*)",
+                        folded_cont,
+                    ))
+                    if commercial_note:
+                        continue
+                    if footer_or_instruction:
+                        current=None
                         continue
                     if cont and not re.search(r"\b(?:page|siret|tva|capital|tel|fax|client|remises?)\b", low) and not re.search(r":\s*[A-Z0-9._/-]*\d[A-Z0-9._/-]*\s*$", row.text, re.I):
                         current.description=" ".join(x for x in [current.description,cont] if x).strip()
@@ -967,6 +1034,7 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                         and (auxiliary_start is None or center(w)<auxiliary_start)
                         and (desc_family_boundary is None or center(w)<desc_family_boundary)]
             desc=" ".join(desc_words).strip()
+            desc=re.sub(r"^[-–—|]+\s*", "", desc)
             product_family=None
             if desc_family_boundary is not None:
                 family_words=[w.text for w in left

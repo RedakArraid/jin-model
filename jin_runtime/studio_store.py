@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +32,13 @@ from jin_runtime.studio_security import (
 MAX_PDF_BYTES = 100 * 1024 * 1024
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 ALLOWED_BASE_MODELS = frozenset({"microsoft/layoutlmv3-base"})
+SQLITE_CONNECT_ATTEMPTS = 5
+_RETRYABLE_SQLITE_MESSAGES = (
+    "unable to open database file",
+    "database is locked",
+    "database table is locked",
+    "disk i/o error",
+)
 
 
 def minimum_training_documents() -> int:
@@ -109,13 +117,30 @@ class StudioStore:
                 pass
 
     def _connect(self) -> sqlite3.Connection:
-        self._apply_shared_permissions()
-        connection = sqlite3.connect(self.db_path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA journal_mode=WAL")
-        self._apply_shared_permissions()
-        return connection
+        for attempt in range(SQLITE_CONNECT_ATTEMPTS):
+            connection: sqlite3.Connection | None = None
+            try:
+                self._apply_shared_permissions()
+                connection = sqlite3.connect(self.db_path, timeout=30)
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA foreign_keys=ON")
+                connection.execute("PRAGMA journal_mode=WAL")
+                self._apply_shared_permissions()
+                return connection
+            except sqlite3.OperationalError as exc:
+                if connection is not None:
+                    connection.close()
+                retryable = any(
+                    message in str(exc).lower()
+                    for message in _RETRYABLE_SQLITE_MESSAGES
+                )
+                if not retryable or attempt + 1 >= SQLITE_CONNECT_ATTEMPTS:
+                    raise
+                # Docker Desktop bind mounts can briefly reject SQLite WAL/SHM
+                # files while a sibling API, MCP or trainer container restarts.
+                time.sleep(0.1 * (attempt + 1))
+
+        raise RuntimeError("unreachable SQLite connection retry state")
 
     def _initialize(self) -> None:
         with self._connect() as connection:

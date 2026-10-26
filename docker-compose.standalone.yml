@@ -76,6 +76,35 @@ services:
     volumes:
       - ./data:/app/data
 
+  backup:
+    profiles: ["ops"]
+    image: jin-model-backup
+    build:
+      context: .
+      dockerfile: Dockerfile.backup
+    environment:
+      JIN_BACKUP_GIT_REVISION: ${JIN_BACKUP_GIT_REVISION:-}
+    command:
+      - create
+      - --project-root
+      - /app
+      - --output-root
+      - /app/backups
+      - --studio-root
+      - /app/data/studio
+      - --learning-root
+      - /app/data/learning
+      - --feedback-root
+      - /app/feedback
+      - --reference-root
+      - /app/data/reference
+    volumes:
+      - ./data:/app/data:ro
+      - ./feedback:/app/feedback:ro
+      - ${JIN_BACKUP_ROOT:-./backups}:/app/backups
+    network_mode: none
+    restart: "no"
+
 networks:
   default:
     name: jin-model-standalone-network

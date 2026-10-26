@@ -1582,6 +1582,74 @@ def test_geometry_keeps_multipage_lines_and_rejects_inconsistent_printed_amount(
     assert [line.page for line in lines] == [1, 2]
 
 
+def test_geometry_recovers_multipage_quantity_unit_price_table_without_amount_column():
+    header = [
+        ("Reference", 30, 78), ("-", 81, 85),
+        ("Designation", 89, 145), ("Quantite", 422, 459),
+        ("Unite", 476, 499), ("Prix", 507, 524),
+        ("Unitaire", 527, 561),
+    ]
+    page_one = _page([
+        (180, header),
+        (220, [
+            ("7736507169", 31, 81), ("-", 84, 87),
+            ("CHAUFFE", 89, 132), ("BAINS", 135, 163),
+            ("NOX", 313, 333), ("2", 335, 340), ("LC15", 343, 365),
+            ("1", 451, 457), ("PI", 479, 488), ("683.4000", 527, 564),
+        ]),
+        (235, [("Promo", 45, 75), ("PA", 78, 91), ("26085", 106, 134)]),
+        (250, [
+            ("7733704055", 31, 81), ("-", 84, 87),
+            ("REMPLACE", 229, 280), ("7733701870", 282, 332),
+            ("1", 451, 457), ("PI", 479, 488), ("747.4500", 527, 564),
+        ]),
+    ], number=1)
+    page_two = _page([
+        (74, header),
+        (101, [
+            ("7716704756", 31, 81), ("-", 84, 87),
+            ("CHAUD.", 89, 124), ("ICONDENS", 210, 257), ("24", 315, 325),
+            ("1", 451, 457), ("PI", 479, 488), ("950.0000", 527, 564),
+        ]),
+        (117, [("ODP", 45, 68), ("NCA-030726-1029", 70, 153),
+               ("du", 156, 168), ("03/07/26", 170, 209)]),
+        (138, [
+            ("7716704756", 31, 81), ("-", 84, 87),
+            ("CHAUD.", 89, 124), ("ICONDENS", 210, 257), ("24", 315, 325),
+            ("1", 451, 457), ("PI", 479, 488), ("950.0000", 527, 564),
+        ]),
+        (175, [
+            ("7733701571", 31, 81), ("-", 84, 87),
+            ("UNIT", 89, 110), ("EXT.", 113, 133), ("70", 172, 182),
+            ("18", 446, 457), ("PI", 479, 488), ("517.3578", 527, 564),
+        ]),
+        (195, [("FRANCO", 31, 70)]),
+        (210, [("NB:", 31, 47), ("Sans", 49, 70), ("retour", 72, 96)]),
+    ], number=2)
+
+    lines, charges = _extract_geometry_table_items_v46(
+        [page_one, page_two], load_config(None)
+    )
+
+    assert not charges
+    assert len(lines) == 5
+    assert [line.page for line in lines] == [1, 1, 2, 2, 2]
+    assert [line.material_number for line in lines] == [
+        "7736507169", "7733704055", "7716704756", "7716704756", "7733701571",
+    ]
+    assert [line.quantity for line in lines] == [1, 1, 1, 1, 18]
+    assert [line.unit_price for line in lines] == [683.4, 747.45, 950, 950, 517.3578]
+    assert [round(line.line_total, 4) for line in lines] == [
+        683.4, 747.45, 950, 950, 9312.4404,
+    ]
+    assert "2 LC15" in lines[0].description
+    assert "7733701870" in lines[1].description
+    assert all(not line.description.startswith("-") for line in lines)
+    assert all("Promo" not in line.description for line in lines)
+    assert all("ODP" not in line.description for line in lines)
+    assert all("FRANCO" not in line.description for line in lines)
+
+
 def test_abbreviated_order_column_is_not_confused_with_supplier_or_date():
     page = _page([
         (80, [("BON", 10, 35), ("DE", 40, 55), ("COMMANDE", 60, 130)]),

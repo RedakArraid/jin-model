@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Added consistent, checksummed backups for JIN Studio documents, annotations,
+  accounts, audit history, feedback and learned models, with safe empty-target
+  restore drills and optional BAN inclusion.
+- Added a minimal offline Docker backup image plus Azure Blob upload/download
+  through VM managed identity and a daily systemd timer template.
+- Made the web reverse proxy re-resolve recreated API and MCP containers and
+  retried transient SQLite bind-mount failures.
+
 ## 5.19.0-studio-identity
 
 - Replaced the shared browser bearer token with named JIN Studio accounts and

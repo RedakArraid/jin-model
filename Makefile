@@ -1,7 +1,7 @@
 SOURCE ?= JIN_MODELS_AVAILABLE.zip
 PYTHON_BIN ?= python
 
-.PHONY: models verify standalone full test benchmark-env benchmark-models benchmark-preflight benchmark-smoke benchmark-open-weight benchmark-qwen2b benchmark-qwen4b benchmark-embedding
+.PHONY: models verify standalone full test backup-local benchmark-env benchmark-models benchmark-preflight benchmark-smoke benchmark-open-weight benchmark-qwen2b benchmark-qwen4b benchmark-embedding
 
 models:
 	"$(PYTHON_BIN)" scripts/install_models.py --source "$(SOURCE)"
@@ -18,6 +18,9 @@ full: verify
 
 test:
 	"$(PYTHON_BIN)" -m unittest discover -s tests -v
+
+backup-local:
+	docker compose --profile ops run --rm --build backup
 
 PDF_DIR ?= corpus/validation
 GROUND_TRUTH ?= benchmarks/open_weight_comparison/ground_truth.json

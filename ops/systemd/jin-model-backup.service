@@ -1,0 +1,18 @@
+[Unit]
+Description=JIN Model verified off-VM backup
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jin-model
+Group=jin-model
+SupplementaryGroups=docker
+WorkingDirectory=/opt/jin-model
+EnvironmentFile=/etc/jin-model-backup.env
+ExecStart=/bin/bash /opt/jin-model/scripts/run_offsite_backup.sh
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

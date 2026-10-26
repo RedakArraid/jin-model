@@ -10,6 +10,7 @@ const js = fs.readFileSync(path.join(__dirname, '../web/app.js'), 'utf8');
 const studioHtml = fs.readFileSync(path.join(__dirname, '../web/studio.html'), 'utf8');
 const studioJs = fs.readFileSync(path.join(__dirname, '../web/studio.js'), 'utf8');
 const studioCss = fs.readFileSync(path.join(__dirname, '../web/studio.css'), 'utf8');
+const nginxConf = fs.readFileSync(path.join(__dirname, '../web/nginx.conf'), 'utf8');
 
 test('every static DOM id used by the frontend exists', () => {
   const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map(match => match[1]));
@@ -80,4 +81,12 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
     studioHtml.indexOf('id="addFieldButton"') > studioHtml.indexOf('id="fieldList"'),
     'the add-field button must be rendered below the field list',
   );
+});
+
+test('the web proxy re-resolves recreated Docker services', () => {
+  assert.match(nginxConf, /resolver 127\.0\.0\.11 valid=10s ipv6=off/);
+  assert.match(nginxConf, /set \$api_backend api:8000/);
+  assert.match(nginxConf, /proxy_pass http:\/\/\$api_backend/);
+  assert.match(nginxConf, /set \$mcp_backend mcp:8001/);
+  assert.match(nginxConf, /proxy_pass http:\/\/\$mcp_backend/);
 });
