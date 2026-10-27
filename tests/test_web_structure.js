@@ -53,7 +53,14 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
     'annotationMaskSelect', 'saveAnnotationMaskButton', 'applyAnnotationMaskButton',
     'annotationMaskMessage',
     'rereadWithModelButton', 'annotationCompartmentFilter', 'annotationCompartmentSummary',
-    'datasetReadiness',
+    'fieldSelectionSummary', 'moveFieldSelectionUpButton', 'moveFieldSelectionDownButton',
+    'clearFieldSelectionButton', 'datasetReadiness', 'annotationActionMessage',
+    'workspaceModeSelect', 'undoAnnotationButton', 'redoAnnotationButton',
+    'localRecoveryNotice', 'restoreLocalDraftButton', 'discardLocalDraftButton',
+    'businessGroupNav', 'reviewTools', 'problemsOnlyToggle', 'nextProblemButton',
+    'modelsSection', 'maskLibrary', 'returnToAnnotationButton',
+    'addFieldDialog', 'newFieldLabel', 'newFieldCompartment', 'confirmAddFieldButton',
+    'validationDialog', 'validationSummary', 'validationIssueList', 'confirmValidationButton',
   ]) {
     assert.match(studioHtml, new RegExp(`id="${id}"`));
   }
@@ -75,10 +82,11 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
   assert.match(studioJs, /streamable-http/);
   assert.match(studioJs, /\/api\/studio/);
   assert.match(studioHtml, /studio_line_items\.js\?v=3/);
-  assert.match(studioHtml, /studio\.js\?v=19/);
+  assert.match(studioHtml, /studio_field_selection\.js\?v=4/);
+  assert.match(studioHtml, /studio\.js\?v=24/);
   assert.doesNotMatch(studioJs, /addressFieldTools/);
   assert.doesNotMatch(studioHtml, /studio_address_fields\.js/);
-  assert.match(studioHtml, /studio\.css\?v=11/);
+  assert.match(studioHtml, /studio\.css\?v=15/);
   assert.match(studioJs, /Les lignes de commande relues par JIN seront conservées/);
   assert.match(studioJs, /updateFieldFromRegion/);
   assert.match(studioJs, /value \/ \(index % 2 === 0 \? annotationCanvas\.width : annotationCanvas\.height\) \* 1000/);
@@ -96,9 +104,17 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
   );
   assert.match(studioHtml, /move-field-up/);
   assert.match(studioHtml, /move-field-down/);
+  assert.match(studioHtml, /field-multi-select/);
   assert.match(studioJs, /function moveField/);
+  assert.match(studioJs, /function moveSelectedFields/);
+  assert.match(studioJs, /fieldSelectionTools\.move/);
   assert.match(studioJs, /const rank = \{ HEADER: 0, FOOTER: 1, LINE_ITEMS: 2 \}/);
-  assert.match(studioJs, /createLineGroupHeader/);
+  assert.match(studioJs, /createLineItemsTable/);
+  assert.match(studioJs, /fieldSelectionTools\.moveTo/);
+  assert.match(studioJs, /function openValidationReview/);
+  assert.match(studioJs, /function activateSection/);
+  assert.match(studioJs, /function persistLocalDraft/);
+  assert.match(studioJs, /function undoAnnotation/);
   assert.match(studioJs, /lineItemTools\.nextIndex\(state\.fields\)/);
   assert.match(studioJs, /compactLineItemIndexes\(\)/);
   assert.match(studioJs, /Ligne de commande \$\{lineIndex \+ 1\}/);
@@ -111,6 +127,14 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
   assert.match(studioJs, /ne sera pas enregistré automatiquement/);
   assert.match(studioJs, /lineItemTools\.deduplicate\(found\)/);
   assert.match(studioJs, /function fieldCompartment/);
+  assert.match(studioJs, /field\?\.compartment/);
+  assert.match(studioJs, /compartment: preferredCompartment/);
+  assert.match(studioJs, /compartment: fieldCompartment\(field\)/);
+  assert.match(studioJs, /state\.annotationCompartment === 'LINE_ITEMS'/);
+  assert.match(studioJs, /function showAnnotationFeedback/);
+  assert.match(studioJs, /function revealValidationField/);
+  assert.match(studioJs, /incompleteReviewedFieldIndex/);
+  assert.match(studioJs, /Annotation validée pour l’apprentissage/);
   assert.match(studioJs, /function renderDatasetReadiness/);
   assert.match(studioHtml, /En-têtes/);
   assert.match(studioHtml, /Pied de page/);

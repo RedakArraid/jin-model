@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Redesigned the Studio annotation workspace around three coordinated views:
+  the document queue, the PDF evidence canvas and a business-structured field
+  inspector. Added dedicated annotation/review modes, business filters, a
+  spreadsheet view for order lines and a separate mask library.
+- Added guarded validation with an actionable preflight report, next-problem
+  navigation, keyboard shortcuts, undo/redo history and recoverable local
+  drafts. Server saves remain explicit and authoritative.
+- Added an explicit field picker with annotation guidance, compact inactive
+  cards, drag-and-drop ordering and a persistent summary of corrected, absent
+  and reviewed fields.
+- Added visual multi-selection and directional block reordering for Studio
+  fields: moving up packs against the highest selected field, moving down packs
+  against the lowest, while structural compartments remain isolated.
+- Made Studio validation feedback permanently visible beside the action buttons,
+  with blocking-field counts, automatic focus and explicit request progress.
+- Persisted each Studio field's annotation compartment so fields added from
+  the footer stay in the footer and retain the same reorder controls after reload.
 - Fixed the V3 Studio renderer after removal of the legacy address-field helper.
 - Restricted annotation masks to stable header/footer fields; order lines are
   always excluded server-side, while JIN-read target lines remain visible.

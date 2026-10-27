@@ -362,6 +362,53 @@ def test_annotation_allows_same_line_field_on_different_lines_only():
         )
 
 
+def test_annotation_preserves_explicit_header_footer_compartments():
+    payload = annotation()
+    payload["field_annotations"][0]["compartment"] = "footer"
+
+    normalized = normalize_studio_annotation(
+        payload,
+        document_id="jdoc-12345678",
+        document_sha256="a" * 64,
+        revision=1,
+    )
+
+    assert normalized["field_annotations"][0]["compartment"] == "FOOTER"
+
+
+def test_annotation_rejects_line_compartment_for_regular_field():
+    payload = annotation()
+    payload["field_annotations"][0]["compartment"] = "LINE_ITEMS"
+
+    with pytest.raises(StudioContractError, match="requires a line-item field"):
+        normalize_studio_annotation(
+            payload,
+            document_id="jdoc-12345678",
+            document_sha256="a" * 64,
+            revision=1,
+        )
+
+
+def test_annotation_forces_line_item_fields_into_line_compartment():
+    field = {
+        "path": "order.line_items[0].quantity",
+        "label": "LINE_ITEM_QUANTITY",
+        "compartment": "HEADER",
+        "status": "UNREVIEWED",
+        "extracted_value": 2,
+        "corrected_value": None,
+    }
+
+    normalized = normalize_studio_annotation(
+        {"status": "DRAFT", "field_annotations": [field]},
+        document_id="jdoc-12345678",
+        document_sha256="a" * 64,
+        revision=1,
+    )
+
+    assert normalized["field_annotations"][0]["compartment"] == "LINE_ITEMS"
+
+
 def test_line_item_annotations_require_visible_contiguous_indexes():
     payload = {
         "status": "DRAFT",

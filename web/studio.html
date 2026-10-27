@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>JIN Studio – Annotation et entraînement</title>
-  <link rel="stylesheet" href="studio.css?v=11" />
+  <link rel="stylesheet" href="studio.css?v=15" />
 </head>
 <body>
   <header class="topbar">
@@ -45,8 +45,9 @@
       </ol>
       <nav class="section-tabs" aria-label="Sections JIN Studio">
         <button class="section-tab active" data-section="annotations">Annotations</button>
+        <button class="section-tab" data-section="models">Modèles et masques</button>
         <button class="section-tab" data-section="datasets">Datasets</button>
-        <button class="section-tab" data-section="training">Entraînements</button>
+        <button class="section-tab" data-section="training">Entraînements et benchmarks</button>
         <button id="usersTab" class="section-tab hidden" data-section="users">Utilisateurs</button>
       </nav>
 
@@ -124,6 +125,14 @@
                 <span id="reviewProgress" class="muted-text"></span>
               </div>
               <div class="top-actions">
+                <label class="workspace-mode-control">Mode
+                  <select id="workspaceModeSelect">
+                    <option value="ANNOTATE">Annotation</option>
+                    <option value="REVIEW">Relecture</option>
+                  </select>
+                </label>
+                <button id="undoAnnotationButton" class="button secondary compact" type="button" disabled title="Annuler (Ctrl+Z)">↶</button>
+                <button id="redoAnnotationButton" class="button secondary compact" type="button" disabled title="Rétablir (Ctrl+Y)">↷</button>
                 <button id="addFieldTopButton" class="button secondary compact" type="button">＋ Ajouter un champ</button>
                 <button id="confirmAllButton" class="button secondary compact">Confirmer les non revus</button>
               </div>
@@ -137,6 +146,18 @@
                 Note générale
                 <input id="annotationNote" type="text" maxlength="4000" placeholder="Facultatif" />
               </label>
+            </div>
+            <div class="annotation-save-state">
+              <span id="annotationSaveState">Aucune modification locale</span>
+              <span class="muted-text">Le brouillon de secours est conservé automatiquement dans ce navigateur.</span>
+            </div>
+            <div id="localRecoveryNotice" class="local-recovery-notice hidden">
+              <div>
+                <strong>Un brouillon local plus récent est disponible.</strong>
+                <span id="localRecoveryTimestamp"></span>
+              </div>
+              <button id="restoreLocalDraftButton" class="button primary compact" type="button">Restaurer</button>
+              <button id="discardLocalDraftButton" class="button secondary compact" type="button">Ignorer</button>
             </div>
             <section class="annotation-mask-panel" aria-labelledby="annotationMaskTitle">
               <div class="annotation-mask-heading">
@@ -171,6 +192,17 @@
                 <option value="FOOTER">Pied de page</option>
               </select>
               <span id="annotationCompartmentSummary" class="muted-text"></span>
+              <div class="field-selection-actions" aria-label="Déplacement de la sélection">
+                <span id="fieldSelectionSummary" class="muted-text">Aucun champ sélectionné</span>
+                <button id="moveFieldSelectionUpButton" class="button secondary compact" type="button" disabled>↑ Monter la sélection</button>
+                <button id="moveFieldSelectionDownButton" class="button secondary compact" type="button" disabled>↓ Descendre la sélection</button>
+                <button id="clearFieldSelectionButton" class="button secondary compact" type="button" disabled>Désélectionner</button>
+              </div>
+            </div>
+            <nav id="businessGroupNav" class="business-group-nav" aria-label="Structure métier de l’annotation"></nav>
+            <div class="review-tools hidden" id="reviewTools">
+              <label><input id="problemsOnlyToggle" type="checkbox" /> Afficher uniquement les problèmes</label>
+              <button id="nextProblemButton" class="button secondary compact" type="button">Prochain problème</button>
             </div>
             <div id="fieldList" class="field-list"></div>
             <div class="add-field-row">
@@ -185,13 +217,36 @@
               <summary>Aperçu JSON de l’annotation (mis à jour en direct)</summary>
               <pre id="annotationJsonPreview"></pre>
             </details>
+            <details class="keyboard-shortcuts">
+              <summary>Raccourcis clavier</summary>
+              <div>
+                <kbd>Entrée</kbd><span>Confirmer le champ et passer au suivant</span>
+                <kbd>A</kbd><span>Marquer le champ absent</span>
+                <kbd>M</kbd><span>Marquer le champ ambigu</span>
+                <kbd>Alt + ↑/↓</kbd><span>Déplacer la sélection</span>
+                <kbd>Ctrl + Z/Y</kbd><span>Annuler ou rétablir</span>
+                <kbd>Ctrl + S</kbd><span>Enregistrer sur le serveur</span>
+              </div>
+            </details>
             <div class="annotation-actions">
+              <div id="annotationActionMessage" class="inline-notice annotation-action-message hidden" role="status" aria-live="polite"></div>
               <button id="rereadWithModelButton" class="button secondary" type="button">Relire avec JIN-model</button>
-              <button id="saveDraftButton" class="button secondary">Enregistrer le brouillon</button>
-              <button id="validateButton" class="button primary">Valider pour l’apprentissage</button>
+              <button id="saveDraftButton" class="button secondary" type="button">Enregistrer le brouillon</button>
+              <button id="validateButton" class="button primary" type="button">Valider pour l’apprentissage</button>
             </div>
           </section>
         </div>
+      </section>
+
+      <section id="modelsSection" class="studio-section hidden models-section">
+        <div class="section-header">
+          <div>
+            <h2>Modèles de documents et masques</h2>
+            <p>Bibliothèque des mises en page réutilisables. Les lignes de commande restent relues par JIN.</p>
+          </div>
+          <button id="returnToAnnotationButton" class="button secondary" type="button">Retour à l’annotation</button>
+        </div>
+        <div id="maskLibrary" class="card-grid"></div>
       </section>
 
       <section id="datasetsSection" class="studio-section hidden">
@@ -325,8 +380,14 @@
           <span class="line-item-badge hidden"></span>
           <select class="field-label" aria-label="Type de champ"></select>
           <input class="field-path" aria-label="Chemin canonique" />
+          <span class="field-compact-value"></span>
         </div>
         <div class="field-heading-actions">
+          <span class="field-drag-handle" title="Glisser le champ ou la sélection">⋮⋮</span>
+          <label class="field-select-control" title="Ajouter ce champ à la sélection multiple">
+            <input class="field-multi-select" type="checkbox" />
+            <span>Sélectionner</span>
+          </label>
           <button class="move-field-up button secondary compact" type="button" title="Monter ce champ" aria-label="Monter ce champ">↑</button>
           <button class="move-field-down button secondary compact" type="button" title="Descendre ce champ" aria-label="Descendre ce champ">↓</button>
           <select class="field-status">
@@ -366,8 +427,53 @@
     </article>
   </template>
 
+  <dialog id="addFieldDialog" class="validation-dialog add-field-dialog">
+    <form method="dialog" class="validation-dialog-card">
+      <div class="validation-dialog-heading">
+        <div>
+          <h2>Ajouter un champ</h2>
+          <p>Choisissez explicitement la donnée attendue et son emplacement visuel dans l’annotation.</p>
+        </div>
+        <button class="button secondary compact" value="cancel" aria-label="Fermer">✕</button>
+      </div>
+      <label>Champ à annoter
+        <select id="newFieldLabel"></select>
+      </label>
+      <label>Compartiment d’affichage
+        <select id="newFieldCompartment">
+          <option value="HEADER">En-tête</option>
+          <option value="FOOTER">Pied de page</option>
+        </select>
+      </label>
+      <div id="newFieldHelp" class="new-field-help"></div>
+      <div class="validation-dialog-actions">
+        <button class="button secondary" value="cancel">Annuler</button>
+        <button id="confirmAddFieldButton" class="button primary" type="button">Ajouter le champ</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="validationDialog" class="validation-dialog">
+    <form method="dialog" class="validation-dialog-card">
+      <div class="validation-dialog-heading">
+        <div>
+          <h2>Contrôle avant validation</h2>
+          <p id="validationSummary"></p>
+        </div>
+        <button class="button secondary compact" value="cancel" aria-label="Fermer">✕</button>
+      </div>
+      <div id="validationCounts" class="validation-counts"></div>
+      <div id="validationIssueList" class="validation-issue-list"></div>
+      <div class="validation-dialog-actions">
+        <button class="button secondary" value="cancel">Continuer la relecture</button>
+        <button id="confirmValidationButton" class="button primary" type="button">Valider pour l’apprentissage</button>
+      </div>
+    </form>
+  </dialog>
+
   <script src="vendor/pdfjs-3.11.174/pdf.min.js"></script>
   <script src="studio_line_items.js?v=3"></script>
-  <script src="studio.js?v=19"></script>
+  <script src="studio_field_selection.js?v=4"></script>
+  <script src="studio.js?v=24"></script>
 </body>
 </html>

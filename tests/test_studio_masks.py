@@ -140,6 +140,36 @@ def test_annotation_mask_reports_layout_and_document_type_mismatches(tmp_path):
     assert any("Géométrie différente" in warning for warning in applied["warnings"])
 
 
+def test_annotation_mask_preserves_a_manually_selected_footer_compartment(tmp_path):
+    store = StudioStore(tmp_path / "studio")
+    source = store.create_document(
+        filename="source.pdf",
+        pdf_bytes=_pdf("Commande PO-SOURCE"),
+        extraction={"document": {"type": "purchase_order"}},
+    )
+    target = store.create_document(
+        filename="target.pdf",
+        pdf_bytes=_pdf("Commande PO-TARGET"),
+        extraction={"document": {"type": "purchase_order"}},
+    )
+    footer_field = {**_field(), "compartment": "FOOTER"}
+
+    mask = store.create_annotation_mask(
+        name="Champ manuel de pied",
+        source_document_id=source["documentId"],
+        document_type="purchase_order",
+        field_annotations=[footer_field],
+        created_by="annotator",
+    )
+    applied = store.apply_annotation_mask(
+        document_id=target["documentId"],
+        mask_id=mask["maskId"],
+    )
+
+    assert mask["fields"][0]["compartment"] == "FOOTER"
+    assert applied["fields"][0]["compartment"] == "FOOTER"
+
+
 def test_annotation_mask_requires_at_least_one_positioned_field(tmp_path):
     store = StudioStore(tmp_path / "studio")
     source = store.create_document(filename="source.pdf", pdf_bytes=_pdf("PO-SOURCE"))

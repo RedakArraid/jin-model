@@ -23,10 +23,14 @@ const DOCUMENT_TYPE_VALUES = new Set(
 );
 const lineItemTools = globalThis.JinStudioLineItems;
 if (!lineItemTools) throw new Error('Le module de gestion des lignes de commande est absent.');
+const fieldSelectionTools = globalThis.JinStudioFieldSelection;
+if (!fieldSelectionTools) throw new Error('Le module de sélection multiple est absent.');
 const MIN_ZOOM = .5;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = .25;
 const OTHER_ANNOTATIONS_VISIBILITY_KEY = 'jin-studio.show-other-annotations';
+const LOCAL_DRAFT_PREFIX = 'jin-studio.local-draft.';
+const HISTORY_LIMIT = 80;
 
 function storedOtherAnnotationsVisibility() {
   try {
@@ -51,6 +55,7 @@ const state = {
   activeDocument: null,
   fields: [],
   selectedField: -1,
+  multiSelectedFields: new Set(),
   pdf: null,
   pdfUrl: '',
   page: 1,
@@ -59,9 +64,19 @@ const state = {
   zoom: 1,
   showOtherAnnotations: storedOtherAnnotationsVisibility(),
   annotationCompartment: 'ALL',
+  businessGroup: 'ALL',
+  workspaceMode: 'ANNOTATE',
+  problemsOnly: false,
   pageTextItems: [],
   regionRequest: 0,
   dirty: false,
+  undoStack: [],
+  redoStack: [],
+  historySnapshot: '',
+  savedSnapshot: '',
+  localDraftTimer: null,
+  localRecovery: null,
+  draggedFields: [],
   trainingPoll: null,
 };
 
@@ -114,6 +129,21 @@ function showMessage(element, message, tone = '') {
   element.textContent = message;
   element.className = `inline-notice ${tone}`.trim();
   element.classList.toggle('hidden', !message);
+}
+
+function showAnnotationFeedback(message, tone = '') {
+  showMessage($('annotationMessage'), message, tone);
+  showMessage($('annotationActionMessage'), message, tone);
+}
+
+function activateSection(sectionName) {
+  const target = $(`${sectionName}Section`);
+  if (!target) return;
+  document.querySelectorAll('.section-tab').forEach(button => {
+    button.classList.toggle('active', button.dataset.section === sectionName);
+  });
+  document.querySelectorAll('.studio-section').forEach(section => section.classList.add('hidden'));
+  target.classList.remove('hidden');
 }
 
 function statusLabel(status) {
@@ -319,6 +349,8 @@ function fieldCompartment(field) {
   if (lineItemTools.isLineItemLabel(field?.label) || fieldLineIndex(field) >= 0) {
     return 'LINE_ITEMS';
   }
+  const explicit = String(field?.compartment || '').toUpperCase();
+  if (explicit === 'HEADER' || explicit === 'FOOTER') return explicit;
   const label = String(field?.label || '');
   if (
     label.startsWith('TOTAL_')
@@ -326,6 +358,48 @@ function fieldCompartment(field) {
     || /(?:^|_)(?:VAT_NUMBER|SIREN|SIRET)$/.test(label)
   ) return 'FOOTER';
   return 'HEADER';
+}
+
+const BUSINESS_GROUPS = Object.freeze([
+  ['GENERAL', 'Informations générales'],
+  ['BUYER', 'Client / acheteur'],
+  ['SUPPLIER', 'Fournisseur'],
+  ['SHIP_TO', 'Adresse de livraison'],
+  ['BILL_TO', 'Adresse de facturation'],
+  ['PAYER', 'Payeur'],
+  ['SHIP_FROM', 'Expéditeur'],
+  ['TOTALS', 'Frais et totaux'],
+  ['LEGAL', 'Identifiants légaux'],
+  ['LINE_ITEMS', 'Lignes de commande'],
+  ['OTHER', 'Autres champs'],
+]);
+const BUSINESS_GROUP_NAMES = new Map(BUSINESS_GROUPS);
+const BUSINESS_GROUP_RANK = new Map(BUSINESS_GROUPS.map(([key], index) => [key, index]));
+
+function fieldBusinessGroup(field) {
+  if (fieldCompartment(field) === 'LINE_ITEMS') return 'LINE_ITEMS';
+  const label = String(field?.label || '').toUpperCase();
+  for (const role of ['BUYER', 'SUPPLIER', 'SHIP_TO', 'BILL_TO', 'PAYER', 'SHIP_FROM']) {
+    if (label.startsWith(`${role}_`)) return role;
+  }
+  if (label.startsWith('TOTAL_') || label.startsWith('ADDITIONAL_CHARGE_')) return 'TOTALS';
+  if (/(?:^|_)(?:VAT_NUMBER|SIREN|SIRET)$/.test(label)) return 'LEGAL';
+  if (fieldCompartment(field) === 'FOOTER') return 'LEGAL';
+  if (
+    label === 'DOCUMENT_TYPE'
+    || label === 'ORDER_NUMBER'
+    || label === 'ORDER_DATE'
+    || label === 'DELIVERY_DATE'
+    || label === 'CUSTOMER_REFERENCE'
+    || label === 'CUSTOMER_CODE'
+    || label === 'OFFER_NUMBER'
+    || label === 'DEROGATION_NUMBER'
+  ) return 'GENERAL';
+  return 'OTHER';
+}
+
+function businessGroupName(group) {
+  return BUSINESS_GROUP_NAMES.get(group) || group;
 }
 
 function boxesOverlap(left, right) {
@@ -466,48 +540,6 @@ function availableCanonicalPath(label, previousPath = '', excludedIndex = -1) {
   return base;
 }
 
-function createLineGroupHeader(lineIndex, editable) {
-  const fields = state.fields.filter(field => fieldLineIndex(field) === lineIndex);
-  const reviewed = fields.filter(field => field.status !== 'UNREVIEWED').length;
-  const header = document.createElement('section');
-  header.className = 'line-item-group-header';
-  header.dataset.lineIndex = String(lineIndex);
-
-  const identity = document.createElement('div');
-  const title = document.createElement('strong');
-  title.textContent = `Ligne de commande ${lineIndex + 1}`;
-  const path = document.createElement('code');
-  path.textContent = `order.line_items[${lineIndex}]`;
-  const progress = document.createElement('span');
-  progress.className = 'line-item-progress';
-  progress.textContent = `${reviewed}/${fields.length} champs vérifiés`;
-  identity.append(title, path, progress);
-
-  const actions = document.createElement('div');
-  actions.className = 'line-item-group-actions';
-  const add = document.createElement('button');
-  add.type = 'button';
-  add.className = 'button secondary compact';
-  add.textContent = '+ Champ de ligne';
-  add.disabled = !editable;
-  add.addEventListener('click', event => {
-    event.stopPropagation();
-    addLineItemField(lineIndex);
-  });
-  const remove = document.createElement('button');
-  remove.type = 'button';
-  remove.className = 'button danger compact';
-  remove.textContent = 'Retirer la ligne';
-  remove.disabled = !editable;
-  remove.addEventListener('click', event => {
-    event.stopPropagation();
-    removeLineItem(lineIndex);
-  });
-  actions.append(add, remove);
-  header.append(identity, actions);
-  return header;
-}
-
 function addLineItemField(lineIndex) {
   const existing = new Set(
     state.fields
@@ -529,6 +561,7 @@ function addLineItemField(lineIndex) {
   const insertionIndex = lastLineField + 1;
   state.fields.splice(insertionIndex, 0, lineItemTools.createField(label, lineIndex));
   state.selectedField = insertionIndex;
+  state.businessGroup = 'LINE_ITEMS';
   markDirty();
   renderFields();
   fieldList.querySelector(`[data-index="${insertionIndex}"]`)?.scrollIntoView({
@@ -546,6 +579,7 @@ function addLineItem() {
   const firstIndex = lastLineField >= 0 ? lastLineField + 1 : state.fields.length;
   state.fields.splice(firstIndex, 0, ...fields);
   state.selectedField = firstIndex;
+  state.businessGroup = 'LINE_ITEMS';
   if (state.annotationCompartment !== 'ALL') {
     state.annotationCompartment = 'LINE_ITEMS';
     $('annotationCompartmentFilter').value = 'LINE_ITEMS';
@@ -568,6 +602,10 @@ function compactLineItemIndexes(selectedField = state.fields[state.selectedField
   if (selectedIndex >= 0) state.selectedField = selectedIndex;
 }
 
+function clearMultiFieldSelection() {
+  state.multiSelectedFields.clear();
+}
+
 function removeLineItem(lineIndex) {
   const lineFields = state.fields.filter(field => fieldLineIndex(field) === lineIndex);
   if (!lineFields.length) return;
@@ -584,6 +622,7 @@ function removeLineItem(lineIndex) {
   if (meaningful && !window.confirm(
     `Retirer entièrement la ligne de commande ${lineIndex + 1} et ses ${lineFields.length} champs ?`,
   )) return;
+  clearMultiFieldSelection();
   state.fields = state.fields.filter(field => fieldLineIndex(field) !== lineIndex);
   compactLineItemIndexes();
   state.selectedField = Math.min(state.selectedField, state.fields.length - 1);
@@ -820,6 +859,7 @@ async function rereadWithJinModel() {
     state.activeDocument.extraction = extraction;
     state.fields = fields;
     state.selectedField = 0;
+    clearMultiFieldSelection();
     state.annotationCompartment = 'ALL';
     $('annotationCompartmentFilter').value = 'ALL';
     markDirty();
@@ -846,8 +886,12 @@ async function openDocument(documentId) {
     || extractFields(document.extraction || {});
   state.fields = lineItemTools.compact(state.fields);
   state.selectedField = state.fields.length ? 0 : -1;
+  clearMultiFieldSelection();
   state.annotationCompartment = 'ALL';
   $('annotationCompartmentFilter').value = 'ALL';
+  state.businessGroup = 'ALL';
+  state.problemsOnly = false;
+  $('problemsOnlyToggle').checked = false;
   state.zoom = 1;
   state.pageTextItems = [];
   state.dirty = false;
@@ -859,6 +903,9 @@ async function openDocument(documentId) {
   $('activeStatus').textContent = statusLabel(document.status);
   $('activeStatus').className = `badge ${document.status === 'DRAFT' ? 'draft' : ''}`;
   $('activeStatus').title = '';
+  $('annotationSaveState').textContent = 'Toutes les modifications sont enregistrées sur le serveur';
+  resetAnnotationHistory();
+  prepareLocalRecovery();
   showMessage($('annotationMaskMessage'), '');
   annotationEmpty.classList.add('hidden');
   annotationWorkspace.classList.remove('hidden');
@@ -866,7 +913,7 @@ async function openDocument(documentId) {
   renderFields();
   await loadPdf(documentId);
   renderAnnotationMasks();
-  showMessage($('annotationMessage'), '');
+  showAnnotationFeedback('');
 }
 
 function editableAnnotation() {
@@ -879,11 +926,131 @@ function updateJsonPreview() {
   preview.textContent = JSON.stringify(annotationPayload('DRAFT'), null, 2);
 }
 
+function annotationHistorySnapshot() {
+  return JSON.stringify({
+    fields: state.fields,
+    note: $('annotationNote').value,
+  });
+}
+
+function updateHistoryControls() {
+  $('undoAnnotationButton').disabled = state.undoStack.length === 0;
+  $('redoAnnotationButton').disabled = state.redoStack.length === 0;
+}
+
+function updateDirtyVisual() {
+  $('activeStatus').classList.toggle('dirty', state.dirty);
+  $('activeStatus').title = state.dirty ? 'Modifications locales non enregistrées sur le serveur' : '';
+}
+
+function resetAnnotationHistory() {
+  state.undoStack = [];
+  state.redoStack = [];
+  state.historySnapshot = annotationHistorySnapshot();
+  state.savedSnapshot = state.historySnapshot;
+  updateHistoryControls();
+}
+
+function localDraftKey(documentId = state.activeDocument?.documentId) {
+  return documentId ? `${LOCAL_DRAFT_PREFIX}${documentId}` : '';
+}
+
+function removeLocalDraft(documentId = state.activeDocument?.documentId) {
+  const key = localDraftKey(documentId);
+  if (!key) return;
+  try { window.localStorage.removeItem(key); } catch (_) { /* Storage can be disabled. */ }
+}
+
+function persistLocalDraft() {
+  state.localDraftTimer = null;
+  if (!state.activeDocument) return;
+  if (!state.dirty) {
+    removeLocalDraft();
+    $('annotationSaveState').textContent = 'Toutes les modifications sont enregistrées sur le serveur';
+    return;
+  }
+  try {
+    window.localStorage.setItem(localDraftKey(), JSON.stringify({
+      documentId: state.activeDocument.documentId,
+      pdfSha256: state.activeDocument.pdfSha256,
+      savedAt: new Date().toISOString(),
+      snapshot: state.historySnapshot,
+    }));
+    $('annotationSaveState').textContent = `Brouillon local sécurisé à ${new Date().toLocaleTimeString('fr-FR')}`;
+  } catch (_) {
+    $('annotationSaveState').textContent = 'Sauvegarde locale indisponible';
+  }
+}
+
+function scheduleLocalDraft() {
+  if (state.localDraftTimer) window.clearTimeout(state.localDraftTimer);
+  state.localDraftTimer = window.setTimeout(persistLocalDraft, 350);
+}
+
+function restoreHistorySnapshot(snapshot) {
+  const parsed = JSON.parse(snapshot);
+  const active = state.fields[state.selectedField];
+  const activePath = active?.path;
+  state.fields = lineItemTools.compact((parsed.fields || []).map(field => structuredClone(field)));
+  $('annotationNote').value = parsed.note || '';
+  clearMultiFieldSelection();
+  state.selectedField = Math.max(0, state.fields.findIndex(field => field.path === activePath));
+  state.historySnapshot = snapshot;
+  state.dirty = snapshot !== state.savedSnapshot;
+  updateDirtyVisual();
+  updateHistoryControls();
+  scheduleLocalDraft();
+  renderFields();
+}
+
+function undoAnnotation() {
+  if (!state.undoStack.length) return;
+  state.redoStack.push(state.historySnapshot);
+  restoreHistorySnapshot(state.undoStack.pop());
+}
+
+function redoAnnotation() {
+  if (!state.redoStack.length) return;
+  state.undoStack.push(state.historySnapshot);
+  restoreHistorySnapshot(state.redoStack.pop());
+}
+
+function prepareLocalRecovery() {
+  state.localRecovery = null;
+  $('localRecoveryNotice').classList.add('hidden');
+  const key = localDraftKey();
+  if (!key) return;
+  try {
+    const candidate = JSON.parse(window.localStorage.getItem(key) || 'null');
+    if (
+      !candidate
+      || candidate.pdfSha256 !== state.activeDocument.pdfSha256
+      || candidate.snapshot === state.historySnapshot
+    ) {
+      if (candidate?.snapshot === state.historySnapshot) removeLocalDraft();
+      return;
+    }
+    state.localRecovery = candidate;
+    $('localRecoveryTimestamp').textContent = `Sauvegardé le ${new Date(candidate.savedAt).toLocaleString('fr-FR')}`;
+    $('localRecoveryNotice').classList.remove('hidden');
+  } catch (_) {
+    removeLocalDraft();
+  }
+}
+
 function markDirty() {
   if (!state.activeDocument) return;
-  state.dirty = true;
-  $('activeStatus').classList.add('dirty');
-  $('activeStatus').title = 'Modifications locales non enregistrées';
+  const current = annotationHistorySnapshot();
+  if (state.historySnapshot && current !== state.historySnapshot) {
+    state.undoStack.push(state.historySnapshot);
+    if (state.undoStack.length > HISTORY_LIMIT) state.undoStack.shift();
+    state.redoStack = [];
+  }
+  state.historySnapshot = current;
+  state.dirty = current !== state.savedSnapshot;
+  updateDirtyVisual();
+  updateHistoryControls();
+  scheduleLocalDraft();
   updateJsonPreview();
 }
 
@@ -989,6 +1156,53 @@ function renderAnnotationMasks() {
   }
   if (state.annotationMasks.some(mask => mask.maskId === previous)) select.value = previous;
   $('applyAnnotationMaskButton').disabled = !select.value || !hasPermission('annotations.draft');
+  renderMaskLibrary();
+}
+
+function renderMaskLibrary() {
+  const container = $('maskLibrary');
+  if (!container) return;
+  container.replaceChildren();
+  if (!state.annotationMasks.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-panel';
+    empty.innerHTML = '<h3>Aucun masque enregistré</h3><p>Ouvrez une annotation et enregistrez ses cadres d’en-tête ou de pied de page.</p>';
+    container.appendChild(empty);
+    return;
+  }
+  [...state.annotationMasks]
+    .sort((left, right) => String(left.name).localeCompare(String(right.name), 'fr'))
+    .forEach(mask => {
+      const card = document.createElement('article');
+      card.className = 'info-card mask-library-card';
+      const title = document.createElement('h3');
+      title.textContent = mask.name;
+      const meta = document.createElement('div');
+      meta.className = 'mask-library-meta';
+      [
+        `Version ${mask.version}`,
+        mask.documentType || 'Type libre',
+        `${mask.fieldCount} champ${mask.fieldCount > 1 ? 's' : ''}`,
+        `${mask.pageCount} page${mask.pageCount > 1 ? 's' : ''}`,
+      ].forEach(value => {
+        const badge = document.createElement('span');
+        badge.textContent = value;
+        meta.appendChild(badge);
+      });
+      const action = document.createElement('button');
+      action.type = 'button';
+      action.className = 'button secondary compact';
+      action.textContent = state.activeDocument ? 'Utiliser sur le document actif' : 'Ouvrir un document pour appliquer';
+      action.disabled = !state.activeDocument;
+      action.addEventListener('click', () => {
+        activateSection('annotations');
+        $('annotationMaskSelect').value = mask.maskId;
+        $('applyAnnotationMaskButton').disabled = !hasPermission('annotations.draft');
+        $('annotationMaskSelect').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+      card.append(title, meta, action);
+      container.appendChild(card);
+    });
 }
 
 async function saveCurrentAsAnnotationMask() {
@@ -1084,6 +1298,7 @@ async function applySelectedAnnotationMask() {
       lineItemTools.deduplicate([...maskFields, ...currentLineItems]),
     );
     state.selectedField = 0;
+    clearMultiFieldSelection();
     markDirty();
     renderFields();
     await selectField(0);
@@ -1135,35 +1350,250 @@ function populateLabelSelect(select, current, fieldIndex) {
   }
 }
 
-function movableFieldIndexes(index) {
+function fieldMovementScope(field) {
+  const compartment = fieldCompartment(field);
+  if (compartment !== 'LINE_ITEMS') return `${compartment}:${fieldBusinessGroup(field)}`;
+  const lineIndex = fieldLineIndex(field);
+  return `LINE_ITEMS:${lineIndex >= 0 ? lineIndex : 'unindexed'}`;
+}
+
+function selectedFieldObjects() {
+  const currentFields = new Set(state.fields);
+  [...state.multiSelectedFields].forEach(field => {
+    if (!currentFields.has(field)) state.multiSelectedFields.delete(field);
+  });
+  return state.fields.filter(field => state.multiSelectedFields.has(field));
+}
+
+function movementSelectionFor(index) {
   const field = state.fields[index];
   if (!field) return [];
-  const compartment = fieldCompartment(field);
-  const lineIndex = fieldLineIndex(field);
-  return state.fields
-    .map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
-    .filter(({ candidate }) => (
-      fieldCompartment(candidate) === compartment
-      && (lineIndex < 0 || fieldLineIndex(candidate) === lineIndex)
-    ))
-    .map(({ candidateIndex }) => candidateIndex);
+  const selected = selectedFieldObjects();
+  return state.multiSelectedFields.has(field) && selected.length ? selected : [field];
+}
+
+function canMoveField(index, direction) {
+  return fieldSelectionTools.canMove(
+    state.fields,
+    movementSelectionFor(index),
+    direction,
+    fieldMovementScope,
+  );
+}
+
+function updateFieldSelectionControls() {
+  const selected = selectedFieldObjects();
+  const count = selected.length;
+  $('fieldSelectionSummary').textContent = count
+    ? `${count} champ${count > 1 ? 's' : ''} sélectionné${count > 1 ? 's' : ''}`
+    : 'Aucun champ sélectionné';
+  $('moveFieldSelectionUpButton').disabled = !editableAnnotation()
+    || !fieldSelectionTools.canMove(state.fields, selected, -1, fieldMovementScope);
+  $('moveFieldSelectionDownButton').disabled = !editableAnnotation()
+    || !fieldSelectionTools.canMove(state.fields, selected, 1, fieldMovementScope);
+  $('clearFieldSelectionButton').disabled = count === 0;
+}
+
+function moveFieldObjects(fields, direction) {
+  if (!fields.length) return false;
+  const activeField = state.fields[state.selectedField];
+  const result = fieldSelectionTools.move(
+    state.fields,
+    fields,
+    direction,
+    fieldMovementScope,
+  );
+  if (!result.moved) return false;
+  state.fields = result.fields;
+  state.selectedField = activeField ? state.fields.indexOf(activeField) : -1;
+  markDirty();
+  renderFields();
+  const scrollIndex = state.selectedField >= 0
+    ? state.selectedField
+    : state.fields.indexOf(fields[0]);
+  fieldList.querySelector(`[data-index="${scrollIndex}"]`)?.scrollIntoView({
+    behavior: 'smooth', block: 'center',
+  });
+  return true;
 }
 
 function moveField(index, direction) {
-  const field = state.fields[index];
-  const movable = movableFieldIndexes(index);
-  const position = movable.indexOf(index);
-  const targetPosition = position + direction;
-  if (!field || position < 0 || targetPosition < 0 || targetPosition >= movable.length) return;
-  const targetIndex = movable[targetPosition];
-  [state.fields[index], state.fields[targetIndex]] = [state.fields[targetIndex], state.fields[index]];
-  compactLineItemIndexes(field);
+  moveFieldObjects(movementSelectionFor(index), direction);
+}
+
+function moveSelectedFields(direction) {
+  const selected = selectedFieldObjects();
+  if (!selected.length) return;
+  moveFieldObjects(selected, direction);
+}
+
+function fieldNeedsAttention(field, index, trainingProblemIndexes = new Set()) {
+  if (trainingProblemIndexes.has(index)) return true;
+  if (['UNREVIEWED', 'ABSENT', 'AMBIGUOUS'].includes(field.status)) return true;
+  if (field.status === 'CONFIRMED' && !valueText(field.extracted_value).trim()) return true;
+  return field.status === 'CORRECTED' && !valueText(field.corrected_value).trim();
+}
+
+function createBusinessGroupHeader(group, count) {
+  const header = document.createElement('div');
+  header.className = 'business-group-header';
+  const title = document.createElement('strong');
+  title.textContent = businessGroupName(group);
+  const summary = document.createElement('span');
+  summary.textContent = `${count} champ${count > 1 ? 's' : ''}`;
+  header.append(title, summary);
+  return header;
+}
+
+function renderBusinessGroupNav(trainingProblemIndexes) {
+  const container = $('businessGroupNav');
+  const groups = new Map();
+  state.fields.forEach((field, index) => {
+    const group = fieldBusinessGroup(field);
+    if (!groups.has(group)) groups.set(group, { total: 0, reviewed: 0, problems: 0 });
+    const stats = groups.get(group);
+    stats.total += 1;
+    if (field.status !== 'UNREVIEWED') stats.reviewed += 1;
+    if (fieldNeedsAttention(field, index, trainingProblemIndexes)) stats.problems += 1;
+  });
+  container.replaceChildren();
+  const choices = [
+    ['ALL', 'Toute la commande', {
+      total: state.fields.length,
+      reviewed: state.fields.filter(field => field.status !== 'UNREVIEWED').length,
+      problems: state.fields.filter((field, index) => fieldNeedsAttention(field, index, trainingProblemIndexes)).length,
+    }],
+    ...[...groups.entries()]
+      .sort((left, right) => (BUSINESS_GROUP_RANK.get(left[0]) ?? 99) - (BUSINESS_GROUP_RANK.get(right[0]) ?? 99))
+      .map(([group, stats]) => [group, businessGroupName(group), stats]),
+  ];
+  choices.forEach(([group, name, stats]) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `business-group-button ${state.businessGroup === group ? 'active' : ''}`.trim();
+    const title = document.createElement('strong');
+    title.textContent = name;
+    const progress = document.createElement('span');
+    progress.textContent = `${stats.reviewed}/${stats.total} vérifiés${stats.problems ? ` · ${stats.problems} à revoir` : ''}`;
+    button.append(title, progress);
+    button.addEventListener('click', () => {
+      state.businessGroup = group;
+      state.annotationCompartment = 'ALL';
+      $('annotationCompartmentFilter').value = 'ALL';
+      renderFields();
+      const first = state.fields.findIndex(field => group === 'ALL' || fieldBusinessGroup(field) === group);
+      if (first >= 0) selectField(first);
+    });
+    container.appendChild(button);
+  });
+}
+
+function addSpecificLineItemField(lineIndex, label) {
+  if (state.fields.some(field => fieldLineIndex(field) === lineIndex && field.label === label)) return;
+  const field = lineItemTools.createField(label, lineIndex);
+  const lastLineField = state.fields.reduce(
+    (last, candidate, index) => fieldLineIndex(candidate) === lineIndex ? index : last,
+    -1,
+  );
+  state.fields.splice(lastLineField + 1, 0, field);
   state.selectedField = state.fields.indexOf(field);
   markDirty();
   renderFields();
-  fieldList.querySelector(`[data-index="${state.selectedField}"]`)?.scrollIntoView({
-    behavior: 'smooth', block: 'center',
+  selectField(state.selectedField);
+}
+
+function lineStatusName(status) {
+  return {
+    UNREVIEWED: 'À vérifier',
+    CONFIRMED: 'Correct',
+    CORRECTED: 'Corrigé',
+    ABSENT: 'Absent',
+    AMBIGUOUS: 'Ambigu',
+  }[status] || status;
+}
+
+function createLineItemsTable(editable, trainingProblemIndexes) {
+  const shell = document.createElement('section');
+  shell.className = 'line-items-table-shell';
+  const heading = document.createElement('div');
+  heading.className = 'line-items-table-heading';
+  const text = document.createElement('div');
+  const title = document.createElement('strong');
+  title.textContent = 'Tableau des lignes de commande';
+  const hint = document.createElement('p');
+  hint.textContent = 'Cliquez sur une cellule pour afficher son cadre et son inspecteur.';
+  text.append(title, hint);
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'button primary compact';
+  add.textContent = '+ Ligne';
+  add.disabled = !editable;
+  add.addEventListener('click', addLineItem);
+  heading.append(text, add);
+
+  const table = document.createElement('table');
+  table.className = 'line-items-table';
+  const head = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  ['Ligne', ...lineItemTools.FIELD_ORDER.map(catalogName), 'Actions'].forEach(name => {
+    const cell = document.createElement('th');
+    cell.textContent = name;
+    headRow.appendChild(cell);
   });
+  head.appendChild(headRow);
+  const body = document.createElement('tbody');
+  lineItemTools.indices(state.fields).forEach(lineIndex => {
+    const row = document.createElement('tr');
+    const number = document.createElement('td');
+    number.className = 'line-number-cell';
+    number.textContent = String(lineIndex + 1);
+    row.appendChild(number);
+    lineItemTools.FIELD_ORDER.forEach(label => {
+      const cell = document.createElement('td');
+      const fieldIndex = state.fields.findIndex(field => (
+        fieldLineIndex(field) === lineIndex && field.label === label
+      ));
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'line-item-cell';
+      if (fieldIndex >= 0) {
+        const field = state.fields[fieldIndex];
+        button.dataset.fieldIndex = String(fieldIndex);
+        button.classList.toggle('selected', fieldIndex === state.selectedField);
+        button.classList.toggle('problem', fieldNeedsAttention(field, fieldIndex, trainingProblemIndexes));
+        const value = document.createElement('span');
+        value.className = 'line-item-cell-value';
+        value.textContent = valueText(effectiveValue(field)) || '—';
+        value.title = value.textContent;
+        const status = document.createElement('span');
+        status.className = 'line-item-cell-status';
+        status.textContent = lineStatusName(field.status);
+        button.append(value, status);
+        button.addEventListener('click', () => revealValidationField(fieldIndex));
+      } else {
+        button.classList.add('missing');
+        button.textContent = '+ Ajouter';
+        button.disabled = !editable;
+        button.addEventListener('click', () => addSpecificLineItemField(lineIndex, label));
+      }
+      cell.appendChild(button);
+      row.appendChild(cell);
+    });
+    const actions = document.createElement('td');
+    actions.className = 'line-row-actions';
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'button danger compact';
+    remove.textContent = 'Retirer';
+    remove.disabled = !editable;
+    remove.addEventListener('click', () => removeLineItem(lineIndex));
+    actions.appendChild(remove);
+    row.appendChild(actions);
+    body.appendChild(row);
+  });
+  table.append(head, body);
+  shell.append(heading, table);
+  return shell;
 }
 
 function renderFields() {
@@ -1173,23 +1603,37 @@ function renderFields() {
       .flatMap(issue => [issue.fieldIndex, issue.otherFieldIndex])
       .filter(index => Number.isInteger(index)),
   );
+  annotationWorkspace.classList.toggle('review-mode', state.workspaceMode === 'REVIEW');
+  $('reviewTools').classList.toggle('hidden', state.workspaceMode !== 'REVIEW');
   fieldList.replaceChildren();
-  const renderedLineHeaders = new Set();
   const renderedCompartments = new Set();
+  const renderedGroups = new Set();
   const rank = { HEADER: 0, FOOTER: 1, LINE_ITEMS: 2 };
   const counts = state.fields.reduce((result, field) => {
     const compartment = fieldCompartment(field);
     result[compartment] = (result[compartment] || 0) + 1;
     return result;
   }, {});
+  const groupCounts = state.fields.reduce((result, field) => {
+    const group = fieldBusinessGroup(field);
+    result[group] = (result[group] || 0) + 1;
+    return result;
+  }, {});
+  renderBusinessGroupNav(trainingProblemIndexes);
   const visibleIndexes = state.fields
     .map((_, index) => index)
     .filter(index => (
-      state.annotationCompartment === 'ALL'
-      || fieldCompartment(state.fields[index]) === state.annotationCompartment
+      (state.annotationCompartment === 'ALL'
+        || fieldCompartment(state.fields[index]) === state.annotationCompartment)
+      && (state.businessGroup === 'ALL'
+        || fieldBusinessGroup(state.fields[index]) === state.businessGroup)
+      && (!state.problemsOnly
+        || fieldNeedsAttention(state.fields[index], index, trainingProblemIndexes))
     ))
     .sort((left, right) => (
       rank[fieldCompartment(state.fields[left])] - rank[fieldCompartment(state.fields[right])]
+      || (BUSINESS_GROUP_RANK.get(fieldBusinessGroup(state.fields[left])) ?? 99)
+        - (BUSINESS_GROUP_RANK.get(fieldBusinessGroup(state.fields[right])) ?? 99)
       || left - right
     ));
   $('annotationCompartmentSummary').textContent = state.annotationCompartment === 'ALL'
@@ -1201,21 +1645,28 @@ function renderFields() {
     if (!renderedCompartments.has(compartment)) {
       fieldList.appendChild(createCompartmentHeader(compartment, counts[compartment] || 0));
       renderedCompartments.add(compartment);
+      if (compartment === 'LINE_ITEMS') {
+        fieldList.appendChild(createLineItemsTable(editable, trainingProblemIndexes));
+      }
     }
     const lineIndex = fieldLineIndex(field);
-    if (lineIndex >= 0 && !renderedLineHeaders.has(lineIndex)) {
-      fieldList.appendChild(createLineGroupHeader(lineIndex, editable));
-      renderedLineHeaders.add(lineIndex);
+    const group = fieldBusinessGroup(field);
+    if (lineIndex < 0 && !renderedGroups.has(group)) {
+      fieldList.appendChild(createBusinessGroupHeader(group, groupCounts[group] || 0));
+      renderedGroups.add(group);
     }
     const node = $('fieldTemplate').content.firstElementChild.cloneNode(true);
     node.dataset.index = String(index);
     node.dataset.lineIndex = lineIndex >= 0 ? String(lineIndex) : '';
     node.classList.toggle('line-item-field', lineIndex >= 0);
     node.classList.toggle('selected', index === state.selectedField);
+    node.classList.toggle('multi-selected', state.multiSelectedFields.has(field));
     node.classList.toggle('reviewed', ['CONFIRMED', 'CORRECTED'].includes(field.status));
     node.classList.toggle(
       'problem',
-      ['ABSENT', 'AMBIGUOUS'].includes(field.status) || trainingProblemIndexes.has(index),
+      state.workspaceMode === 'REVIEW'
+        ? fieldNeedsAttention(field, index, trainingProblemIndexes)
+        : ['ABSENT', 'AMBIGUOUS'].includes(field.status) || trainingProblemIndexes.has(index),
     );
     const label = node.querySelector('.field-label');
     const lineBadge = node.querySelector('.line-item-badge');
@@ -1237,6 +1688,9 @@ function renderFields() {
     const corrected = node.querySelector('.corrected-value');
     const documentType = node.querySelector('.document-type-select');
     const documentTypeOther = node.querySelector('.document-type-other');
+    const compactValue = node.querySelector('.field-compact-value');
+    const multiSelect = node.querySelector('.field-multi-select');
+    const dragHandle = node.querySelector('.field-drag-handle');
     const moveUp = node.querySelector('.move-field-up');
     const moveDown = node.querySelector('.move-field-down');
     const remove = node.querySelector('.delete-field');
@@ -1247,6 +1701,8 @@ function renderFields() {
     status.value = field.status;
     extracted.value = valueText(field.extracted_value);
     corrected.value = valueText(field.corrected_value);
+    compactValue.textContent = valueText(effectiveValue(field)) || 'Aucune valeur';
+    compactValue.title = compactValue.textContent;
     const isDocumentType = field.label === 'DOCUMENT_TYPE';
     corrected.classList.toggle('hidden', isDocumentType);
     documentType.classList.toggle('hidden', !isDocumentType);
@@ -1259,21 +1715,79 @@ function renderFields() {
     page.value = field.evidence?.page || '';
     bbox.value = field.evidence?.bbox?.join(',') || '';
     comment.value = field.comment || '';
+    multiSelect.checked = state.multiSelectedFields.has(field);
     label.disabled = !editable;
     path.disabled = !editable;
     status.disabled = !editable;
     corrected.disabled = !editable || field.status !== 'CORRECTED';
     documentType.disabled = !editable || field.status !== 'CORRECTED';
     documentTypeOther.disabled = !editable || field.status !== 'CORRECTED';
-    const movable = movableFieldIndexes(index);
-    const movablePosition = movable.indexOf(index);
-    moveUp.disabled = !editable || movablePosition <= 0;
-    moveDown.disabled = !editable || movablePosition < 0 || movablePosition >= movable.length - 1;
+    multiSelect.disabled = !editable;
+    moveUp.disabled = !editable || !canMoveField(index, -1);
+    moveDown.disabled = !editable || !canMoveField(index, 1);
     remove.disabled = !editable;
     page.disabled = !editable;
     bbox.disabled = !editable;
     comment.disabled = !editable;
     node.addEventListener('click', () => selectField(index));
+    dragHandle.draggable = editable && lineIndex < 0;
+    dragHandle.classList.toggle('hidden', lineIndex >= 0 || !editable);
+    dragHandle.addEventListener('click', event => event.stopPropagation());
+    dragHandle.addEventListener('dragstart', event => {
+      event.stopPropagation();
+      const selected = movementSelectionFor(index)
+        .filter(candidate => fieldMovementScope(candidate) === fieldMovementScope(field));
+      state.draggedFields = selected.length ? selected : [field];
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', field.path);
+      node.classList.add('dragging');
+    });
+    dragHandle.addEventListener('dragend', () => {
+      state.draggedFields = [];
+      fieldList.querySelectorAll('.dragging, .drag-target-before, .drag-target-after').forEach(item => {
+        item.classList.remove('dragging', 'drag-target-before', 'drag-target-after');
+      });
+    });
+    node.addEventListener('dragover', event => {
+      if (
+        !state.draggedFields.length
+        || state.draggedFields.includes(field)
+        || state.draggedFields.some(candidate => fieldMovementScope(candidate) !== fieldMovementScope(field))
+      ) return;
+      event.preventDefault();
+      const before = event.clientY < node.getBoundingClientRect().top + node.offsetHeight / 2;
+      node.classList.toggle('drag-target-before', before);
+      node.classList.toggle('drag-target-after', !before);
+    });
+    node.addEventListener('dragleave', () => {
+      node.classList.remove('drag-target-before', 'drag-target-after');
+    });
+    node.addEventListener('drop', event => {
+      event.preventDefault();
+      const before = event.clientY < node.getBoundingClientRect().top + node.offsetHeight / 2;
+      const activeField = state.fields[state.selectedField];
+      const result = fieldSelectionTools.moveTo(
+        state.fields,
+        state.draggedFields,
+        field,
+        before ? 'before' : 'after',
+        fieldMovementScope,
+      );
+      state.draggedFields = [];
+      if (!result.moved) return renderFields();
+      state.fields = result.fields;
+      state.selectedField = state.fields.indexOf(activeField);
+      markDirty();
+      renderFields();
+    });
+    multiSelect.addEventListener('click', event => event.stopPropagation());
+    multiSelect.addEventListener('change', event => {
+      if (event.target.checked) state.multiSelectedFields.add(field);
+      else state.multiSelectedFields.delete(field);
+      state.selectedField = state.fields.indexOf(field);
+      renderFields();
+      selectField(state.selectedField);
+    });
     label.addEventListener('change', event => {
       const nextLabel = event.target.value;
       if (duplicateLabelExists(nextLabel, index, lineIndex)) {
@@ -1359,6 +1873,15 @@ function renderFields() {
     });
     fieldList.appendChild(node);
   });
+  if (!visibleIndexes.length) {
+    const empty = document.createElement('div');
+    empty.className = 'field-filter-empty';
+    empty.innerHTML = state.problemsOnly
+      ? '<strong>Aucun problème dans cette vue.</strong><span>Désactivez le filtre ou choisissez une autre section métier.</span>'
+      : '<strong>Aucun champ dans cette vue.</strong><span>Choisissez une autre section ou ajoutez un champ.</span>';
+    fieldList.appendChild(empty);
+  }
+  updateFieldSelectionControls();
   renderProgress();
   drawAnnotations();
   updateJsonPreview();
@@ -1372,6 +1895,13 @@ async function selectField(index) {
     item.classList.toggle('selected', selected);
     item.querySelector('.field-helper').open = selected;
   });
+  fieldList.querySelectorAll('.line-item-cell[data-field-index]').forEach(item => {
+    item.classList.toggle('selected', Number(item.dataset.fieldIndex) === index);
+  });
+  const activeCard = fieldList.querySelector(`.field-card[data-index="${index}"]`);
+  if (activeCard && fieldLineIndex(state.fields[index]) >= 0) {
+    activeCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
   const targetPage = Number(state.fields[index].evidence?.page || 0);
   if (state.pdf && targetPage > 0 && targetPage <= state.pdf.numPages && targetPage !== state.page) {
     state.page = targetPage;
@@ -1388,6 +1918,7 @@ function removeField(index) {
   const field = state.fields[index];
   const meaningful = field.status !== 'UNREVIEWED' || field.corrected_value || field.comment;
   if (meaningful && !window.confirm(`Retirer le champ « ${catalogName(field.label)} » ?`)) return;
+  clearMultiFieldSelection();
   state.fields.splice(index, 1);
   compactLineItemIndexes();
   state.selectedField = Math.min(index, state.fields.length - 1);
@@ -1408,7 +1939,13 @@ function updateEvidence(field, pageValue, bboxValue) {
 
 function renderProgress() {
   const reviewed = state.fields.filter(field => field.status !== 'UNREVIEWED').length;
-  $('reviewProgress').textContent = `${reviewed}/${state.fields.length} champs vérifiés`;
+  const corrected = state.fields.filter(field => field.status === 'CORRECTED').length;
+  const absent = state.fields.filter(field => field.status === 'ABSENT').length;
+  const suffix = [
+    corrected ? `${corrected} corrigé${corrected > 1 ? 's' : ''}` : '',
+    absent ? `${absent} absent${absent > 1 ? 's' : ''}` : '',
+  ].filter(Boolean).join(' · ');
+  $('reviewProgress').textContent = `${reviewed}/${state.fields.length} champs vérifiés${suffix ? ` · ${suffix}` : ''}`;
   updateJsonPreview();
 }
 
@@ -1667,6 +2204,7 @@ function annotationPayload(status) {
     field_annotations: state.fields.map(field => ({
       path: field.path,
       label: field.label,
+      compartment: fieldCompartment(field),
       status: field.status,
       extracted_value: field.extracted_value,
       corrected_value: field.status === 'CORRECTED' ? field.corrected_value : null,
@@ -1676,47 +2214,217 @@ function annotationPayload(status) {
   };
 }
 
+async function revealValidationField(index) {
+  const field = state.fields[index];
+  if (!field) return;
+  state.annotationCompartment = 'ALL';
+  state.businessGroup = fieldBusinessGroup(field);
+  state.problemsOnly = false;
+  $('annotationCompartmentFilter').value = 'ALL';
+  $('problemsOnlyToggle').checked = false;
+  renderFields();
+  await selectField(index);
+  fieldList.querySelector(`[data-index="${index}"]`)?.scrollIntoView({
+    behavior: 'smooth', block: 'center',
+  });
+}
+
+function incompleteReviewedFieldIndex() {
+  return state.fields.findIndex(field => (
+    (field.status === 'CONFIRMED' && !valueText(field.extracted_value).trim())
+    || (field.status === 'CORRECTED' && !valueText(field.corrected_value).trim())
+  ));
+}
+
+function validationReport() {
+  const counts = {
+    CONFIRMED: 0,
+    CORRECTED: 0,
+    ABSENT: 0,
+    AMBIGUOUS: 0,
+    UNREVIEWED: 0,
+  };
+  state.fields.forEach(field => { counts[field.status] = (counts[field.status] || 0) + 1; });
+  const blockers = lineItemTools.validate(state.fields).map(message => ({ message, fieldIndex: null }));
+  state.fields.forEach((field, fieldIndex) => {
+    if (field.status === 'UNREVIEWED') blockers.push({
+      fieldIndex,
+      message: `${fieldDisplayName(field)} n’a pas été vérifié.`,
+    });
+    if (field.status === 'CONFIRMED' && !valueText(field.extracted_value).trim()) blockers.push({
+      fieldIndex,
+      message: `${fieldDisplayName(field)} est confirmé sans valeur extraite.`,
+    });
+    if (field.status === 'CORRECTED' && !valueText(field.corrected_value).trim()) blockers.push({
+      fieldIndex,
+      message: `${fieldDisplayName(field)} est corrigé sans valeur corrigée.`,
+    });
+  });
+  annotationTrainingIssues(state.fields).forEach(issue => blockers.push({
+    fieldIndex: issue.fieldIndex,
+    message: `${fieldDisplayName(state.fields[issue.fieldIndex])} : ${issue.message}.`,
+  }));
+  return { counts, blockers };
+}
+
+function openValidationReview() {
+  const report = validationReport();
+  $('validationSummary').textContent = report.blockers.length
+    ? `${report.blockers.length} point${report.blockers.length > 1 ? 's' : ''} bloque${report.blockers.length > 1 ? 'nt' : ''} encore la validation.`
+    : 'Tous les contrôles sont satisfaits. Cette révision peut entrer dans un dataset.';
+  const counts = $('validationCounts');
+  counts.replaceChildren();
+  [
+    ['CONFIRMED', 'Corrects'],
+    ['CORRECTED', 'Corrigés'],
+    ['ABSENT', 'Absents'],
+    ['AMBIGUOUS', 'Ambigus'],
+    ['UNREVIEWED', 'Non vérifiés'],
+  ].forEach(([status, label]) => {
+    const item = document.createElement('div');
+    item.className = 'validation-count';
+    const value = document.createElement('strong');
+    value.textContent = String(report.counts[status] || 0);
+    const name = document.createElement('span');
+    name.textContent = label;
+    item.append(value, name);
+    counts.appendChild(item);
+  });
+  const issues = $('validationIssueList');
+  issues.replaceChildren();
+  if (!report.blockers.length) {
+    const ready = document.createElement('div');
+    ready.className = 'validation-ready';
+    ready.textContent = '✓ Annotation complète et exploitable pour l’apprentissage.';
+    issues.appendChild(ready);
+  } else {
+    report.blockers.forEach(blocker => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = `validation-issue ${Number.isInteger(blocker.fieldIndex) ? '' : 'global'}`.trim();
+      item.textContent = blocker.message;
+      if (Number.isInteger(blocker.fieldIndex)) item.addEventListener('click', async () => {
+        $('validationDialog').close();
+        await revealValidationField(blocker.fieldIndex);
+      });
+      else item.disabled = true;
+      issues.appendChild(item);
+    });
+  }
+  $('confirmValidationButton').disabled = report.blockers.length > 0;
+  $('validationDialog').showModal();
+}
+
+async function goToNextProblem() {
+  const problemIndexes = new Set(
+    annotationTrainingIssues(state.fields)
+      .flatMap(issue => [issue.fieldIndex, issue.otherFieldIndex])
+      .filter(Number.isInteger),
+  );
+  const candidates = state.fields
+    .map((field, index) => ({ field, index }))
+    .filter(item => fieldNeedsAttention(item.field, item.index, problemIndexes));
+  if (!candidates.length) {
+    showAnnotationFeedback('Aucun problème restant dans cette annotation.', 'success');
+    return;
+  }
+  const next = candidates.find(item => item.index > state.selectedField) || candidates[0];
+  await revealValidationField(next.index);
+}
+
+async function confirmActiveFieldAndContinue() {
+  const field = state.fields[state.selectedField];
+  if (!field || !editableAnnotation()) return;
+  if (field.status === 'UNREVIEWED') {
+    if (!valueText(field.extracted_value).trim() || !field.evidence?.bbox) {
+      showAnnotationFeedback('Ce champ doit avoir une valeur et un rectangle source avant confirmation.', 'error');
+      return;
+    }
+    field.status = 'CONFIRMED';
+    field.corrected_value = null;
+    markDirty();
+    renderFields();
+  }
+  const nextIndex = state.fields.findIndex((candidate, index) => (
+    index > state.selectedField && candidate.status === 'UNREVIEWED'
+  ));
+  if (nextIndex >= 0) await revealValidationField(nextIndex);
+  else await goToNextProblem();
+}
+
 async function saveAnnotation(status) {
   if (!state.activeDocument) return;
-  const message = $('annotationMessage');
   const lineErrors = lineItemTools.validate(state.fields);
   if (lineErrors.length) {
-    return showMessage(message, lineErrors.join(' '), 'error');
+    showAnnotationFeedback(lineErrors.join(' '), 'error');
+    return;
   }
   if (status === 'HUMAN_VALIDATED') {
+    const unreviewedCount = state.fields.filter(field => field.status === 'UNREVIEWED').length;
     const unreviewedIndex = state.fields.findIndex(field => field.status === 'UNREVIEWED');
     if (unreviewedIndex >= 0) {
-      selectField(unreviewedIndex);
-      return showMessage(
-        message,
-        `Le champ « ${catalogName(state.fields[unreviewedIndex].label)} » n’a pas été vérifié.`,
+      await revealValidationField(unreviewedIndex);
+      showAnnotationFeedback(
+        `${unreviewedCount} champ${unreviewedCount > 1 ? 's n’ont' : ' n’a'} pas été vérifié${unreviewedCount > 1 ? 's' : ''}. `
+          + `Premier blocage : « ${catalogName(state.fields[unreviewedIndex].label)} ».`,
         'error',
       );
+      return;
+    }
+    const incompleteIndex = incompleteReviewedFieldIndex();
+    if (incompleteIndex >= 0) {
+      const field = state.fields[incompleteIndex];
+      await revealValidationField(incompleteIndex);
+      showAnnotationFeedback(
+        field.status === 'CORRECTED'
+          ? `Le champ « ${catalogName(field.label)} » est marqué Corrigé mais sa valeur corrigée est vide.`
+          : `Le champ « ${catalogName(field.label)} » est marqué Confirmé mais sa valeur extraite est vide.`,
+        'error',
+      );
+      return;
     }
     const issue = annotationTrainingIssues(state.fields)[0];
     if (issue) {
-      selectField(issue.fieldIndex);
-      return showMessage(
-        message,
+      await revealValidationField(issue.fieldIndex);
+      showAnnotationFeedback(
         `Le champ « ${catalogName(state.fields[issue.fieldIndex].label)} » n’est pas exploitable : ${issue.message}`,
         'error',
       );
+      return;
     }
   }
-  showMessage(message, status === 'DRAFT' ? 'Enregistrement…' : 'Validation…');
+  const button = status === 'DRAFT' ? $('saveDraftButton') : $('validateButton');
+  const previousText = button.textContent;
+  button.disabled = true;
+  button.textContent = status === 'DRAFT' ? 'Enregistrement…' : 'Validation…';
+  showAnnotationFeedback(
+    status === 'DRAFT' ? 'Enregistrement du brouillon…' : 'Validation pour l’apprentissage…',
+  );
   try {
     await api(`/documents/${encodeURIComponent(state.activeDocument.documentId)}/annotation`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(annotationPayload(status)),
     });
-    showMessage(message, status === 'DRAFT' ? 'Brouillon enregistré.' : 'Annotation humaine validée.', 'success');
+    removeLocalDraft();
     await loadDocuments();
     await openDocument(state.activeDocument.documentId);
     await loadStudioStatus();
     await loadDatasets();
+    showAnnotationFeedback(
+      status === 'DRAFT'
+        ? 'Brouillon enregistré.'
+        : 'Annotation validée pour l’apprentissage. Elle est maintenant disponible pour un dataset.',
+      'success',
+    );
   } catch (error) {
-    showMessage(message, error.message, 'error');
+    showAnnotationFeedback(
+      `${status === 'DRAFT' ? 'Enregistrement' : 'Validation'} refusé${status === 'DRAFT' ? '' : 'e'} : ${error.message}`,
+      'error',
+    );
+  } finally {
+    button.disabled = false;
+    button.textContent = previousText;
   }
 }
 
@@ -2241,6 +2949,46 @@ $('annotationMaskSelect').addEventListener('change', event => {
 $('saveAnnotationMaskButton').addEventListener('click', saveCurrentAsAnnotationMask);
 $('applyAnnotationMaskButton').addEventListener('click', applySelectedAnnotationMask);
 $('rereadWithModelButton').addEventListener('click', rereadWithJinModel);
+$('workspaceModeSelect').addEventListener('change', event => {
+  state.workspaceMode = event.target.value === 'REVIEW' ? 'REVIEW' : 'ANNOTATE';
+  state.problemsOnly = false;
+  $('problemsOnlyToggle').checked = false;
+  renderFields();
+});
+$('problemsOnlyToggle').addEventListener('change', event => {
+  state.problemsOnly = event.target.checked;
+  renderFields();
+});
+$('nextProblemButton').addEventListener('click', goToNextProblem);
+$('undoAnnotationButton').addEventListener('click', undoAnnotation);
+$('redoAnnotationButton').addEventListener('click', redoAnnotation);
+$('restoreLocalDraftButton').addEventListener('click', () => {
+  if (!state.localRecovery?.snapshot) return;
+  try {
+    state.undoStack.push(state.historySnapshot);
+    state.redoStack = [];
+    restoreHistorySnapshot(state.localRecovery.snapshot);
+    state.localRecovery = null;
+    $('localRecoveryNotice').classList.add('hidden');
+    showAnnotationFeedback('Brouillon local restauré. Relisez-le puis enregistrez-le sur le serveur.', 'success');
+  } catch (_) {
+    removeLocalDraft();
+    $('localRecoveryNotice').classList.add('hidden');
+    showAnnotationFeedback('Le brouillon local était illisible et a été supprimé.', 'error');
+  }
+});
+$('discardLocalDraftButton').addEventListener('click', () => {
+  removeLocalDraft();
+  state.localRecovery = null;
+  $('localRecoveryNotice').classList.add('hidden');
+  showAnnotationFeedback('Le brouillon local a été ignoré. La version du serveur reste active.');
+});
+$('moveFieldSelectionUpButton').addEventListener('click', () => moveSelectedFields(-1));
+$('moveFieldSelectionDownButton').addEventListener('click', () => moveSelectedFields(1));
+$('clearFieldSelectionButton').addEventListener('click', () => {
+  clearMultiFieldSelection();
+  renderFields();
+});
 $('annotationCompartmentFilter').addEventListener('change', event => {
   state.annotationCompartment = event.target.value;
   const firstVisible = state.fields.findIndex(field => (
@@ -2275,30 +3023,77 @@ $('confirmAllButton').addEventListener('click', () => {
     missingRegion ? 'error' : 'success',
   );
 });
-function addRegularField() {
-  const preferredCompartment = state.annotationCompartment === 'FOOTER' ? 'FOOTER' : 'HEADER';
-  const label = state.catalog.find(item => (
+function preferredNewFieldCompartment() {
+  const selectedCompartment = fieldCompartment(state.fields[state.selectedField]);
+  return state.annotationCompartment === 'FOOTER'
+    || (state.annotationCompartment === 'ALL' && selectedCompartment === 'FOOTER')
+    ? 'FOOTER'
+    : 'HEADER';
+}
+
+function renderNewFieldHelp() {
+  const label = $('newFieldLabel').value;
+  $('newFieldHelp').replaceChildren();
+  const title = document.createElement('strong');
+  title.textContent = catalogName(label);
+  const help = document.createElement('p');
+  help.textContent = catalogHelp(label);
+  const example = document.createElement('p');
+  example.innerHTML = '<strong>Exemple :</strong> ';
+  example.append(document.createTextNode(catalogExample(label)));
+  $('newFieldHelp').append(title, help, example);
+}
+
+function openAddRegularFieldDialog() {
+  if (state.annotationCompartment === 'LINE_ITEMS') {
+    const selectedLineIndex = fieldLineIndex(state.fields[state.selectedField]);
+    if (selectedLineIndex >= 0) return addLineItemField(selectedLineIndex);
+    return addLineItem();
+  }
+  const available = state.catalog.filter(item => (
     item.selectable !== false
     &&
     !lineItemTools.isLineItemLabel(item.label)
     && !duplicateLabelExists(item.label)
-    && fieldCompartment({ label: item.label, path: item.defaultPath }) === preferredCompartment
-  ))?.label || state.catalog.find(item => (
-    item.selectable !== false
-    &&
-    !lineItemTools.isLineItemLabel(item.label)
-    && !duplicateLabelExists(item.label)
-  ))?.label;
-  if (!label) {
+  ));
+  if (!available.length) {
     return showMessage(
       $('annotationMessage'),
       'Tous les champs disponibles sont déjà présents dans l’annotation.',
       'error',
     );
   }
+  const select = $('newFieldLabel');
+  select.replaceChildren();
+  available
+    .sort((left, right) => String(left.name).localeCompare(String(right.name), 'fr'))
+    .forEach(item => {
+      const option = document.createElement('option');
+      option.value = item.label;
+      option.textContent = item.name;
+      select.appendChild(option);
+    });
+  const preferredCompartment = preferredNewFieldCompartment();
+  $('newFieldCompartment').value = preferredCompartment;
+  const preferred = available.find(item => (
+    fieldCompartment({ label: item.label, path: item.defaultPath }) === preferredCompartment
+  ));
+  if (preferred) select.value = preferred.label;
+  renderNewFieldHelp();
+  $('addFieldDialog').showModal();
+}
+
+function confirmAddRegularField() {
+  const label = $('newFieldLabel').value;
+  const preferredCompartment = $('newFieldCompartment').value === 'FOOTER' ? 'FOOTER' : 'HEADER';
+  if (!label || duplicateLabelExists(label)) {
+    $('addFieldDialog').close();
+    return showMessage($('annotationMessage'), 'Ce champ existe déjà dans l’annotation.', 'error');
+  }
   const field = {
     path: availableCanonicalPath(label),
     label,
+    compartment: preferredCompartment,
     status: 'UNREVIEWED',
     extracted_value: '',
     corrected_value: null,
@@ -2309,21 +3104,29 @@ function addRegularField() {
   compactLineItemIndexes();
   const index = state.fields.indexOf(field);
   state.selectedField = index;
+  state.businessGroup = fieldBusinessGroup(field);
   if (state.annotationCompartment !== 'ALL') {
     state.annotationCompartment = fieldCompartment(field);
     $('annotationCompartmentFilter').value = state.annotationCompartment;
   }
+  $('addFieldDialog').close();
   markDirty();
   renderFields();
   fieldList.querySelector(`[data-index="${index}"]`)?.scrollIntoView({
     behavior: 'smooth', block: 'center',
   });
 }
-$('addFieldButton').addEventListener('click', addRegularField);
-$('addFieldTopButton').addEventListener('click', addRegularField);
+$('newFieldLabel').addEventListener('change', renderNewFieldHelp);
+$('confirmAddFieldButton').addEventListener('click', confirmAddRegularField);
+$('addFieldButton').addEventListener('click', openAddRegularFieldDialog);
+$('addFieldTopButton').addEventListener('click', openAddRegularFieldDialog);
 $('addLineItemButton').addEventListener('click', addLineItem);
 $('saveDraftButton').addEventListener('click', () => saveAnnotation('DRAFT'));
-$('validateButton').addEventListener('click', () => saveAnnotation('HUMAN_VALIDATED'));
+$('validateButton').addEventListener('click', openValidationReview);
+$('confirmValidationButton').addEventListener('click', async () => {
+  $('validationDialog').close();
+  await saveAnnotation('HUMAN_VALIDATED');
+});
 $('createDatasetButton').addEventListener('click', createDataset);
 $('previousPageButton').addEventListener('click', async () => { if (state.page > 1) { state.page -= 1; await renderPdfPage(); } });
 $('nextPageButton').addEventListener('click', async () => { if (state.pdf && state.page < state.pdf.numPages) { state.page += 1; await renderPdfPage(); } });
@@ -2344,9 +3147,49 @@ showOtherAnnotationsToggle.addEventListener('change', event => {
 $('annotationNote').addEventListener('input', markDirty);
 
 document.addEventListener('keydown', event => {
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && state.activeDocument) {
+  const key = event.key.toLowerCase();
+  const command = event.ctrlKey || event.metaKey;
+  if (command && key === 's' && state.activeDocument) {
     event.preventDefault();
     saveAnnotation('DRAFT');
+    return;
+  }
+  const editing = event.target instanceof HTMLElement && (
+    ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)
+    || event.target.isContentEditable
+  );
+  if (command && !editing && key === 'z') {
+    event.preventDefault();
+    if (event.shiftKey) redoAnnotation();
+    else undoAnnotation();
+    return;
+  }
+  if (command && !editing && key === 'y') {
+    event.preventDefault();
+    redoAnnotation();
+    return;
+  }
+  if (!state.activeDocument || editing) return;
+  if (event.altKey && ['arrowup', 'arrowdown'].includes(key)) {
+    event.preventDefault();
+    const direction = key === 'arrowup' ? -1 : 1;
+    if (selectedFieldObjects().length) moveSelectedFields(direction);
+    else moveField(state.selectedField, direction);
+    return;
+  }
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    confirmActiveFieldAndContinue();
+    return;
+  }
+  if (['a', 'm'].includes(key) && editableAnnotation()) {
+    event.preventDefault();
+    const field = state.fields[state.selectedField];
+    if (!field) return;
+    field.status = key === 'a' ? 'ABSENT' : 'AMBIGUOUS';
+    field.corrected_value = null;
+    markDirty();
+    renderFields();
   }
 });
 
@@ -2356,11 +3199,10 @@ window.addEventListener('beforeunload', event => {
   event.returnValue = '';
 });
 
-document.querySelectorAll('.section-tab').forEach(button => button.addEventListener('click', () => {
-  document.querySelectorAll('.section-tab').forEach(item => item.classList.toggle('active', item === button));
-  document.querySelectorAll('.studio-section').forEach(section => section.classList.add('hidden'));
-  $(`${button.dataset.section}Section`).classList.remove('hidden');
-}));
+document.querySelectorAll('.section-tab').forEach(button => {
+  button.addEventListener('click', () => activateSection(button.dataset.section));
+});
+$('returnToAnnotationButton').addEventListener('click', () => activateSection('annotations'));
 
 api('/auth/config').then(config => {
   state.passwordMinLength = Number(config.passwordMinLength || 8);

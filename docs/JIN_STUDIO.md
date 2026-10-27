@@ -297,7 +297,7 @@ Seules les révisions `HUMAN_VALIDATED` peuvent entrer dans un dataset. Une
 préannotation Codex/JIN, même très confiante, n'est donc jamais une vérité
 terrain avant cette validation.
 
-## Contrat d'annotation v2
+## Contrat d'annotation v3
 
 Une annotation référence obligatoirement :
 
@@ -327,6 +327,17 @@ champ. Les flèches ↑/↓ déplacent visuellement un champ à l'intérieur de 
 compartiment ; pour une ligne de commande, le déplacement reste volontairement
 limité à la ligne concernée. L'ordre sauvegardé suit l'ordre affiché, tout en
 conservant le bloc des lignes de commande à la fin.
+
+Le bouton respecte également le compartiment affiché : un champ ajouté depuis
+**Pied de page** reste dans ce compartiment après l'enregistrement, le
+rechargement ou l'application d'un masque. Dans **Lignes de commande**, il
+ajoute un champ à la ligne sélectionnée ou crée la première ligne si nécessaire.
+
+La barre d'actions affiche en permanence le résultat d'un enregistrement ou
+d'une validation. Si des champs restent à vérifier, JIN Studio indique leur
+nombre, sélectionne le premier blocage et le ramène automatiquement à l'écran.
+Un statut **Corrigé** sans valeur corrigée ou **Confirmé** sans valeur extraite
+est signalé avant l'appel serveur.
 
 ### Adresses et rôles métier
 
@@ -565,3 +576,62 @@ affichera uniquement « Ouvrir dans JIN Studio ».
 
 Cette liaison utilisera `JIN_STUDIO_SERVICE_TOKEN` côté serveurs. Aucun secret
 technique ne devra être transmis au navigateur GenieCommande.
+
+## Déplacement visuel de plusieurs champs
+
+Chaque carte d'annotation possède une case **Sélectionner**. Les boutons
+**Monter la sélection** et **Descendre la sélection** déplacent ensemble les
+champs cochés tout en conservant leur ordre. En montant, les champs se regroupent
+sans espace auprès du champ sélectionné le plus haut, puis le bloc monte d'un
+cran. En descendant, ils se regroupent auprès du plus bas, puis le bloc descend.
+Les limites structurelles restent
+strictes : un champ d'en-tête ne traverse pas le pied de page et les champs
+d'une ligne de commande restent dans cette ligne. La sélection multiple est
+visuelle et temporaire ; seul le nouvel ordre des champs est enregistré.
+
+## Espace d'annotation restructuré
+
+L'écran d'annotation est organisé en trois zones synchronisées : la file des
+documents, le PDF et l'inspecteur de champs. L'inspecteur propose deux modes :
+
+- **Annotation** garde les champs inactifs compacts et ouvre complètement le
+  champ courant ;
+- **Relecture** met en avant les champs non vérifiés, ambigus ou incohérents,
+  avec un filtre et un bouton **Prochain problème**.
+
+Les champs sont aussi accessibles par groupes métier : informations générales,
+client, fournisseur, livraison, facturation, payeur, expéditeur, totaux,
+identifiants légaux et lignes de commande. Cette organisation est une vue de
+travail ; elle ne duplique aucun champ dans le contrat JSON.
+
+Les lignes de commande sont présentées sous forme de tableau. Une cellule
+correspond à un champ canonique d'une ligne et ouvre son inspecteur ainsi que
+son rectangle dans le PDF. Les index `line_items[n]` restent continus et tout le
+bloc des lignes reste après les en-têtes et pieds de page.
+
+Le bouton **Ajouter un champ** ouvre un sélecteur explicite qui affiche l'aide
+et un exemple avant création. Le compartiment en-tête ou pied de page choisi est
+enregistré dans l'annotation. Un champ sémantique déjà présent ne peut pas être
+ajouté une seconde fois.
+
+### Sécurité de saisie et validation
+
+JIN Studio conserve jusqu'à 80 états locaux pour **Annuler/Rétablir**. Une
+copie de secours du brouillon non enregistré est également placée dans le
+stockage local du navigateur ; au prochain chargement du même PDF, l'utilisateur
+choisit de la restaurer ou de l'ignorer. Cette copie ne remplace jamais une
+sauvegarde serveur.
+
+**Valider pour l'apprentissage** ouvre d'abord un contrôle préalable. Il liste
+les champs non relus, les valeurs vides incompatibles avec leur statut, les
+problèmes de structure des lignes et les rectangles source conflictuels. Chaque
+blocage associé à un champ ramène directement à celui-ci. Le bouton final reste
+désactivé tant que ces contrôles ne sont pas satisfaits.
+
+Les raccourcis principaux sont : `Entrée` pour confirmer et avancer, `A` pour
+Absent, `M` pour Ambigu, `Alt+↑/↓` pour déplacer, `Ctrl+Z/Y` pour
+annuler/rétablir et `Ctrl+S` pour enregistrer le brouillon sur le serveur.
+
+Les masques sont regroupés dans **Modèles et masques**. Ils conservent seulement
+les champs et rectangles stables d'en-tête ou de pied de page ; les lignes de
+commande sont toujours relues sur le document cible.

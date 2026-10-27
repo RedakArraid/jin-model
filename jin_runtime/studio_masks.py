@@ -137,6 +137,11 @@ def build_annotation_mask(
             {
                 "path": path,
                 "label": label,
+                **(
+                    {"compartment": field["compartment"]}
+                    if field.get("compartment")
+                    else {}
+                ),
                 "status": "UNREVIEWED",
                 "extracted_value": "",
                 "corrected_value": None,
@@ -162,6 +167,11 @@ def build_annotation_mask(
         {
             "path": field["path"],
             "label": field["label"],
+            **(
+                {"compartment": field["compartment"]}
+                if field.get("compartment")
+                else {}
+            ),
             "evidence": field["evidence"],
         }
         for field in normalized["field_annotations"]
@@ -255,6 +265,11 @@ def apply_annotation_mask(
             {
                 "path": path,
                 "label": _text(item.get("label")).upper(),
+                **(
+                    {"compartment": item["compartment"]}
+                    if item.get("compartment")
+                    else {}
+                ),
                 "status": "UNREVIEWED",
                 "extracted_value": region.get("text") or "",
                 "corrected_value": None,

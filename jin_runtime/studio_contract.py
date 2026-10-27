@@ -14,6 +14,7 @@ ANNOTATION_STATUSES = frozenset(
     {"UNREVIEWED", "CONFIRMED", "CORRECTED", "ABSENT", "AMBIGUOUS"}
 )
 DOCUMENT_STATUSES = frozenset({"DRAFT", "HUMAN_VALIDATED"})
+ANNOTATION_COMPARTMENTS = frozenset({"HEADER", "FOOTER", "LINE_ITEMS"})
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -475,6 +476,19 @@ def _normalize_field(item: Any, index: int) -> dict[str, Any]:
     if status not in ANNOTATION_STATUSES:
         raise StudioContractError(f"field_annotations[{index}].status is invalid")
 
+    line_item = label in _LINE_ITEM_LABELS or _LINE_ITEM_PATH.search(path) is not None
+    compartment = _text(item.get("compartment")).upper()
+    if compartment and compartment not in ANNOTATION_COMPARTMENTS:
+        raise StudioContractError(
+            f"field_annotations[{index}].compartment is invalid"
+        )
+    if line_item:
+        compartment = "LINE_ITEMS"
+    elif compartment == "LINE_ITEMS":
+        raise StudioContractError(
+            f"field_annotations[{index}].compartment LINE_ITEMS requires a line-item field"
+        )
+
     extracted = _json_value(item.get("extracted_value"), field="extracted_value")
     corrected = _json_value(item.get("corrected_value"), field="corrected_value")
     if status == "CONFIRMED" and extracted in (None, ""):
@@ -508,6 +522,8 @@ def _normalize_field(item: Any, index: int) -> dict[str, Any]:
         "extracted_value": extracted,
         "corrected_value": corrected,
     }
+    if compartment:
+        normalized["compartment"] = compartment
     if page is not None or box is not None:
         normalized["evidence"] = {"page": page, "bbox": box}
     comment = _text(item.get("comment"))
@@ -677,6 +693,7 @@ def normalize_studio_annotation(
 
 
 __all__ = [
+    "ANNOTATION_COMPARTMENTS",
     "ANNOTATION_STATUSES",
     "DOCUMENT_STATUSES",
     "FIELD_CATALOG",
