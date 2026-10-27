@@ -33,6 +33,10 @@ from jin_runtime.studio_security import (
     token_digest,
     verify_password,
 )
+from jin_runtime.training_split import (
+    SPLIT_POLICY_VERSION,
+    assign_document_splits,
+)
 
 
 MAX_PDF_BYTES = 100 * 1024 * 1024
@@ -80,6 +84,32 @@ def _filename(value: str) -> str:
     name = Path(str(value or "document.pdf")).name
     cleaned = _SAFE_FILENAME.sub("_", name).strip("._") or "document.pdf"
     return cleaned[:180]
+
+
+_JSON_PATH_TOKEN = re.compile(r"(?:^|\.)([^.\[\]]+)|\[(\d+)\]")
+
+
+def _value_at_json_path(payload: Any, path: str) -> tuple[bool, Any]:
+    """Resolve the annotation path against the untouched JIN extraction."""
+
+    current = payload
+    tokens = list(_JSON_PATH_TOKEN.finditer(str(path or "")))
+    if not tokens:
+        return False, None
+    for match in tokens:
+        key, index = match.groups()
+        if key is not None:
+            if not isinstance(current, Mapping) or key not in current:
+                return False, None
+            current = current[key]
+        else:
+            position = int(index)
+            if not isinstance(current, list) or position >= len(current):
+                return False, None
+            current = current[position]
+    if isinstance(current, Mapping) and "value" in current:
+        current = current["value"]
+    return current not in (None, ""), current
 
 
 class StudioStore:
@@ -153,8 +183,14 @@ class StudioStore:
                 self._apply_shared_permissions()
                 connection = sqlite3.connect(self.db_path, timeout=30)
                 connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA busy_timeout=30000")
                 connection.execute("PRAGMA foreign_keys=ON")
-                connection.execute("PRAGMA journal_mode=WAL")
+                journal_mode = str(
+                    os.getenv("JIN_STUDIO_SQLITE_JOURNAL_MODE") or "DELETE"
+                ).strip().upper()
+                if journal_mode not in {"DELETE", "WAL"}:
+                    journal_mode = "DELETE"
+                connection.execute(f"PRAGMA journal_mode={journal_mode}")
                 self._apply_shared_permissions()
                 return connection
             except sqlite3.OperationalError as exc:
@@ -674,6 +710,7 @@ class StudioStore:
             "annotationMasks": masks,
             "datasets": datasets,
             "trainingRuns": runs,
+            "minimumTrainingDocuments": minimum_training_documents(),
             "storage": str(self.root),
         }
 
@@ -984,8 +1021,18 @@ class StudioStore:
             manifest_rows = []
             region_count = 0
             labels: set[str] = set()
+            label_counts: dict[str, int] = {}
+            split_assignments = assign_document_splits(unique_ids)
+            split_counts = {"train": 0, "validation": 0, "test": 0}
+            split_label_counts: dict[str, dict[str, int]] = {
+                split: {} for split in split_counts
+            }
+            documents_with_regions = 0
             for document_id, annotation in zip(unique_ids, annotations):
                 document = by_id[document_id]
+                split = split_assignments[document_id]
+                split_counts[split] += 1
+                extraction = _loads(document["extraction_json"], {})
                 pages: dict[int, list[dict[str, Any]]] = {}
                 for field in annotation["field_annotations"]:
                     evidence = field.get("evidence") or {}
@@ -998,18 +1045,28 @@ class StudioStore:
                         if field["status"] == "CORRECTED"
                         else field.get("extracted_value")
                     )
+                    baseline_present, baseline_value = _value_at_json_path(
+                        extraction, field["path"]
+                    )
                     region = {
                         "label": field["label"],
                         "bbox": bbox,
                         "bbox_space": "normalized",
                         "value": value,
+                        "baseline_present": baseline_present,
+                        "baseline_value": baseline_value if baseline_present else None,
                         "source_path": field["path"],
                         "annotation_source": "jin_studio_human_validated",
                         "requires_review": False,
                     }
                     pages.setdefault(int(page), []).append(region)
                     labels.add(field["label"])
+                    label_counts[field["label"]] = label_counts.get(field["label"], 0) + 1
+                    split_labels = split_label_counts[split]
+                    split_labels[field["label"]] = split_labels.get(field["label"], 0) + 1
                     region_count += 1
+                if pages:
+                    documents_with_regions += 1
                 annotation_path = annotations_dir / f"{document_id}.json"
                 spatial = {
                     "document_id": document_id,
@@ -1029,22 +1086,40 @@ class StudioStore:
                         "annotation": str(annotation_path),
                         "pdf_sha256": document["pdf_sha256"],
                         "annotation_digest": annotation["annotation_digest"],
+                        "split": split,
                     }
                 )
             manifest_path.write_text(
                 "".join(_json(item) + "\n" for item in manifest_rows), encoding="utf-8"
             )
             minimum_documents = minimum_training_documents()
+            sparse_labels = sorted(
+                label for label, count in label_counts.items() if count < 5
+            )
+            holdout_only_labels = sorted(
+                label
+                for label in labels
+                if split_label_counts["train"].get(label, 0) == 0
+            )
             payload = {
                 "datasetId": dataset_id,
                 "name": clean_name,
                 "version": version,
                 "status": "READY" if region_count and len(unique_ids) >= minimum_documents else "DRAFT",
                 "documentCount": len(unique_ids),
+                "documentsWithRegions": documents_with_regions,
                 "regionCount": region_count,
                 "labels": sorted(labels),
+                "labelCounts": dict(sorted(label_counts.items())),
                 "documentIds": unique_ids,
                 "manifestPath": str(manifest_path),
+                "splitPolicy": SPLIT_POLICY_VERSION,
+                "splitCounts": split_counts,
+                "splitLabelCounts": {
+                    split: dict(sorted(counts.items()))
+                    for split, counts in split_label_counts.items()
+                },
+                "sparseLabels": sparse_labels,
                 "minimumTrainingDocuments": minimum_documents,
                 "warnings": [
                     message
@@ -1054,6 +1129,16 @@ class StudioStore:
                             f"At least {minimum_documents} reviewed documents are required before training.",
                         ),
                         (region_count == 0, "No reviewed spatial region is available."),
+                        (
+                            bool(holdout_only_labels),
+                            "Some labels only occur outside the training partition: "
+                            + ", ".join(holdout_only_labels),
+                        ),
+                        (
+                            bool(sparse_labels),
+                            "Some labels have fewer than five reviewed examples: "
+                            + ", ".join(sparse_labels),
+                        ),
                     )
                     if condition
                 ],
@@ -1109,6 +1194,7 @@ class StudioStore:
             output_root = self.root / "training" / run_id
             layout_dir = output_root / "layout"
             artifact_dir = output_root / "artifact"
+            benchmark_path = output_root / "benchmark.json"
             steps = [
                 {
                     "name": "prepare_layout_dataset",
@@ -1134,6 +1220,19 @@ class StudioStore:
                         base_model,
                     ],
                 },
+                {
+                    "name": "benchmark_holdout",
+                    "command": [
+                        "python",
+                        "training/vision/benchmark_layoutlmv3.py",
+                        "--data",
+                        str(layout_dir),
+                        "--artifact",
+                        str(artifact_dir),
+                        "--output",
+                        str(benchmark_path),
+                    ],
+                },
             ]
             now = utc_now()
             payload = {
@@ -1148,6 +1247,9 @@ class StudioStore:
                 ),
                 "outputDirectory": str(output_root),
                 "logPath": str(output_root / "training.log"),
+                "benchmarkPath": str(benchmark_path),
+                "splitPolicy": dataset.get("splitPolicy", SPLIT_POLICY_VERSION),
+                "splitCounts": dataset.get("splitCounts", {}),
                 "createdAt": now,
                 "updatedAt": now,
                 "note": "Queued for the isolated JIN Studio training worker.",
@@ -1279,6 +1381,7 @@ class StudioStore:
         *,
         success: bool,
         error: str = "",
+        result: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self._lock, self._connect() as connection:
             row = connection.execute(
@@ -1299,6 +1402,11 @@ class StudioStore:
             payload.pop("currentStep", None)
             if error:
                 payload["error"] = str(error)[:4000]
+            if result:
+                payload["result"] = dict(result)
+                benchmark = result.get("benchmark")
+                if isinstance(benchmark, Mapping):
+                    payload["benchmark"] = dict(benchmark)
             connection.execute(
                 """UPDATE studio_training_runs
                    SET status=?, payload_json=?, updated_at=? WHERE run_id=?""",

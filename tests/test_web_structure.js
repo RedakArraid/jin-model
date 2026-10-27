@@ -49,9 +49,11 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
     'toggleServiceTokenButton', 'connectionBaseUrl', 'mcpConfigFormat',
     'mcpConfigLocation', 'mcpConnectionConfig', 'apiConnectionConfig', 'copyMcpConfigButton',
     'copyApiConfigButton',
-    'addLineItemButton',
+    'addLineItemButton', 'addFieldTopButton',
     'annotationMaskSelect', 'saveAnnotationMaskButton', 'applyAnnotationMaskButton',
     'annotationMaskMessage',
+    'rereadWithModelButton', 'annotationCompartmentFilter', 'annotationCompartmentSummary',
+    'datasetReadiness',
   ]) {
     assert.match(studioHtml, new RegExp(`id="${id}"`));
   }
@@ -72,9 +74,9 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
   assert.match(studioJs, /http_headers/);
   assert.match(studioJs, /streamable-http/);
   assert.match(studioJs, /\/api\/studio/);
-  assert.match(studioHtml, /studio_line_items\.js\?v=2/);
-  assert.match(studioHtml, /studio\.js\?v=13/);
-  assert.match(studioHtml, /studio\.css\?v=9/);
+  assert.match(studioHtml, /studio_line_items\.js\?v=3/);
+  assert.match(studioHtml, /studio\.js\?v=15/);
+  assert.match(studioHtml, /studio\.css\?v=11/);
   assert.match(studioJs, /updateFieldFromRegion/);
   assert.match(studioJs, /value \/ \(index % 2 === 0 \? annotationCanvas\.width : annotationCanvas\.height\) \* 1000/);
   assert.match(studioCss, /\.canvas-stage \{ position: relative/);
@@ -85,6 +87,14 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
     studioHtml.indexOf('id="addFieldButton"') > studioHtml.indexOf('id="fieldList"'),
     'the add-field button must be rendered below the field list',
   );
+  assert.ok(
+    studioHtml.indexOf('id="addFieldTopButton"') < studioHtml.indexOf('id="confirmAllButton"'),
+    'the quick add-field button must be immediately before confirm-all',
+  );
+  assert.match(studioHtml, /move-field-up/);
+  assert.match(studioHtml, /move-field-down/);
+  assert.match(studioJs, /function moveField/);
+  assert.match(studioJs, /const rank = \{ HEADER: 0, FOOTER: 1, LINE_ITEMS: 2 \}/);
   assert.match(studioJs, /createLineGroupHeader/);
   assert.match(studioJs, /lineItemTools\.nextIndex\(state\.fields\)/);
   assert.match(studioJs, /compactLineItemIndexes\(\)/);
@@ -94,6 +104,13 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
   assert.match(studioJs, /applySelectedAnnotationMask/);
   assert.match(studioJs, /field\.status = 'UNREVIEWED'/);
   assert.match(studioHtml, /ne copie aucune ancienne valeur/);
+  assert.match(studioJs, /rereadWithJinModel/);
+  assert.match(studioJs, /ne sera pas enregistré automatiquement/);
+  assert.match(studioJs, /lineItemTools\.deduplicate\(found\)/);
+  assert.match(studioJs, /function fieldCompartment/);
+  assert.match(studioJs, /function renderDatasetReadiness/);
+  assert.match(studioHtml, /En-têtes/);
+  assert.match(studioHtml, /Pied de page/);
 });
 
 test('the web proxy re-resolves recreated Docker services', () => {

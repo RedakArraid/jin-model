@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -70,6 +69,10 @@ def load_regions(annotation_path: Path | None, page_number: int, width: int, hei
                         height,
                         str(region.get("bbox_space", "pixel")).lower(),
                     ),
+                    "value": region.get("value"),
+                    "baseline_present": bool(region.get("baseline_present")),
+                    "baseline_value": region.get("baseline_value"),
+                    "source_path": str(region.get("source_path") or ""),
                 }
             )
         return regions
@@ -113,11 +116,6 @@ def ocr_page(image: Image.Image, lang: str, regions: list[dict[str, Any]]) -> tu
     return words, boxes, labels
 
 
-def split_name(document_id: str) -> str:
-    bucket = int(hashlib.sha256(document_id.encode("utf-8")).hexdigest()[:8], 16) % 10
-    return "train" if bucket < 8 else "validation"
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Render materialized PDF corpus and build LayoutLMv3 page JSONL.")
     parser.add_argument("--manifest", default="corpus/manifest.jsonl")
@@ -136,12 +134,23 @@ def main() -> int:
     if args.limit > 0:
         rows = rows[: args.limit]
 
-    splits: dict[str, list[dict[str, Any]]] = {"train": [], "validation": []}
+    splits: dict[str, list[dict[str, Any]]] = {
+        "train": [],
+        "validation": [],
+        "test": [],
+    }
+    split_documents: dict[str, list[str]] = {split: [] for split in splits}
     labels = {"O"}
     for row in rows:
         document_id = str(row.get("document_id") or "").strip()
         if not document_id:
             raise ValueError("Every manifest row needs document_id")
+        split = str(row.get("split") or "").strip().lower()
+        if split not in splits:
+            raise ValueError(
+                f"Manifest row for {document_id} needs a frozen train/validation/test split"
+            )
+        split_documents[split].append(document_id)
         pdf_path = Path(str(row.get("pdf") or ""))
         if not pdf_path.is_absolute():
             pdf_path = (manifest_path.parent.parent / pdf_path).resolve() if str(pdf_path).startswith("corpus/") else (manifest_path.parent / pdf_path).resolve()
@@ -169,9 +178,10 @@ def main() -> int:
                 "words": words,
                 "boxes": boxes,
                 "labels": page_labels,
+                "regions": regions,
                 "source_pdf": str(pdf_path.resolve()),
             }
-            splits[split_name(document_id)].append(record)
+            splits[split].append(record)
 
     output.mkdir(parents=True, exist_ok=True)
     for split, records in splits.items():
@@ -179,7 +189,25 @@ def main() -> int:
             for record in records:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     (output / "labels.json").write_text(json.dumps(sorted(labels), indent=2, ensure_ascii=False), encoding="utf-8")
-    print(json.dumps({"documents": len(rows), "train_pages": len(splits["train"]), "validation_pages": len(splits["validation"]), "labels": sorted(labels)}, indent=2, ensure_ascii=False))
+    split_manifest = {
+        "schema_version": "jin-layout-split-v1",
+        "documents": len(rows),
+        "document_splits": {
+            split: sorted(set(document_ids))
+            for split, document_ids in split_documents.items()
+        },
+        "document_counts": {
+            split: len(set(document_ids))
+            for split, document_ids in split_documents.items()
+        },
+        "page_counts": {split: len(records) for split, records in splits.items()},
+        "labels": sorted(labels),
+    }
+    (output / "split_manifest.json").write_text(
+        json.dumps(split_manifest, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    print(json.dumps(split_manifest, indent=2, ensure_ascii=False))
     return 0
 
 

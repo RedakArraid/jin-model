@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>JIN Studio – Annotation et entraînement</title>
-  <link rel="stylesheet" href="studio.css?v=9" />
+  <link rel="stylesheet" href="studio.css?v=11" />
 </head>
 <body>
   <header class="topbar">
@@ -124,6 +124,7 @@
                 <span id="reviewProgress" class="muted-text"></span>
               </div>
               <div class="top-actions">
+                <button id="addFieldTopButton" class="button secondary compact" type="button">＋ Ajouter un champ</button>
                 <button id="confirmAllButton" class="button secondary compact">Confirmer les non revus</button>
               </div>
             </div>
@@ -161,6 +162,16 @@
               <div id="annotationMaskMessage" class="inline-notice hidden"></div>
             </section>
             <div id="annotationMessage" class="inline-notice hidden"></div>
+            <div class="annotation-compartment-toolbar">
+              <label for="annotationCompartmentFilter">Compartiment</label>
+              <select id="annotationCompartmentFilter">
+                <option value="ALL">Tous les champs</option>
+                <option value="HEADER">En-têtes</option>
+                <option value="LINE_ITEMS">Lignes de commande</option>
+                <option value="FOOTER">Pied de page</option>
+              </select>
+              <span id="annotationCompartmentSummary" class="muted-text"></span>
+            </div>
             <div id="fieldList" class="field-list"></div>
             <div class="add-field-row">
               <button id="addLineItemButton" class="button add-line-item-button" type="button">＋ Ajouter une ligne de commande</button>
@@ -175,6 +186,7 @@
               <pre id="annotationJsonPreview"></pre>
             </details>
             <div class="annotation-actions">
+              <button id="rereadWithModelButton" class="button secondary" type="button">Relire avec JIN-model</button>
               <button id="saveDraftButton" class="button secondary">Enregistrer le brouillon</button>
               <button id="validateButton" class="button primary">Valider pour l’apprentissage</button>
             </div>
@@ -190,6 +202,7 @@
           </div>
           <button id="createDatasetButton" class="button primary">Créer depuis les documents validés</button>
         </div>
+        <div id="datasetReadiness" class="inline-notice"></div>
         <div id="datasetMessage" class="inline-notice hidden"></div>
         <div id="datasetList" class="card-grid"></div>
       </section>
@@ -198,7 +211,7 @@
         <div class="section-header">
           <div>
             <h2>Entraînements</h2>
-            <p>Les jeux validés entraînent un candidat dans un worker isolé. Le runtime actif n’est jamais remplacé automatiquement.</p>
+            <p>JIN fige les documents en entraînement, validation et test, entraîne un candidat puis le compare au JIN actif champ par champ. Le runtime actif n’est jamais remplacé automatiquement.</p>
           </div>
         </div>
         <div id="trainingMessage" class="inline-notice hidden"></div>
@@ -314,6 +327,8 @@
           <input class="field-path" aria-label="Chemin canonique" />
         </div>
         <div class="field-heading-actions">
+          <button class="move-field-up button secondary compact" type="button" title="Monter ce champ" aria-label="Monter ce champ">↑</button>
+          <button class="move-field-down button secondary compact" type="button" title="Descendre ce champ" aria-label="Descendre ce champ">↓</button>
           <select class="field-status">
             <option value="UNREVIEWED">À vérifier</option>
             <option value="CONFIRMED">Correct</option>
@@ -352,7 +367,7 @@
   </template>
 
   <script src="vendor/pdfjs-3.11.174/pdf.min.js"></script>
-  <script src="studio_line_items.js?v=2"></script>
-  <script src="studio.js?v=13"></script>
+  <script src="studio_line_items.js?v=3"></script>
+  <script src="studio.js?v=15"></script>
 </body>
 </html>

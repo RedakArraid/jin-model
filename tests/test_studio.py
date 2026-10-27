@@ -141,6 +141,64 @@ def test_confirmed_annotation_cannot_turn_an_empty_prediction_into_ground_truth(
         )
 
 
+def test_annotation_rejects_duplicate_semantic_fields():
+    payload = annotation()
+    payload["field_annotations"].append(
+        {
+            "path": "order.customer_order_number.alternatives[1].value",
+            "label": "ORDER_NUMBER",
+            "status": "UNREVIEWED",
+            "extracted_value": "PO-456",
+            "corrected_value": None,
+        }
+    )
+
+    with pytest.raises(StudioContractError, match="duplicates label ORDER_NUMBER"):
+        normalize_studio_annotation(
+            payload,
+            document_id="jdoc-12345678",
+            document_sha256="a" * 64,
+            revision=1,
+        )
+
+
+def test_annotation_allows_same_line_field_on_different_lines_only():
+    first = {
+        "path": "order.line_items[0].quantity",
+        "label": "LINE_ITEM_QUANTITY",
+        "status": "UNREVIEWED",
+        "extracted_value": 1,
+        "corrected_value": None,
+    }
+    second = {
+        **first,
+        "path": "order.line_items[1].quantity",
+        "extracted_value": 2,
+    }
+    normalized = normalize_studio_annotation(
+        {"status": "DRAFT", "field_annotations": [first, second]},
+        document_id="jdoc-12345678",
+        document_sha256="a" * 64,
+        revision=1,
+    )
+    assert len(normalized["field_annotations"]) == 2
+
+    duplicate = {
+        **first,
+        "path": "order.line_items[0].ordered_quantity",
+    }
+    with pytest.raises(
+        StudioContractError,
+        match=r"duplicates label LINE_ITEM_QUANTITY.*line_items\[0\]",
+    ):
+        normalize_studio_annotation(
+            {"status": "DRAFT", "field_annotations": [first, duplicate]},
+            document_id="jdoc-12345678",
+            document_sha256="a" * 64,
+            revision=1,
+        )
+
+
 def test_line_item_annotations_require_visible_contiguous_indexes():
     payload = {
         "status": "DRAFT",
@@ -629,8 +687,23 @@ def test_training_run_has_a_persistent_queue_lifecycle(tmp_path, monkeypatch):
 
     dataset = store.create_dataset(name="training-ready", document_ids=document_ids)
     assert dataset["status"] == "READY"
+    assert dataset["splitCounts"] == {"train": 1, "validation": 1, "test": 0}
+    manifest_rows = [
+        json.loads(line)
+        for line in Path(dataset["manifestPath"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert {row["split"] for row in manifest_rows} == {"train", "validation"}
+    exported = json.loads(Path(manifest_rows[0]["annotation"]).read_text(encoding="utf-8"))
+    region = exported["pages"][0]["regions"][0]
+    assert region["baseline_present"] is True
+    assert str(region["baseline_value"]).startswith("PO-")
     queued = store.prepare_training_run(dataset_id=dataset["datasetId"])
     assert queued["status"] == "QUEUED"
+    assert [step["name"] for step in queued["steps"]] == [
+        "prepare_layout_dataset",
+        "fine_tune_layoutlmv3",
+        "benchmark_holdout",
+    ]
     for step in queued["steps"]:
         command = validated_command(
             step["command"],
@@ -649,9 +722,14 @@ def test_training_run_has_a_persistent_queue_lifecycle(tmp_path, monkeypatch):
         completed_steps=[],
     )
     assert heartbeat["currentStep"] == "prepare_layout_dataset"
-    finished = store.finish_training_run(running["runId"], success=True)
+    finished = store.finish_training_run(
+        running["runId"],
+        success=True,
+        result={"benchmark": {"decision": {"status": "REVIEW_REQUIRED"}}},
+    )
     assert finished["status"] == "SUCCEEDED"
     assert "currentStep" not in finished
+    assert finished["benchmark"]["decision"]["status"] == "REVIEW_REQUIRED"
 
 
 def test_training_worker_rejects_commands_outside_its_allowlist(tmp_path):

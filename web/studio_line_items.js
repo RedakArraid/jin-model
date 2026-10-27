@@ -88,6 +88,24 @@
     return labels.map(label => createField(label, index));
   }
 
+  function semanticKey(field) {
+    const label = String(field?.label || '');
+    if (!label) return '';
+    if (!isLineItemLabel(label)) return label;
+    const lineIndex = indexFromPath(field?.path);
+    return `${label}@${lineIndex >= 0 ? lineIndex : 'unindexed'}`;
+  }
+
+  function deduplicate(fields) {
+    const seen = new Set();
+    return (fields || []).filter(field => {
+      const key = semanticKey(field);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
   function nestedValue(root, relativePaths, evidenceOf) {
     for (const relativePath of relativePaths) {
       let candidate = root;
@@ -169,10 +187,20 @@
   function validate(fields) {
     const errors = [];
     const paths = new Set();
+    const semanticFields = new Map();
     for (const field of fields || []) {
       const path = String(field?.path || '');
       if (paths.has(path)) errors.push(`Chemin duplique : ${path}`);
       paths.add(path);
+      const key = semanticKey(field);
+      if (key && semanticFields.has(key)) {
+        const lineIndex = indexFromPath(path);
+        errors.push(lineIndex >= 0
+          ? `Le champ ${field.label} est present plusieurs fois dans la ligne ${lineIndex + 1}.`
+          : `Le champ ${field.label} est present plusieurs fois.`);
+      } else if (key) {
+        semanticFields.set(key, field);
+      }
       if (isLineItemLabel(field?.label) && indexFromPath(path) < 0) {
         errors.push(`Le champ ${field.label} doit appartenir a order.line_items[index].`);
       }
@@ -197,6 +225,8 @@
     nextIndex,
     createField,
     createLine,
+    semanticKey,
+    deduplicate,
     preannotate,
     lineItemsLast,
     compact,

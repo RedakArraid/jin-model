@@ -15,9 +15,9 @@ Lors de l'ajout de cette couche, `RedakArraid/jin-model` ne contenait aucun obje
 ## Chaîne
 
 1. `./scripts/materialize-lfs-corpus.sh` récupère et vérifie les objets LFS ;
-2. `prepare_layout_dataset.py` rend les pages, OCRise les mots, normalise les boîtes dans `[0,1000]`, applique les annotations et sépare train/validation par document ;
+2. `prepare_layout_dataset.py` rend les pages, OCRise les mots, normalise les boîtes dans `[0,1000]` et matérialise la séparation train/validation/test figée par document ;
 3. `train_layoutlmv3.py` fine-tune LayoutLMv3 sur champs et cellules de tableaux ;
-4. l'artefact est évalué avant toute promotion runtime.
+4. `benchmark_layoutlmv3.py` compare l'artefact au JIN actif sur le test figé avant toute promotion runtime.
 
 ```bash
 python training/vision/prepare_layout_dataset.py --manifest corpus/manifest.jsonl --output data/layout

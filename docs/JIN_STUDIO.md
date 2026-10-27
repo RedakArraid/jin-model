@@ -316,8 +316,12 @@ description complète ou toute la ligne.
 Le catalogue fournit également un `defaultPath`. Quand l'annotateur change le
 type d'un champ, son chemin canonique est recalculé automatiquement tout en
 conservant, lorsque c'est pertinent, l'indice de ligne, d'adresse, de frais ou
-d'identifiant fiscal. Le bouton **＋ Ajouter un champ** se trouve sous le dernier
-champ afin que l'ajout reste accessible à la fin de la revue.
+d'identifiant fiscal. Le bouton **＋ Ajouter un champ** est disponible dans la
+barre de revue, juste avant **Confirmer les non revus**, et sous le dernier
+champ. Les flèches ↑/↓ déplacent visuellement un champ à l'intérieur de son
+compartiment ; pour une ligne de commande, le déplacement reste volontairement
+limité à la ligne concernée. L'ordre sauvegardé suit l'ordre affiché, tout en
+conservant le bloc des lignes de commande à la fin.
 
 ### Masques d'annotation
 
@@ -416,28 +420,35 @@ L'enchaînement après annotation est volontairement explicite :
 4. Quand le dataset est `READY`, le bouton **Entraîner un candidat** place une
    exécution dans la file. Le conteneur `trainer` doit être démarré pour la
    consommer.
-5. Un entraînement réussi produit seulement un **artefact candidat**. Il ne
-   remplace pas le runtime JIN actif. Il doit encore être évalué sur un jeu de
-   test indépendant, comparé au modèle actif, puis promu explicitement avec une
-   possibilité de rollback.
+5. Studio réserve dès la création du dataset des documents entiers en
+   entraînement/validation/test (70/15/15), sans mélanger les pages d'un même
+   PDF. Après le fine-tuning, le worker évalue le candidat sur le test figé et
+   le compare aux valeurs de l'extraction JIN d'origine.
+6. Un entraînement réussi produit un **artefact candidat** et un rapport de
+   benchmark par champ. Il ne remplace pas le runtime JIN actif. La promotion
+   reste une décision explicite, suivie d'une campagne shadow et d'un rollback
+   possible.
 
 La réponse courte à « faut-il appuyer sur un bouton ? » est donc **oui** :
 validation par document, création du dataset, puis entraînement du candidat.
 Il n'existe aucune prise en compte automatique à la simple sauvegarde d'une
-annotation. Et, dans la version actuelle, l'évaluation/promotion vers le modèle
-actif n'est pas encore automatisée : un statut `SUCCEEDED` signifie que le
-candidat a été entraîné, pas qu'il est déployé.
+annotation. L'évaluation technique est maintenant exécutée automatiquement à
+la fin de l'entraînement, mais la promotion vers le modèle actif ne l'est pas :
+un statut `SUCCEEDED` signifie que le candidat a été entraîné et benchmarké,
+pas qu'il est déployé.
 
 Le dataset est `READY` à partir de 20 documents validés contenant au moins une
 zone spatiale. Ce seuil est une garde minimale, pas une preuve que le corpus est
 suffisamment diversifié.
 
 L'API place les entraînements dans une file SQLite. Le conteneur `trainer`
-réclame une exécution, prépare les pages OCR puis entraîne LayoutLMv3. Il publie
-un heartbeat et conserve le journal ainsi que l'artefact sous
-`training/<run-id>/`. Une exécution abandonnée est remise en file après le délai
-configuré. L'API de production n'importe pas PyTorch et ne lance jamais ces
-calculs.
+réclame une exécution, prépare les pages OCR, entraîne LayoutLMv3 puis exécute
+le benchmark du holdout. Il publie un heartbeat et conserve le journal,
+l'artefact, `split_manifest.json` et `benchmark.json` sous
+`training/<run-id>/`. Le rapport affiche l'exact-match du JIN actif et du
+candidat, leur écart, le F1 hors classe `O`, la couverture OCR et les résultats
+par label. Une exécution abandonnée est remise en file après le délai configuré.
+L'API de production n'importe pas PyTorch et ne lance jamais ces calculs.
 
 Le worker est volontairement derrière le profil Docker `training` :
 
@@ -449,16 +460,20 @@ Sans ce profil, les demandes restent simplement au statut `QUEUED`. Le premier
 entraînement peut télécharger le modèle de base dans `data/huggingface`; en
 environnement sans accès réseau, ce cache doit être alimenté à l'avance. Les
 commandes stockées ne sont jamais exécutées dans un shell : le worker n'accepte
-que les deux scripts de la chaîne LayoutLMv3 et vérifie les chemins de données.
+que les trois scripts de préparation, fine-tuning et benchmark LayoutLMv3 et
+vérifie les chemins de données.
 L'image locale installe PyTorch CPU par défaut afin de rester raisonnable en
 taille. L'index des roues peut être remplacé au build via
 `JIN_TORCH_INDEX_URL` pour une future machine GPU qualifiée.
 
-La promotion automatique reste bloquée tant qu'un incrément ne fournit pas :
+Le rapport automatique constitue la première porte de qualité. Un holdout de
+moins de 10 documents reçoit le verdict `INSUFFICIENT_HOLDOUT`, même lorsque ses
+scores sont bons. La promotion automatique reste bloquée tant qu'un incrément
+ne fournit pas encore :
 
-1. les métriques exact-match/F1 par champ et par famille documentaire ;
+1. les métriques par famille documentaire, client, qualité de scan et latence ;
 2. un registre d'artefacts candidat/shadow/principal ;
-3. la comparaison au modèle actif et le rollback.
+3. une campagne shadow et un rollback testé de bout en bout.
 
 L'état réel du corpus Studio et les portes à franchir avant une promotion sont
 maintenus dans [Préparation à la production](PRODUCTION_READINESS.md).

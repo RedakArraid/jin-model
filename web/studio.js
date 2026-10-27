@@ -40,6 +40,7 @@ const state = {
   user: null,
   csrfToken: '',
   passwordMinLength: 8,
+  studioStatus: null,
   catalog: [],
   documents: [],
   annotationMasks: [],
@@ -57,6 +58,7 @@ const state = {
   pendingRender: false,
   zoom: 1,
   showOtherAnnotations: storedOtherAnnotationsVisibility(),
+  annotationCompartment: 'ALL',
   pageTextItems: [],
   regionRequest: 0,
   dirty: false,
@@ -278,7 +280,7 @@ function extractFields(extraction) {
   }
 
   visit(extraction, '');
-  return found;
+  return lineItemTools.deduplicate(found);
 }
 
 function catalogName(label) {
@@ -310,6 +312,51 @@ function fieldDisplayName(field) {
   return index >= 0
     ? `L${index + 1} · ${catalogName(field.label)}`
     : catalogName(field.label);
+}
+
+function fieldCompartment(field) {
+  if (lineItemTools.isLineItemLabel(field?.label) || fieldLineIndex(field) >= 0) {
+    return 'LINE_ITEMS';
+  }
+  const label = String(field?.label || '');
+  if (
+    label.startsWith('TOTAL_')
+    || label.startsWith('ADDITIONAL_CHARGE_')
+    || /(?:^|_)(?:VAT_NUMBER|SIREN|SIRET)$/.test(label)
+  ) return 'FOOTER';
+  return 'HEADER';
+}
+
+function compartmentName(compartment) {
+  return {
+    HEADER: 'En-têtes',
+    LINE_ITEMS: 'Lignes de commande',
+    FOOTER: 'Pied de page',
+  }[compartment] || 'Tous les champs';
+}
+
+function duplicateLabelExists(label, excludedIndex = -1, proposedLineIndex = null) {
+  if (!label) return false;
+  if (!lineItemTools.isLineItemLabel(label)) {
+    return state.fields.some((field, index) => index !== excludedIndex && field.label === label);
+  }
+  const lineIndex = proposedLineIndex == null || proposedLineIndex < 0 ? 0 : proposedLineIndex;
+  return state.fields.some((field, index) => (
+    index !== excludedIndex
+    && field.label === label
+    && fieldLineIndex(field) === lineIndex
+  ));
+}
+
+function createCompartmentHeader(compartment, count) {
+  const header = document.createElement('div');
+  header.className = 'annotation-compartment-header';
+  const title = document.createElement('strong');
+  title.textContent = compartmentName(compartment);
+  const summary = document.createElement('span');
+  summary.textContent = `${count} champ${count > 1 ? 's' : ''}`;
+  header.append(title, summary);
+  return header;
 }
 
 function contextualPath(template, previousPath = '') {
@@ -431,6 +478,10 @@ function addLineItem() {
   const firstIndex = lastLineField >= 0 ? lastLineField + 1 : state.fields.length;
   state.fields.splice(firstIndex, 0, ...fields);
   state.selectedField = firstIndex;
+  if (state.annotationCompartment !== 'ALL') {
+    state.annotationCompartment = 'LINE_ITEMS';
+    $('annotationCompartmentFilter').value = 'LINE_ITEMS';
+  }
   markDirty();
   renderFields();
   fieldList.querySelector(`[data-index="${firstIndex}"]`)?.scrollIntoView({
@@ -485,6 +536,7 @@ async function enterStudio(user) {
   applyPermissions();
   const catalog = await api('/field-catalog');
   state.catalog = catalog.fields || [];
+  await loadStudioStatus();
   await Promise.all([loadDocuments(), loadAnnotationMasks(), loadDatasets(), loadTrainingRuns()]);
   if (hasPermission('users.manage')) await Promise.all([
     loadUsers(),
@@ -502,10 +554,12 @@ function applyPermissions() {
   const canAnnotate = hasPermission('annotations.draft');
   $('documentInput').parentElement.classList.toggle('hidden', !hasPermission('documents.write'));
   $('addFieldButton').classList.toggle('hidden', !canAnnotate);
+  $('addFieldTopButton').classList.toggle('hidden', !canAnnotate);
   $('addLineItemButton').classList.toggle('hidden', !canAnnotate);
   $('confirmAllButton').classList.toggle('hidden', !canAnnotate);
   $('saveAnnotationMaskButton').classList.toggle('hidden', !canAnnotate);
   $('applyAnnotationMaskButton').classList.toggle('hidden', !canAnnotate);
+  $('rereadWithModelButton').classList.toggle('hidden', !canAnnotate);
   $('saveDraftButton').classList.toggle('hidden', !canAnnotate);
   $('validateButton').classList.toggle('hidden', !hasPermission('annotations.validate'));
   $('createDatasetButton').classList.toggle('hidden', !hasPermission('datasets.write'));
@@ -589,6 +643,7 @@ async function loadDocuments() {
   const payload = await api('/documents?limit=1000');
   state.documents = payload.items || [];
   renderDocumentList();
+  renderDatasetReadiness();
 }
 
 function renderDocumentList() {
@@ -625,16 +680,31 @@ function renderDocumentList() {
   documentCount.textContent = `${state.documents.length} document${state.documents.length > 1 ? 's' : ''}`;
 }
 
+async function extractWithJinModel(file, filename = 'document.pdf') {
+  const extractionForm = new FormData();
+  extractionForm.append('file', file, filename);
+  const response = await fetch('/api/extract?view=clean', {
+    method: 'POST',
+    body: extractionForm,
+    credentials: 'same-origin',
+  });
+  if (!response.ok) {
+    let detail = `Extraction JIN impossible (${response.status})`;
+    try {
+      const payload = await response.json();
+      detail = payload.detail || payload.error || detail;
+    } catch (_) { /* response is not JSON */ }
+    throw new Error(detail);
+  }
+  return response.json();
+}
+
 async function uploadDocument(file) {
   if (!file) return;
   const uploadState = $('uploadState');
   showMessage(uploadState, 'Extraction JIN en cours…');
   try {
-    const extractionForm = new FormData();
-    extractionForm.append('file', file);
-    const extractionResponse = await fetch('/api/extract?view=clean', { method: 'POST', body: extractionForm });
-    if (!extractionResponse.ok) throw new Error(`Extraction JIN impossible (${extractionResponse.status})`);
-    const extraction = await extractionResponse.json();
+    const extraction = await extractWithJinModel(file, file.name);
 
     showMessage(uploadState, 'Création du dossier d’annotation…');
     const form = new FormData();
@@ -652,6 +722,54 @@ async function uploadDocument(file) {
   }
 }
 
+async function rereadWithJinModel() {
+  if (!state.activeDocument || !editableAnnotation()) return;
+  const warning = state.dirty
+    ? 'Les modifications locales non enregistrées seront remplacées. '
+    : '';
+  if (!window.confirm(
+    `${warning}JIN-model va relire le PDF et remplacer la préannotation affichée. `
+    + 'Le résultat restera non vérifié et ne sera pas enregistré automatiquement. Continuer ?',
+  )) return;
+
+  const button = $('rereadWithModelButton');
+  const previousText = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Relecture en cours…';
+  showMessage($('annotationMessage'), 'JIN-model relit le document complet…');
+  try {
+    const response = await api(
+      `/documents/${encodeURIComponent(state.activeDocument.documentId)}/pdf`,
+    );
+    const blob = await response.blob();
+    const extraction = await extractWithJinModel(
+      blob,
+      state.activeDocument.filename || 'document.pdf',
+    );
+    const fields = lineItemTools.compact(extractFields(extraction));
+    if (!fields.length) throw new Error('JIN-model n’a trouvé aucun champ annotable dans ce document.');
+
+    state.activeDocument.extraction = extraction;
+    state.fields = fields;
+    state.selectedField = 0;
+    state.annotationCompartment = 'ALL';
+    $('annotationCompartmentFilter').value = 'ALL';
+    markDirty();
+    renderFields();
+    await selectField(0);
+    showMessage(
+      $('annotationMessage'),
+      `${fields.length} champ(s) relus par JIN-model. Contrôlez-les puis enregistrez le brouillon ou validez.`,
+      'success',
+    );
+  } catch (error) {
+    showMessage($('annotationMessage'), error.message, 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = previousText;
+  }
+}
+
 async function openDocument(documentId) {
   const document = await api(`/documents/${encodeURIComponent(documentId)}`);
   state.activeDocument = document;
@@ -659,6 +777,8 @@ async function openDocument(documentId) {
     || extractFields(document.extraction || {});
   state.fields = lineItemTools.compact(state.fields);
   state.selectedField = state.fields.length ? 0 : -1;
+  state.annotationCompartment = 'ALL';
+  $('annotationCompartmentFilter').value = 'ALL';
   state.zoom = 1;
   state.pageTextItems = [];
   state.dirty = false;
@@ -874,14 +994,14 @@ async function applySelectedAnnotationMask() {
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
     );
     if (!result.fields?.length) throw new Error('Aucun champ du masque ne peut être appliqué à ce PDF.');
-    state.fields = lineItemTools.compact(result.fields.map(item => {
+    state.fields = lineItemTools.compact(lineItemTools.deduplicate(result.fields.map(item => {
       const field = structuredClone(item);
       const normalized = normalizeSelectedValue(field, field.extracted_value);
       if (normalized) field.extracted_value = normalized;
       field.status = 'UNREVIEWED';
       field.corrected_value = null;
       return field;
-    }));
+    })));
     state.selectedField = 0;
     markDirty();
     renderFields();
@@ -919,22 +1039,82 @@ function populateDocumentTypeSelect(select, other, currentValue) {
   }
 }
 
-function populateLabelSelect(select, current) {
+function populateLabelSelect(select, current, fieldIndex) {
+  const currentLineIndex = fieldLineIndex(state.fields[fieldIndex]);
   select.replaceChildren();
   for (const field of state.catalog) {
     const option = document.createElement('option');
     option.value = field.label;
     option.textContent = field.name;
     option.selected = field.label === current;
+    option.disabled = field.label !== current
+      && duplicateLabelExists(field.label, fieldIndex, currentLineIndex);
     select.appendChild(option);
   }
+}
+
+function movableFieldIndexes(index) {
+  const field = state.fields[index];
+  if (!field) return [];
+  const compartment = fieldCompartment(field);
+  const lineIndex = fieldLineIndex(field);
+  return state.fields
+    .map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
+    .filter(({ candidate }) => (
+      fieldCompartment(candidate) === compartment
+      && (lineIndex < 0 || fieldLineIndex(candidate) === lineIndex)
+    ))
+    .map(({ candidateIndex }) => candidateIndex);
+}
+
+function moveField(index, direction) {
+  const field = state.fields[index];
+  const movable = movableFieldIndexes(index);
+  const position = movable.indexOf(index);
+  const targetPosition = position + direction;
+  if (!field || position < 0 || targetPosition < 0 || targetPosition >= movable.length) return;
+  const targetIndex = movable[targetPosition];
+  [state.fields[index], state.fields[targetIndex]] = [state.fields[targetIndex], state.fields[index]];
+  compactLineItemIndexes(field);
+  state.selectedField = state.fields.indexOf(field);
+  markDirty();
+  renderFields();
+  fieldList.querySelector(`[data-index="${state.selectedField}"]`)?.scrollIntoView({
+    behavior: 'smooth', block: 'center',
+  });
 }
 
 function renderFields() {
   const editable = editableAnnotation();
   fieldList.replaceChildren();
   const renderedLineHeaders = new Set();
-  state.fields.forEach((field, index) => {
+  const renderedCompartments = new Set();
+  const rank = { HEADER: 0, FOOTER: 1, LINE_ITEMS: 2 };
+  const counts = state.fields.reduce((result, field) => {
+    const compartment = fieldCompartment(field);
+    result[compartment] = (result[compartment] || 0) + 1;
+    return result;
+  }, {});
+  const visibleIndexes = state.fields
+    .map((_, index) => index)
+    .filter(index => (
+      state.annotationCompartment === 'ALL'
+      || fieldCompartment(state.fields[index]) === state.annotationCompartment
+    ))
+    .sort((left, right) => (
+      rank[fieldCompartment(state.fields[left])] - rank[fieldCompartment(state.fields[right])]
+      || left - right
+    ));
+  $('annotationCompartmentSummary').textContent = state.annotationCompartment === 'ALL'
+    ? `${counts.HEADER || 0} en-tête · ${counts.LINE_ITEMS || 0} ligne · ${counts.FOOTER || 0} pied de page`
+    : `${visibleIndexes.length} champ${visibleIndexes.length > 1 ? 's' : ''} affiché${visibleIndexes.length > 1 ? 's' : ''}`;
+  visibleIndexes.forEach(index => {
+    const field = state.fields[index];
+    const compartment = fieldCompartment(field);
+    if (!renderedCompartments.has(compartment)) {
+      fieldList.appendChild(createCompartmentHeader(compartment, counts[compartment] || 0));
+      renderedCompartments.add(compartment);
+    }
     const lineIndex = fieldLineIndex(field);
     if (lineIndex >= 0 && !renderedLineHeaders.has(lineIndex)) {
       fieldList.appendChild(createLineGroupHeader(lineIndex, editable));
@@ -953,7 +1133,7 @@ function renderFields() {
     lineBadge.textContent = lineIndex >= 0
       ? `Ligne ${lineIndex + 1} · index JSON ${lineIndex}`
       : '';
-    populateLabelSelect(label, field.label);
+    populateLabelSelect(label, field.label, index);
     const helper = node.querySelector('.field-helper');
     const help = node.querySelector('.field-help');
     const example = node.querySelector('.field-example-value');
@@ -967,6 +1147,8 @@ function renderFields() {
     const corrected = node.querySelector('.corrected-value');
     const documentType = node.querySelector('.document-type-select');
     const documentTypeOther = node.querySelector('.document-type-other');
+    const moveUp = node.querySelector('.move-field-up');
+    const moveDown = node.querySelector('.move-field-down');
     const remove = node.querySelector('.delete-field');
     const page = node.querySelector('.evidence-page');
     const bbox = node.querySelector('.evidence-bbox');
@@ -993,20 +1175,53 @@ function renderFields() {
     corrected.disabled = !editable || field.status !== 'CORRECTED';
     documentType.disabled = !editable || field.status !== 'CORRECTED';
     documentTypeOther.disabled = !editable || field.status !== 'CORRECTED';
+    const movable = movableFieldIndexes(index);
+    const movablePosition = movable.indexOf(index);
+    moveUp.disabled = !editable || movablePosition <= 0;
+    moveDown.disabled = !editable || movablePosition < 0 || movablePosition >= movable.length - 1;
     remove.disabled = !editable;
     page.disabled = !editable;
     bbox.disabled = !editable;
     comment.disabled = !editable;
     node.addEventListener('click', () => selectField(index));
     label.addEventListener('change', event => {
-      field.label = event.target.value;
+      const nextLabel = event.target.value;
+      if (duplicateLabelExists(nextLabel, index, lineIndex)) {
+        showMessage(
+          $('annotationMessage'),
+          lineIndex >= 0
+            ? `Ce champ existe déjà dans la ligne de commande ${lineIndex + 1}.`
+            : 'Ce champ existe déjà dans l’annotation.',
+          'error',
+        );
+        event.target.value = field.label;
+        return;
+      }
+      field.label = nextLabel;
       field.path = availableCanonicalPath(field.label, field.path, index);
       compactLineItemIndexes();
       markDirty();
       renderFields();
     });
+    const originalPath = field.path;
     path.addEventListener('input', event => { field.path = event.target.value; markDirty(); });
     path.addEventListener('change', () => {
+      const proposedLineIndex = fieldLineIndex(field);
+      const duplicatePath = state.fields.some((candidate, candidateIndex) => (
+        candidateIndex !== index && candidate.path === field.path
+      ));
+      if (duplicatePath || duplicateLabelExists(field.label, index, proposedLineIndex)) {
+        field.path = originalPath;
+        showMessage(
+          $('annotationMessage'),
+          duplicatePath
+            ? 'Ce chemin JSON est déjà utilisé par un autre champ.'
+            : 'Ce champ existe déjà à cet emplacement.',
+          'error',
+        );
+        renderFields();
+        return;
+      }
       compactLineItemIndexes(field);
       renderFields();
     });
@@ -1040,6 +1255,14 @@ function renderFields() {
     page.addEventListener('input', () => updateEvidence(field, page.value, bbox.value));
     bbox.addEventListener('input', () => updateEvidence(field, page.value, bbox.value));
     comment.addEventListener('input', event => { field.comment = event.target.value; markDirty(); });
+    moveUp.addEventListener('click', event => {
+      event.stopPropagation();
+      moveField(index, -1);
+    });
+    moveDown.addEventListener('click', event => {
+      event.stopPropagation();
+      moveField(index, 1);
+    });
     remove.addEventListener('click', event => {
       event.stopPropagation();
       removeField(index);
@@ -1054,9 +1277,10 @@ function renderFields() {
 async function selectField(index) {
   if (index < 0 || index >= state.fields.length) return;
   state.selectedField = index;
-  fieldList.querySelectorAll('.field-card').forEach((item, itemIndex) => {
-    item.classList.toggle('selected', itemIndex === index);
-    item.querySelector('.field-helper').open = itemIndex === index;
+  fieldList.querySelectorAll('.field-card').forEach(item => {
+    const selected = Number(item.dataset.index) === index;
+    item.classList.toggle('selected', selected);
+    item.querySelector('.field-helper').open = selected;
   });
   const targetPage = Number(state.fields[index].evidence?.page || 0);
   if (state.pdf && targetPage > 0 && targetPage <= state.pdf.numPages && targetPage !== state.page) {
@@ -1392,6 +1616,23 @@ async function loadDatasets() {
   renderTraining();
 }
 
+async function loadStudioStatus() {
+  state.studioStatus = await api('/status');
+  renderDatasetReadiness();
+}
+
+function renderDatasetReadiness() {
+  const target = $('datasetReadiness');
+  if (!target) return;
+  const validated = state.documents.filter(document => document.status === 'HUMAN_VALIDATED').length;
+  const minimum = Number(state.studioStatus?.minimumTrainingDocuments || 20);
+  const remaining = Math.max(0, minimum - validated);
+  target.textContent = remaining
+    ? `${validated}/${minimum} documents validés. Il en manque ${remaining} pour débloquer un premier entraînement technique.`
+    : `${validated} documents validés : le seuil technique est atteint. Vérifiez la diversité avant de figer le dataset.`;
+  target.className = `inline-notice ${remaining ? '' : 'success'}`.trim();
+}
+
 function renderDatasets() {
   const container = $('datasetList');
   container.replaceChildren();
@@ -1403,7 +1644,9 @@ function renderDatasets() {
     const title = document.createElement('h3'); title.textContent = `${dataset.name} · v${dataset.version}`;
     const badge = document.createElement('span'); badge.className = `badge ${dataset.status === 'READY' ? '' : 'draft'}`; badge.textContent = dataset.status === 'READY' ? 'Prêt' : 'Brouillon';
     const stats = document.createElement('dl');
-    [['Documents', dataset.documentCount], ['Zones revues', dataset.regionCount], ['Labels', (dataset.labels || []).length]].forEach(([name, value]) => {
+    const splits = dataset.splitCounts || {};
+    [['Documents', dataset.documentCount], ['Zones revues', dataset.regionCount], ['Labels', (dataset.labels || []).length],
+      ['Entraînement', splits.train ?? '—'], ['Validation', splits.validation ?? '—'], ['Test figé', splits.test ?? '—']].forEach(([name, value]) => {
       const dt = document.createElement('dt'); dt.textContent = name; const dd = document.createElement('dd'); dd.textContent = String(value); stats.append(dt, dd);
     });
     card.append(title, badge, stats);
@@ -1437,13 +1680,85 @@ async function loadTrainingRuns() {
   renderTraining();
 }
 
+function metricPercent(value, signed = false) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '—';
+  const prefix = signed && number > 0 ? '+' : '';
+  return `${prefix}${(number * 100).toFixed(1)} %`;
+}
+
+function benchmarkDecisionLabel(status) {
+  return ({
+    INSUFFICIENT_HOLDOUT: 'Holdout insuffisant',
+    CANDIDATE_BETTER: 'Candidat meilleur',
+    REGRESSION: 'Régression détectée',
+    REVIEW_REQUIRED: 'Relecture requise',
+  })[status] || status || 'Non disponible';
+}
+
+function appendBenchmark(card, benchmark) {
+  const section = document.createElement('section');
+  section.className = 'benchmark-summary';
+  const heading = document.createElement('h4');
+  heading.textContent = `Benchmark · ${benchmarkDecisionLabel(benchmark.decision?.status)}`;
+  const stats = document.createElement('dl');
+  [
+    ['Documents de test', benchmark.holdout?.documents],
+    ['JIN actif · exact', metricPercent(benchmark.activeJin?.regionExactAccuracy)],
+    ['Candidat · exact', metricPercent(benchmark.candidate?.regionExactAccuracy)],
+    ['Écart', metricPercent(benchmark.delta?.regionExactAccuracy, true)],
+    ['F1 tokens métier', metricPercent(benchmark.candidate?.tokenMetrics?.nonOutsideF1)],
+    ['Couverture OCR', metricPercent(benchmark.holdout?.wordCoverage)],
+  ].forEach(([name, value]) => {
+    const dt = document.createElement('dt'); dt.textContent = name;
+    const dd = document.createElement('dd'); dd.textContent = String(value ?? '—');
+    stats.append(dt, dd);
+  });
+  section.append(heading, stats);
+
+  const reasons = benchmark.decision?.reasons || [];
+  if (reasons.length) {
+    const list = document.createElement('ul'); list.className = 'warning-list';
+    reasons.forEach(text => { const item = document.createElement('li'); item.textContent = text; list.appendChild(item); });
+    section.appendChild(list);
+  }
+
+  const labels = Object.entries(benchmark.perLabel || {});
+  if (labels.length) {
+    const details = document.createElement('details');
+    const summary = document.createElement('summary'); summary.textContent = 'Voir les métriques par champ';
+    const table = document.createElement('table'); table.className = 'benchmark-table';
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    ['Champ', 'Cas', 'JIN actif', 'Candidat', 'Écart'].forEach(text => {
+      const cell = document.createElement('th'); cell.textContent = text; headRow.appendChild(cell);
+    });
+    head.appendChild(headRow); table.appendChild(head);
+    const body = document.createElement('tbody');
+    labels.forEach(([label, values]) => {
+      const row = document.createElement('tr');
+      const delta = Number(values.candidateExactAccuracy || 0) - Number(values.baselineExactAccuracy || 0);
+      [label, values.support, metricPercent(values.baselineExactAccuracy), metricPercent(values.candidateExactAccuracy), metricPercent(delta, true)].forEach(value => {
+        const cell = document.createElement('td'); cell.textContent = String(value); row.appendChild(cell);
+      });
+      body.appendChild(row);
+    });
+    table.appendChild(body); details.append(summary, table); section.appendChild(details);
+  }
+  const safety = document.createElement('p'); safety.className = 'muted-text';
+  safety.textContent = 'Aucune promotion automatique : le modèle JIN actif reste inchangé après ce benchmark.';
+  section.appendChild(safety);
+  card.appendChild(section);
+}
+
 function renderTraining() {
   const container = $('trainingList');
   container.replaceChildren();
   for (const dataset of state.datasets.filter(item => item.status === 'READY')) {
     const card = document.createElement('article'); card.className = 'info-card';
     const title = document.createElement('h3'); title.textContent = `Nouveau candidat · ${dataset.name} v${dataset.version}`;
-    const text = document.createElement('p'); text.className = 'muted-text'; text.textContent = `${dataset.documentCount} documents, ${dataset.regionCount} zones humaines.`;
+    const splits = dataset.splitCounts || {};
+    const text = document.createElement('p'); text.className = 'muted-text'; text.textContent = `${dataset.documentCount} documents, ${dataset.regionCount} zones humaines · ${splits.train || 0}/${splits.validation || 0}/${splits.test || 0} documents entraînement/validation/test.`;
     card.append(title, text);
     if (hasPermission('training.write')) {
       const button = document.createElement('button'); button.className = 'button primary'; button.textContent = 'Lancer l’entraînement';
@@ -1464,6 +1779,7 @@ function renderTraining() {
       const error = document.createElement('p'); error.className = 'inline-notice error'; error.textContent = run.error;
       card.appendChild(error);
     }
+    if (run.benchmark) appendBenchmark(card, run.benchmark);
     container.appendChild(card);
   }
   if (!container.children.length) {
@@ -1803,13 +2119,39 @@ $('annotationMaskSelect').addEventListener('change', event => {
 });
 $('saveAnnotationMaskButton').addEventListener('click', saveCurrentAsAnnotationMask);
 $('applyAnnotationMaskButton').addEventListener('click', applySelectedAnnotationMask);
+$('rereadWithModelButton').addEventListener('click', rereadWithJinModel);
+$('annotationCompartmentFilter').addEventListener('change', event => {
+  state.annotationCompartment = event.target.value;
+  const firstVisible = state.fields.findIndex(field => (
+    state.annotationCompartment === 'ALL'
+    || fieldCompartment(field) === state.annotationCompartment
+  ));
+  if (firstVisible >= 0) state.selectedField = firstVisible;
+  renderFields();
+  if (firstVisible >= 0) selectField(firstVisible);
+});
 $('confirmAllButton').addEventListener('click', () => {
   state.fields.forEach(field => { if (field.status === 'UNREVIEWED') field.status = 'CONFIRMED'; });
   markDirty();
   renderFields();
 });
-$('addFieldButton').addEventListener('click', () => {
-  const label = 'ORDER_NUMBER';
+function addRegularField() {
+  const preferredCompartment = state.annotationCompartment === 'FOOTER' ? 'FOOTER' : 'HEADER';
+  const label = state.catalog.find(item => (
+    !lineItemTools.isLineItemLabel(item.label)
+    && !duplicateLabelExists(item.label)
+    && fieldCompartment({ label: item.label, path: item.defaultPath }) === preferredCompartment
+  ))?.label || state.catalog.find(item => (
+    !lineItemTools.isLineItemLabel(item.label)
+    && !duplicateLabelExists(item.label)
+  ))?.label;
+  if (!label) {
+    return showMessage(
+      $('annotationMessage'),
+      'Tous les champs disponibles sont déjà présents dans l’annotation.',
+      'error',
+    );
+  }
   const field = {
     path: availableCanonicalPath(label),
     label,
@@ -1823,12 +2165,18 @@ $('addFieldButton').addEventListener('click', () => {
   compactLineItemIndexes();
   const index = state.fields.indexOf(field);
   state.selectedField = index;
+  if (state.annotationCompartment !== 'ALL') {
+    state.annotationCompartment = fieldCompartment(field);
+    $('annotationCompartmentFilter').value = state.annotationCompartment;
+  }
   markDirty();
   renderFields();
   fieldList.querySelector(`[data-index="${index}"]`)?.scrollIntoView({
     behavior: 'smooth', block: 'center',
   });
-});
+}
+$('addFieldButton').addEventListener('click', addRegularField);
+$('addFieldTopButton').addEventListener('click', addRegularField);
 $('addLineItemButton').addEventListener('click', addLineItem);
 $('saveDraftButton').addEventListener('click', () => saveAnnotation('DRAFT'));
 $('validateButton').addEventListener('click', () => saveAnnotation('HUMAN_VALIDATED'));

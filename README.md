@@ -26,6 +26,8 @@ un journal d'audit. Elle conserve les garde-fous métier de 5.18 :
   validation humaine ;
 - les entraînements LayoutLMv3 sont mis en file et exécutés dans un worker
   Docker isolé du runtime d'extraction ;
+- chaque dataset fige un split par document et chaque candidat est benchmarké
+  sur son holdout contre l'extraction JIN d'origine, sans promotion automatique ;
 
 - le client qui émet le bon de commande est le `buyer`; le destinataire
   commercial du bon est le `supplier`, avec correction uniquement lorsque

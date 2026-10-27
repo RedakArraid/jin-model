@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import subprocess
@@ -18,6 +19,7 @@ ALLOWED_TRAINING_SCRIPTS = frozenset(
     {
         "training/vision/prepare_layout_dataset.py",
         "training/vision/train_layoutlmv3.py",
+        "training/vision/benchmark_layoutlmv3.py",
     }
 )
 
@@ -52,7 +54,7 @@ def validated_command(
     if not _within(allowed_output, store.root / "training"):
         raise ValueError("Training output directory is outside JIN Studio storage")
 
-    path_options = {"--manifest", "--data", "--output"}
+    path_options = {"--manifest", "--data", "--output", "--artifact"}
     indexed_arguments = command[2:]
     seen_options: set[str] = set()
     for offset, argument in enumerate(indexed_arguments):
@@ -74,15 +76,16 @@ def validated_command(
         elif not _within(candidate, allowed_output):
             raise ValueError(f"{option} path is outside the run output directory")
 
-    required = (
-        {"--manifest", "--output"}
-        if script.endswith("prepare_layout_dataset.py")
-        else {"--data", "--output", "--model"}
-    )
+    if script.endswith("prepare_layout_dataset.py"):
+        required = {"--manifest", "--output"}
+    elif script.endswith("train_layoutlmv3.py"):
+        required = {"--data", "--output", "--model"}
+    else:
+        required = {"--data", "--artifact", "--output"}
     missing = sorted(required - seen_options)
     if missing:
         raise ValueError(f"Training command is missing required options: {', '.join(missing)}")
-    if "--model" in seen_options:
+    if script.endswith("train_layoutlmv3.py") and "--model" in seen_options:
         model_index = next(
             index
             for index, value in enumerate(indexed_arguments)
@@ -186,6 +189,34 @@ def execute_training_run(store: StudioStore, run: dict[str, Any]) -> None:
             log.write(f"[JIN Studio] Completed {name}\n")
 
 
+def _read_result_json(path: Path, *, root: Path) -> dict[str, Any]:
+    if not path.is_file() or not _within(path, root):
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def collect_training_result(store: StudioStore, run: dict[str, Any]) -> dict[str, Any]:
+    run_id = str(run["runId"])
+    root = (store.root / "training" / run_id).resolve()
+    artifact = root / "artifact"
+    benchmark_path = root / "benchmark.json"
+    return {
+        "artifactDirectory": str(artifact),
+        "benchmarkPath": str(benchmark_path),
+        "benchmark": _read_result_json(benchmark_path, root=root),
+        "trainingMetadata": _read_result_json(
+            artifact / "jin_training_metadata.json", root=root
+        ),
+        "splitManifest": _read_result_json(
+            root / "layout" / "split_manifest.json", root=root
+        ),
+    }
+
+
 def run_once(store: StudioStore, worker_id: str) -> bool:
     run = store.claim_training_run(worker_id)
     if run is None:
@@ -195,7 +226,11 @@ def run_once(store: StudioStore, worker_id: str) -> bool:
     except Exception as exc:  # the failure is persisted for the Studio operator
         store.finish_training_run(run["runId"], success=False, error=str(exc))
     else:
-        store.finish_training_run(run["runId"], success=True)
+        store.finish_training_run(
+            run["runId"],
+            success=True,
+            result=collect_training_result(store, run),
+        )
     return True
 
 
@@ -227,6 +262,7 @@ if __name__ == "__main__":
 __all__ = [
     "ALLOWED_TRAINING_SCRIPTS",
     "execute_training_run",
+    "collect_training_result",
     "main",
     "run_once",
     "validated_command",

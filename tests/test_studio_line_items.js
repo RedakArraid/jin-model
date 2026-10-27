@@ -98,3 +98,47 @@ test('preannotation keeps one semantic field per source line', () => {
   );
   assert.ok(fields.every(field => field.path.includes('order.line_items[0].')));
 });
+
+test('duplicate semantic fields are rejected while the same column remains valid on another line', () => {
+  const orderNumber = {
+    path: 'order.customer_order_number.value',
+    label: 'ORDER_NUMBER',
+  };
+  const duplicateOrderNumber = {
+    path: 'order.customer_order_number.alternatives[1].value',
+    label: 'ORDER_NUMBER',
+  };
+  assert.match(
+    lines.validate([orderNumber, duplicateOrderNumber]).join(' '),
+    /ORDER_NUMBER.*plusieurs fois/,
+  );
+
+  const firstQuantity = lines.createField('LINE_ITEM_QUANTITY', 0);
+  const duplicateFirstQuantity = {
+    ...lines.createField('LINE_ITEM_QUANTITY', 0),
+    path: 'order.line_items[0].ordered_quantity',
+  };
+  assert.match(
+    lines.validate([firstQuantity, duplicateFirstQuantity]).join(' '),
+    /LINE_ITEM_QUANTITY.*ligne 1/,
+  );
+  assert.deepEqual(
+    lines.validate([
+      lines.createField('LINE_ITEM_QUANTITY', 0),
+      lines.createField('LINE_ITEM_QUANTITY', 1),
+    ]),
+    [],
+  );
+});
+
+test('model preannotation can be reduced to one occurrence of each semantic field', () => {
+  const fields = [
+    { path: 'order.customer_order_number.value', label: 'ORDER_NUMBER' },
+    { path: 'order.purchase_order.number', label: 'ORDER_NUMBER' },
+    lines.createField('LINE_ITEM_REFERENCE', 0),
+    { ...lines.createField('LINE_ITEM_REFERENCE', 0), path: 'order.line_items[0].material_number' },
+    lines.createField('LINE_ITEM_REFERENCE', 1),
+  ];
+
+  assert.deepEqual(lines.deduplicate(fields), [fields[0], fields[2], fields[4]]);
+});

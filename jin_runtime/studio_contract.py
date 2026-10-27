@@ -349,6 +349,25 @@ def _validate_line_item_structure(fields: list[dict[str, Any]]) -> None:
         )
 
 
+def _validate_unique_semantic_fields(fields: list[dict[str, Any]]) -> None:
+    """Reject a repeated singleton field or a repeated column within one line."""
+
+    seen: dict[tuple[str, int | None], int] = {}
+    for position, field in enumerate(fields):
+        label = field["label"]
+        match = _LINE_ITEM_PATH.search(field["path"])
+        line_index = int(match.group("index")) if match and label in _LINE_ITEM_LABELS else None
+        key = (label, line_index)
+        previous = seen.get(key)
+        if previous is not None:
+            location = f" in line_items[{line_index}]" if line_index is not None else ""
+            raise StudioContractError(
+                f"field_annotations[{position}] duplicates label {label}{location}; "
+                f"first occurrence is field_annotations[{previous}]"
+            )
+        seen[key] = position
+
+
 def _line_items_last(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep regular annotations first and the repeated order-line block last."""
 
@@ -403,6 +422,7 @@ def normalize_studio_annotation(
     if len(paths) != len(set(paths)):
         raise StudioContractError("field annotation paths must be unique")
     _validate_line_item_structure(fields)
+    _validate_unique_semantic_fields(fields)
     fields = _line_items_last(fields)
     if status == "HUMAN_VALIDATED":
         if not reviewer:
