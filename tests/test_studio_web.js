@@ -37,6 +37,13 @@ test('JIN Studio exposes spatial annotation and explicit human validation', () =
   assert.match(js, /bbox:/);
 });
 
+test('JIN Studio can resolve displayed field values and still attempts PDF rendering', () => {
+  assert.match(js, /function effectiveValue\(field\)/);
+  assert.match(js, /field\.status === 'CORRECTED' \? field\.corrected_value : field\.extracted_value/);
+  assert.match(js, /fieldRenderError/);
+  assert.match(js, /await loadPdf\(documentId\)/);
+});
+
 test('JIN Studio launches and follows isolated training runs', () => {
   assert.match(html, /worker isolé/);
   assert.match(js, /Lancer l’entraînement/);

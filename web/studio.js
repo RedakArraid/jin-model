@@ -157,6 +157,11 @@ function valueText(value) {
   return JSON.stringify(value);
 }
 
+function effectiveValue(field) {
+  if (!field || field.status === 'ABSENT') return '';
+  return field.status === 'CORRECTED' ? field.corrected_value : field.extracted_value;
+}
+
 function inferLabel(path, explicitRole = '') {
   const normalized = path.toLowerCase();
   const line = /(?:^|\.)(?:lines|line_items)\[\d+\]/.test(normalized);
@@ -780,7 +785,10 @@ function renderDocumentList() {
         && state.activeDocument?.documentId !== item.documentId
         && !window.confirm('Des modifications ne sont pas enregistrées. Changer de document ?')
       ) return;
-      openDocument(item.documentId);
+      openDocument(item.documentId).catch(error => {
+        console.error('Impossible d\'ouvrir le document JIN Studio.', error);
+        showAnnotationFeedback(`Impossible d\'ouvrir le document : ${error.message}`, 'error');
+      });
     });
     documentList.appendChild(button);
   }
@@ -910,10 +918,29 @@ async function openDocument(documentId) {
   annotationEmpty.classList.add('hidden');
   annotationWorkspace.classList.remove('hidden');
   renderDocumentList();
-  renderFields();
-  await loadPdf(documentId);
+  let fieldRenderError = null;
+  try {
+    renderFields();
+  } catch (error) {
+    fieldRenderError = error;
+    console.error('Impossible d\'afficher les champs d\'annotation.', error);
+  }
+  let pdfRenderError = null;
+  try {
+    await loadPdf(documentId);
+  } catch (error) {
+    pdfRenderError = error;
+    console.error('Impossible d\'afficher le PDF d\'annotation.', error);
+  }
   renderAnnotationMasks();
   showAnnotationFeedback('');
+  if (fieldRenderError || pdfRenderError) {
+    const failures = [
+      fieldRenderError ? `champs (${fieldRenderError.message})` : '',
+      pdfRenderError ? `PDF (${pdfRenderError.message})` : '',
+    ].filter(Boolean).join(' et ');
+    throw new Error(`Affichage incomplet : ${failures}`);
+  }
 }
 
 function editableAnnotation() {
@@ -1713,7 +1740,7 @@ function renderFields() {
     );
     else documentTypeOther.classList.add('hidden');
     page.value = field.evidence?.page || '';
-    bbox.value = field.evidence?.bbox?.join(',') || '';
+    bbox.value = Array.isArray(field.evidence?.bbox) ? field.evidence.bbox.join(',') : '';
     comment.value = field.comment || '';
     multiSelect.checked = state.multiSelectedFields.has(field);
     label.disabled = !editable;

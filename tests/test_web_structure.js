@@ -83,7 +83,7 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
   assert.match(studioJs, /\/api\/studio/);
   assert.match(studioHtml, /studio_line_items\.js\?v=3/);
   assert.match(studioHtml, /studio_field_selection\.js\?v=4/);
-  assert.match(studioHtml, /studio\.js\?v=24/);
+  assert.match(studioHtml, /studio\.js\?v=25/);
   assert.doesNotMatch(studioJs, /addressFieldTools/);
   assert.doesNotMatch(studioHtml, /studio_address_fields\.js/);
   assert.match(studioHtml, /studio\.css\?v=15/);
