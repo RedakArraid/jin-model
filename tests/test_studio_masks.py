@@ -36,6 +36,18 @@ def _field(value: str = "PO-SOURCE") -> dict:
     }
 
 
+def _line_field() -> dict:
+    return {
+        "path": "order.line_items[0].references.article_number",
+        "label": "LINE_ITEM_REFERENCE",
+        "status": "CONFIRMED",
+        "extracted_value": "87168294760",
+        "corrected_value": None,
+        "evidence": {"page": 1, "bbox": [100, 200, 250, 225]},
+        "comment": "",
+    }
+
+
 def test_annotation_mask_is_value_free_versioned_and_re_reads_target_pdf(tmp_path):
     store = StudioStore(tmp_path / "studio")
     source = store.create_document(
@@ -142,6 +154,77 @@ def test_annotation_mask_requires_at_least_one_positioned_field(tmp_path):
             field_annotations=[field],
             created_by="annotator",
         )
+
+
+def test_annotation_mask_excludes_line_items_and_keeps_header_footer(tmp_path):
+    store = StudioStore(tmp_path / "studio")
+    source = store.create_document(
+        filename="source.pdf",
+        pdf_bytes=_pdf("Commande PO-SOURCE\n87168294760 ARTICLE"),
+        extraction={"document": {"type": "purchase_order"}},
+    )
+
+    mask = store.create_annotation_mask(
+        name="En-tête et pied",
+        source_document_id=source["documentId"],
+        document_type="purchase_order",
+        field_annotations=[_field(), _line_field()],
+        created_by="annotator",
+    )
+
+    assert mask["schemaVersion"] == 2
+    assert mask["scope"] == "HEADER_AND_FOOTER"
+    assert mask["fieldCount"] == 1
+    assert mask["omittedLineItemCount"] == 1
+    assert all("line_items[" not in field["path"] for field in mask["fields"])
+
+
+def test_applying_legacy_mask_also_excludes_line_items(tmp_path):
+    store = StudioStore(tmp_path / "studio")
+    source = store.create_document(
+        filename="source.pdf",
+        pdf_bytes=_pdf("Commande PO-SOURCE"),
+        extraction={"document": {"type": "purchase_order"}},
+    )
+    target = store.create_document(
+        filename="target.pdf",
+        pdf_bytes=_pdf("Commande PO-TARGET"),
+        extraction={"document": {"type": "purchase_order"}},
+    )
+    mask = store.create_annotation_mask(
+        name="Ancien masque",
+        source_document_id=source["documentId"],
+        document_type="purchase_order",
+        field_annotations=[_field()],
+        created_by="annotator",
+    )
+    with store._connect() as connection:
+        row = connection.execute(
+            "SELECT payload_json FROM studio_annotation_masks WHERE mask_id=?",
+            (mask["maskId"],),
+        ).fetchone()
+        legacy = json.loads(row[0])
+        legacy["schemaVersion"] = 1
+        legacy["fields"].append(
+            {
+                "path": _line_field()["path"],
+                "label": _line_field()["label"],
+                "evidence": _line_field()["evidence"],
+            }
+        )
+        connection.execute(
+            "UPDATE studio_annotation_masks SET payload_json=? WHERE mask_id=?",
+            (json.dumps(legacy), mask["maskId"]),
+        )
+
+    applied = store.apply_annotation_mask(
+        document_id=target["documentId"],
+        mask_id=mask["maskId"],
+    )
+
+    assert applied["appliedFieldCount"] == 1
+    assert applied["excludedLineItemCount"] == 1
+    assert all("line_items[" not in field["path"] for field in applied["fields"])
 
 
 def test_annotation_mask_api_is_authenticated_csrf_protected_and_audited(tmp_path):

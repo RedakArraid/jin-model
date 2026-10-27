@@ -21,6 +21,12 @@ FROM dependencies AS runtime
 COPY model/ /app/
 COPY core_overrides/ /app/
 COPY jin_runtime/ /app/jin_runtime/
+# The runtime image also owns Studio's batch preannotation workflow. Keeping
+# these narrowly scoped modules beside the API guarantees that PDF OCR uses
+# the same Tesseract installation and language packs as extraction.
+COPY training/annotations/bootstrap_from_extractions.py /app/training/annotations/bootstrap_from_extractions.py
+COPY scripts/import_annotation_campaign_to_studio.py /app/scripts/import_annotation_campaign_to_studio.py
+COPY scripts/reprocess_studio_documents.py /app/scripts/reprocess_studio_documents.py
 
 ENV JIN_OFFLINE=1 \
     JIN_FEEDBACK_PATH=/app/training/feedback/learning_feedback.jsonl \

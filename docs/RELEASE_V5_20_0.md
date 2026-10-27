@@ -30,3 +30,15 @@ liés à l'ancien contrat sont recréés depuis le contrat V3. Chaque champ revi
 
 Le schéma V2 reste exposé pour contrôler les archives, mais les nouvelles
 extractions et annotations utilisent exclusivement V3.
+
+## Préannotations et masques
+
+La régénération complète peut réexécuter JIN-model sur tous les PDF Studio,
+valider chaque extraction contre le schéma V3 et préparer les rectangles OCR
+avant une écriture atomique. Un échec de document laisse la base inchangée et
+la sauvegarde contient les résultats intermédiaires pour diagnostic ou reprise.
+
+Les masques d'annotation ont un contrat distinct V2 limité aux en-têtes et aux
+pieds de page. Ils ne mémorisent jamais les lignes de commande. Lors de leur
+application dans l'interface, les lignes extraites par JIN sur le PDF cible
+sont conservées et restent à relire.

@@ -10,7 +10,23 @@ from jin_runtime.studio_contract import FIELD_LABELS, normalize_studio_annotatio
 from jin_runtime.studio_region_text import StudioRegionError, extract_pdf_region_text
 
 
-ANNOTATION_MASK_SCHEMA_VERSION = 1
+ANNOTATION_MASK_SCHEMA_VERSION = 2
+
+
+def _is_line_item_field(field: Mapping[str, Any]) -> bool:
+    """Return whether a field belongs to the repeatable order-lines table.
+
+    Masks intentionally model the stable header/footer layout only.  Line-item
+    rows vary from one order to another and must always be produced by JIN or
+    reviewed manually on the target document.
+    """
+
+    label = _text(field.get("label")).upper()
+    path = _text(field.get("path")).lower()
+    return label.startswith("LINE_ITEM_") or any(
+        marker in path
+        for marker in (".line_items[", ".lines[", "line_items[", "lines[")
+    )
 
 
 class StudioMaskError(ValueError):
@@ -95,9 +111,13 @@ def build_annotation_mask(
 
     layout = inspect_pdf_layout(pdf_path)
     value_free_fields: list[dict[str, Any]] = []
+    omitted_line_item_count = 0
     for index, field in enumerate(field_annotations):
         if not isinstance(field, Mapping):
             raise StudioMaskError(f"Le champ {index + 1} du masque est invalide")
+        if _is_line_item_field(field):
+            omitted_line_item_count += 1
+            continue
         label = _text(field.get("label")).upper()
         path = _text(field.get("path"))
         evidence = field.get("evidence")
@@ -157,6 +177,8 @@ def build_annotation_mask(
         "pageCount": layout["pageCount"],
         "pageLayout": layout["pages"],
         "fieldCount": len(fields),
+        "scope": "HEADER_AND_FOOTER",
+        "omittedLineItemCount": omitted_line_item_count,
         "fields": fields,
         "createdBy": _text(created_by),
         "createdAt": utc_now(),
@@ -205,8 +227,13 @@ def apply_annotation_mask(
 
     fields: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    excluded_line_items = 0
     for item in mask.get("fields") or []:
         if not isinstance(item, Mapping):
+            continue
+        # Enforce the V2 scope while applying historical V1 masks as well.
+        if _is_line_item_field(item):
+            excluded_line_items += 1
             continue
         evidence = item.get("evidence")
         evidence = evidence if isinstance(evidence, Mapping) else {}
@@ -238,6 +265,10 @@ def apply_annotation_mask(
 
     if skipped:
         warnings.append(f"{len(skipped)} champ(s) n'ont pas pu être appliqués.")
+    if excluded_line_items:
+        warnings.append(
+            f"{excluded_line_items} champ(s) de ligne historiques ont été exclus du masque."
+        )
     return {
         "mask": {
             "maskId": mask.get("maskId"),
@@ -251,6 +282,7 @@ def apply_annotation_mask(
         "targetPageCount": target_layout["pageCount"],
         "fields": fields,
         "appliedFieldCount": len(fields),
+        "excludedLineItemCount": excluded_line_items,
         "skippedFields": skipped,
     }
 

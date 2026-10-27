@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fixed the V3 Studio renderer after removal of the legacy address-field helper.
+- Restricted annotation masks to stable header/footer fields; order lines are
+  always excluded server-side, while JIN-read target lines remain visible.
+- Added an atomic, backed-up Studio reprocessing campaign and compacted sparse
+  machine line indexes before validating new annotation revisions.
+
 ## 5.20.0-canonical-contract
 
 - Replaced the duplicated V2 address projections with the canonical

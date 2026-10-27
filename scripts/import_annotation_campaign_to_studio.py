@@ -7,6 +7,7 @@ import csv
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -17,6 +18,43 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from jin_runtime.studio_contract import FIELD_LABELS
 from jin_runtime.studio_store import StudioStore
+
+
+_LINE_COLLECTION_PATH = re.compile(
+    r"(?P<prefix>(?:^|\.))(?:lines|line_items)\[(?P<index>\d+)\]"
+)
+
+
+def _compact_line_item_paths(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove gaps created when an extracted row has no localizable field.
+
+    The annotation contract represents only rows that carry at least one
+    annotation. Their JSON indexes must therefore describe that observable
+    sequence, not retain holes from discarded machine candidates.
+    """
+
+    indexes = sorted(
+        {
+            int(match.group("index"))
+            for field in fields
+            if (match := _LINE_COLLECTION_PATH.search(str(field.get("path") or "")))
+        }
+    )
+    replacements = {old: new for new, old in enumerate(indexes)}
+    if not replacements:
+        return fields
+    for field in fields:
+        path = str(field.get("path") or "")
+        match = _LINE_COLLECTION_PATH.search(path)
+        if not match:
+            continue
+        new_index = replacements[int(match.group("index"))]
+        field["path"] = _LINE_COLLECTION_PATH.sub(
+            lambda current: f"{current.group('prefix')}line_items[{new_index}]",
+            path,
+            count=1,
+        )
+    return fields
 
 
 def _configure_console() -> None:
@@ -123,7 +161,7 @@ def draft_fields(annotation: dict[str, Any]) -> list[dict[str, Any]]:
                 ),
             }
         )
-    return fields
+    return _compact_line_item_paths(fields)
 
 
 def main(argv: list[str] | None = None) -> int:

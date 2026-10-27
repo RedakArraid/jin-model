@@ -376,6 +376,12 @@ une version immuable. Le masque conserve uniquement :
 - le type de document et une signature géométrique sans contenu ;
 - le document source, l'auteur, la version et la date de création.
 
+Le périmètre d'un masque est volontairement limité aux **en-têtes et pieds de
+page**. Tous les champs `order.line_items[index]` sont exclus lors de la
+création, y compris via API ou MCP. Lors de l'application dans l'interface,
+les lignes relues par JIN sur le document cible sont conservées : elles ne sont
+ni copiées depuis la commande source, ni remplacées par le masque.
+
 Les valeurs extraites, corrigées et les commentaires ne sont jamais copiés
 dans le masque. Une nouvelle sauvegarde sous le même nom crée `v2`, `v3`, etc.
 La liste courante présente seulement la dernière version de chaque nom ; les
@@ -393,10 +399,9 @@ l'annotateur n'utilise pas **Enregistrer le brouillon** ou **Valider pour
 l'apprentissage**. Studio avertit avant application et après relecture lorsque
 le type, le nombre de pages, l'orientation ou le ratio des pages diffèrent.
 
-Les lignes de commande présentes dans un masque conservent leurs indices JSON
-continus. Le masque reproduit les lignes positionnées dans le document source ;
-l'annotateur doit ensuite ajouter ou retirer les lignes lorsque leur nombre
-varie sur le document cible.
+Les anciens masques V1 pouvant contenir des lignes restent consultables pour
+l'audit, mais ces champs de ligne sont filtrés côté serveur lors de leur
+application.
 
 Les opérations sont disponibles à distance avec
 `GET/POST /api/studio/annotation-masks` et

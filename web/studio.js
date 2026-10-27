@@ -328,6 +328,73 @@ function fieldCompartment(field) {
   return 'HEADER';
 }
 
+function boxesOverlap(left, right) {
+  return Math.min(left[2], right[2]) > Math.max(left[0], right[0])
+    && Math.min(left[3], right[3]) > Math.max(left[1], right[1]);
+}
+
+function annotationTrainingIssues(fields) {
+  const issues = [];
+  const active = [];
+  fields.forEach((field, fieldIndex) => {
+    if (!['CONFIRMED', 'CORRECTED'].includes(String(field.status || '').toUpperCase())) return;
+    const evidence = field.evidence;
+    if (!evidence || !Array.isArray(evidence.bbox) || evidence.bbox.length !== 4) {
+      issues.push({
+        fieldIndex,
+        code: 'MISSING_SOURCE_REGION',
+        message: 'le champ confirmé ne possède pas de rectangle source dans le PDF',
+      });
+      return;
+    }
+    active.push({ field, fieldIndex });
+  });
+
+  active.forEach((left, position) => {
+    active.slice(position + 1).forEach(right => {
+      if (Number(left.field.evidence.page) !== Number(right.field.evidence.page)) return;
+      const leftBox = left.field.evidence.bbox.map(Number);
+      const rightBox = right.field.evidence.bbox.map(Number);
+      const identical = leftBox.every((value, index) => value === rightBox[index]);
+      if (identical) {
+        issues.push({
+          fieldIndex: left.fieldIndex,
+          otherFieldIndex: right.fieldIndex,
+          code: left.field.label === right.field.label
+            ? 'DUPLICATE_SOURCE_REGION'
+            : 'CONFLICTING_REGION_LABELS',
+          message: left.field.label === right.field.label
+            ? 'la même zone source est utilisée par deux champs distincts'
+            : 'la même zone source porte deux étiquettes incompatibles',
+        });
+        return;
+      }
+      const leftMatch = String(left.field.label || '').match(
+        /^(BUYER|SUPPLIER|SHIP_TO|BILL_TO|PAYER|SHIP_FROM)_(.+)$/,
+      );
+      const rightMatch = String(right.field.label || '').match(
+        /^(BUYER|SUPPLIER|SHIP_TO|BILL_TO|PAYER|SHIP_FROM)_(.+)$/,
+      );
+      if (!leftMatch || !rightMatch || leftMatch[1] !== rightMatch[1]) return;
+      const suffixes = new Set([leftMatch[2], rightMatch[2]]);
+      if (
+        suffixes.has('STREET')
+        && ['HOUSE_NUMBER', 'HOUSE_NUMBER_SUFFIX', 'STREET_TYPE', 'STREET_NAME']
+          .some(suffix => suffixes.has(suffix))
+        && boxesOverlap(leftBox, rightBox)
+      ) {
+        issues.push({
+          fieldIndex: left.fieldIndex,
+          otherFieldIndex: right.fieldIndex,
+          code: 'OVERLAPPING_COMPOSITE_STREET',
+          message: 'la voie complète chevauche un de ses composants atomiques',
+        });
+      }
+    });
+  });
+  return issues;
+}
+
 function compartmentName(compartment) {
   return {
     HEADER: 'En-têtes',
@@ -926,7 +993,10 @@ function renderAnnotationMasks() {
 
 async function saveCurrentAsAnnotationMask() {
   if (!state.activeDocument) return;
+  const lineItemCount = state.fields.filter(field => fieldCompartment(field) === 'LINE_ITEMS').length;
   const positioned = state.fields.filter(field => (
+    fieldCompartment(field) !== 'LINE_ITEMS'
+    &&
     Number(field.evidence?.page) > 0
     && Array.isArray(field.evidence?.bbox)
     && field.evidence.bbox.length === 4
@@ -944,7 +1014,7 @@ async function saveCurrentAsAnnotationMask() {
   ].join(' · ').slice(0, 100);
   const name = window.prompt('Nom du masque d’annotation', suggestedName);
   if (!name) return;
-  const omitted = state.fields.length - positioned.length;
+  const omitted = state.fields.length - lineItemCount - positioned.length;
   if (omitted && !window.confirm(
     `${omitted} champ(s) sans cadre PDF ne seront pas enregistrés dans le masque. Continuer ?`,
   )) return;
@@ -967,7 +1037,8 @@ async function saveCurrentAsAnnotationMask() {
     $('applyAnnotationMaskButton').disabled = false;
     showMessage(
       $('annotationMaskMessage'),
-      `Masque « ${mask.name} » v${mask.version} enregistré avec ${mask.fieldCount} champ(s).`,
+      `Masque « ${mask.name} » v${mask.version} enregistré avec ${mask.fieldCount} champ(s) d’en-tête/pied. `
+      + `${lineItemCount} champ(s) de ligne exclus.`,
       'success',
     );
   } catch (error) {
@@ -985,7 +1056,8 @@ async function applySelectedAnnotationMask() {
     : '';
   if (!window.confirm(
     `Appliquer le masque « ${mask.name} » v${mask.version} ?\n`
-    + `Les ${state.fields.length} champs actuels seront remplacés par ${mask.fieldCount} champs non vérifiés.`
+    + `Les en-têtes et pieds actuels seront remplacés par ${mask.fieldCount} champs non vérifiés. `
+    + 'Les lignes de commande relues par JIN seront conservées.'
     + warning,
   )) return;
   showMessage($('annotationMaskMessage'), 'Application du masque et relecture des zones…');
@@ -997,14 +1069,20 @@ async function applySelectedAnnotationMask() {
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
     );
     if (!result.fields?.length) throw new Error('Aucun champ du masque ne peut être appliqué à ce PDF.');
-    state.fields = lineItemTools.compact(lineItemTools.deduplicate(result.fields.map(item => {
+    const currentLineItems = state.fields
+      .filter(field => fieldCompartment(field) === 'LINE_ITEMS')
+      .map(field => structuredClone(field));
+    const maskFields = result.fields.map(item => {
       const field = structuredClone(item);
       const normalized = normalizeSelectedValue(field, field.extracted_value);
       if (normalized) field.extracted_value = normalized;
       field.status = 'UNREVIEWED';
       field.corrected_value = null;
       return field;
-    })));
+    });
+    state.fields = lineItemTools.compact(
+      lineItemTools.deduplicate([...maskFields, ...currentLineItems]),
+    );
     state.selectedField = 0;
     markDirty();
     renderFields();
@@ -1091,7 +1169,7 @@ function moveField(index, direction) {
 function renderFields() {
   const editable = editableAnnotation();
   const trainingProblemIndexes = new Set(
-    addressFieldTools.trainingIssues(state.fields)
+    annotationTrainingIssues(state.fields)
       .flatMap(issue => [issue.fieldIndex, issue.otherFieldIndex])
       .filter(index => Number.isInteger(index)),
   );
@@ -1615,7 +1693,7 @@ async function saveAnnotation(status) {
         'error',
       );
     }
-    const issue = addressFieldTools.trainingIssues(state.fields)[0];
+    const issue = annotationTrainingIssues(state.fields)[0];
     if (issue) {
       selectField(issue.fieldIndex);
       return showMessage(

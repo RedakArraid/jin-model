@@ -525,6 +525,50 @@ class AnnotationBootstrapTests(unittest.TestCase):
         self.assertEqual(quantity["status"], "AMBIGUOUS")
         self.assertNotIn("evidence", quantity)
 
+    def test_studio_draft_compacts_sparse_machine_line_indexes(self):
+        annotation = {
+            "document_labels": {"document_type": "purchase_order"},
+            "pages": [
+                {
+                    "page": 1,
+                    "regions": [
+                        {
+                            "label": "LINE_ITEM_REFERENCE",
+                            "value": "REF-1",
+                            "source_path": "order.line_items[0].references.article_number",
+                            "bbox": [10, 100, 80, 120],
+                        },
+                        {
+                            "label": "LINE_ITEM_REFERENCE",
+                            "value": "REF-4",
+                            "source_path": "order.lines[3].references.article_number",
+                            "bbox": [10, 200, 80, 220],
+                        },
+                        {
+                            "label": "LINE_ITEM_QUANTITY",
+                            "value": 2,
+                            "source_path": "order.line_items[6].quantity",
+                            "bbox": [300, 300, 330, 320],
+                        },
+                    ],
+                }
+            ],
+        }
+
+        fields = draft_fields(annotation)
+        line_paths = [
+            field["path"] for field in fields if field["label"].startswith("LINE_ITEM_")
+        ]
+
+        self.assertEqual(
+            line_paths,
+            [
+                "order.line_items[0].references.article_number",
+                "order.line_items[1].references.article_number",
+                "order.line_items[2].quantity",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
