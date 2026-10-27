@@ -16,14 +16,16 @@ const plain = value => JSON.parse(JSON.stringify(value));
 
 test('UI displays delivery normalized_value verbatim before value', () => {
   const normalizedValue = 'GAZ SERVICE RAPIDE\n3 RUE DU PALATINAT\n78300 POISSY\nFrance';
-  const payload = {
-    normalized_output: { order: { delivery_address: {
-      role: 'ship_to',
-      party_name: 'GAZ SERVICE RAPIDE',
-      normalized_value: normalizedValue,
-      value: 'VALUE SHOULD NOT WIN',
-    } } },
-  };
+  const payload = { normalized_output: {
+    schema_version: 'jin-clean-extraction-v3',
+    order: {
+      parties: { ship_to: { name: 'GAZ SERVICE RAPIDE' } },
+      addresses: { ship_to: { status: 'SELECTED', selected: {
+        normalized_value: normalizedValue,
+        value: 'VALUE SHOULD NOT WIN',
+      } } },
+    },
+  } };
 
   const addresses = plain(context.uiDeliveryAddresses(payload));
 
@@ -42,12 +44,14 @@ test('UI keeps the clean order delivery address ahead of the raw source field', 
       confidence: 0.9682,
       source: { page: 1 },
     }],
-    normalized_output: { order: { delivery_address: {
-      role: 'ship_to',
-      normalized_value: cleanValue,
-      address_confidence: 0.995,
-      evidence: { page: 1 },
-    } } },
+    normalized_output: {
+      schema_version: 'jin-clean-extraction-v3',
+      order: { addresses: { ship_to: { status: 'SELECTED', selected: {
+        normalized_value: cleanValue,
+        address_confidence: 0.995,
+        evidence: { page: 1 },
+      } } } },
+    },
   };
 
   const addresses = plain(context.uiDeliveryAddresses(payload));

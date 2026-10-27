@@ -1,4 +1,4 @@
-# JIN Model — Universal Document AI runtime 5.19.0
+# JIN Model — Universal Document AI runtime 5.20.0
 
 `RedakArraid/jin-model` contient la couche Docker/UI autour du moteur JIN
 empaqueté, ses correctifs métier versionnés et les modèles statistiques CPU.
@@ -10,14 +10,15 @@ Les numéros ci-dessous versionnent des éléments différents et ne doivent pas
 
 | Élément | Version actuelle | Rôle |
 | --- | --- | --- |
-| Runtime JIN | `5.19.0-studio-identity` | API, UI, annotation nominative, entraînement et contrôle qualité |
+| Runtime JIN | `5.20.0-canonical-contract` | API, UI, annotation nominative, entraînement et contrôle qualité |
 | Cœur empaqueté | `5.1.0` | OCR et extraction structurée de base |
-| Contrat consommateur | `jin-clean-extraction-v2` | JSON stable renvoyé avec `view=clean` |
+| Contrat consommateur | `jin-clean-extraction-v3` | JSON canonique renvoyé avec `view=clean` |
 | Routeur PDF CPU | `jin-pdf-fusion-router-v3-cpu` | famille documentaire et décision documentaire |
 | Routeur de champs CPU | `jin-field-weak-router-v2-cpu` | suggestions de champs, zones et cellules à revoir |
 
-La version 5.19.0 sécurise JIN Studio avec des comptes nominatifs, des rôles et
-un journal d'audit. Elle conserve les garde-fous métier de 5.18 :
+La version 5.20.0 supprime les projections d'adresse concurrentes du contrat
+consommateur et aligne JIN Studio sur cette source unique. Elle conserve les
+comptes nominatifs, rôles et garde-fous métier de 5.19 :
 
 - l'annotation humaine des PDF, les révisions immuables et les datasets
   versionnés sont gérés hors de GenieCommande ;
@@ -261,7 +262,7 @@ jin_runtime.app
   |-- proxy des routes cœur
   |-- réconciliation déterministe métier 5.17
   |-- enrichissement statistique de /extract
-  |-- contrat propre jin-clean-extraction-v2
+  |-- contrat canonique jin-clean-extraction-v3
   |-- porte qualité CHECKS_PASSED / REVIEW_REQUIRED
   |-- POST /feedback
   |-- GET /learning/status
@@ -468,8 +469,8 @@ reconstruit les départements à partir de la version courante.
 
 ### JSON métier propre
 
-La réponse complète contient désormais `normalized_output` avec un contrat
-stable `jin-clean-extraction-v2` : document, commande, parties, adresses,
+La réponse complète contient `normalized_output` avec le contrat canonique
+`jin-clean-extraction-v3` : document, commande, parties, adresses,
 lignes, frais, totaux, qualité et preuves. Les détails OCR restent dans la
 réponse historique pour le diagnostic. Pour recevoir uniquement le contrat :
 
@@ -477,21 +478,25 @@ réponse historique pour le diagnostic. Pour recevoir uniquement le contrat :
 curl -F "file=@commande.pdf" "http://localhost:8080/api/extract?view=clean"
 ```
 
-Le schéma JSON formel du contrat est disponible sur
-`http://localhost:8080/api/schemas/jin-clean-extraction-v2` et dans
-`jin_runtime/schemas/jin-clean-extraction-v2.schema.json`.
+Le schéma JSON formel du contrat courant est disponible sur
+`http://localhost:8080/api/schemas/jin-clean-extraction-v3` et dans
+`jin_runtime/schemas/jin-clean-extraction-v3.schema.json`. Le schéma V2 reste
+exposé uniquement pour valider ou migrer des archives ; il n'est plus produit.
 
 Le bouton de téléchargement de l'interface exporte cette vue propre.
 
-Pour la livraison, `order.delivery_address` fournit directement le bloc
-sélectionné avec `normalized_value`, `value`, `components`, `normalization`,
-`verification` et la valeur source. Le contact et la société restent séparés
-du libellé postal. Plusieurs candidats `ship_to` ne sont jamais départagés
-silencieusement : la décision passe en revue avec `DELIVERY_ADDRESS_AMBIGUOUS`.
+Le contrat V3 possède un propriétaire unique pour chaque information :
+`order.parties.<role>` contient l'identité, les contacts et les immatriculations,
+tandis que `order.addresses.<role>.selected` contient uniquement l'adresse
+postale sélectionnée. `alternatives` n'est présent qu'en cas d'ambiguïté et ne
+répète jamais `selected`. Les anciens alias `parties.*.address`,
+`order.delivery_address` et `delivery_address_selection` ont été supprimés.
+Plusieurs candidats `ship_to` ne sont jamais départagés silencieusement : le
+statut du rôle passe à `AMBIGUOUS` et la décision demande une revue.
 
 Les codes d'agence, de site ou de succursale du client sont exposés séparément
 dans `order.customer_agency_code` et, lorsqu'ils sont liés à la livraison, dans
-`order.delivery_address.customer_agency_code`. Un code non explicitement
+`order.parties.ship_to.customer_agency_code`. Un code non explicitement
 libellé n'est promu que s'il est corroboré dans l'en-tête et le bloc de
 livraison ; il est alors exclu du libellé postal propre mais conservé dans la
 preuve source.
@@ -514,6 +519,6 @@ Les fichiers de résultats et les valeurs client attendues restent dans
 
 ## Version
 
-- Runtime : `5.19.0-studio-identity`
+- Runtime : `5.20.0-canonical-contract`
 - Cœur : `5.1.0`
-- Contrat propre : `jin-clean-extraction-v2`
+- Contrat propre : `jin-clean-extraction-v3`

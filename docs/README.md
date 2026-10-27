@@ -3,15 +3,15 @@
 Cette page distingue la documentation opérationnelle actuelle des rapports et
 notes historiques. La source de vérité de version est
 `jin_runtime/__init__.py`; la version active est
-`5.19.0-studio-identity`.
+`5.20.0-canonical-contract`.
 
 ## Versions à ne pas confondre
 
 | Élément | Version | Compatibilité |
 | --- | --- | --- |
-| Runtime et UI | `5.19.0-studio-identity` | couche active de ce dépôt |
+| Runtime et UI | `5.20.0-canonical-contract` | couche active de ce dépôt |
 | Cœur d'extraction | `5.1.0` | moteur local reçu sous `model/` et superposé par `core_overrides/` |
-| Sortie consommateur | `jin-clean-extraction-v2` | contrat JSON stable et indépendant du numéro du runtime |
+| Sortie consommateur | `jin-clean-extraction-v3` | contrat JSON canonique et indépendant du numéro du runtime |
 | Routeur PDF | `jin-pdf-fusion-router-v3-cpu` | artefact statistique de routage documentaire |
 | Routeur de champs | `jin-field-weak-router-v2-cpu` | artefact statistique de suggestions spatiales |
 | Feedback humain | contrat v1 / mémoire v2 | protocole d'annotation et format du modèle appris |
@@ -39,11 +39,12 @@ spatiale, pas la version actuelle du runtime.
   PDF, annotations, comptes, cœur JIN, modèles appris et externalisation hors
   VM.
 - [Version 5.19.0](RELEASE_V5_19_0.md) : identité, rôles et audit JIN Studio.
+- [Version 5.20.0](RELEASE_V5_20_0.md) : contrat d'adresse canonique et remise à zéro des annotations.
 - [Version 5.18.0](RELEASE_V5_18_0.md) : création initiale de JIN Studio.
 - [Version 5.17.0](RELEASE_V5_17_0.md) : garde-fous financiers et rôles métier.
 - [Changelog](../CHANGELOG.md) : historique condensé des versions.
 - Schéma consommateur :
-  [`jin-clean-extraction-v2.schema.json`](../jin_runtime/schemas/jin-clean-extraction-v2.schema.json).
+  [`jin-clean-extraction-v3.schema.json`](../jin_runtime/schemas/jin-clean-extraction-v3.schema.json).
 
 ## Convention métier actuelle
 
@@ -53,6 +54,8 @@ Sur un bon de commande client :
 - `supplier` est le fournisseur auquel la commande est adressée ;
 - `bill_to` et `ship_to` restent des rôles distincts, même lorsqu'ils
   appartiennent au même client ;
+- l'identité d'une partie vit uniquement dans `order.parties.<role>` et son
+  adresse uniquement dans `order.addresses.<role>.selected` ;
 - le code article fournisseur est la référence produit canonique quand une
   colonne fournisseur explicite existe ; le code interne client reste dans
   `customer_material_number` ;

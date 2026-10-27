@@ -12,6 +12,7 @@ from jin_runtime.studio_contract import (
     FIELD_CATALOG,
     StudioContractError,
     normalize_studio_annotation,
+    training_annotation_issues,
 )
 from jin_runtime.studio_api import create_studio_router
 from jin_runtime.studio_security import hash_password, verify_password
@@ -86,16 +87,178 @@ def test_every_annotatable_field_has_precise_selection_help():
     assert "toute la page" in document_help
     assert "jamais la description complète" in by_label["LINE_ITEM_REFERENCE"]["help"]
     assert "8738717111" in by_label["LINE_ITEM_REFERENCE"]["example"]
-    assert "ISAAC NEWTON" in by_label["ADDRESS_STREET_NAME"]["example"]
+    assert "ISAAC NEWTON" in by_label["SHIP_TO_STREET_NAME"]["example"]
     assert "PORT" in by_label["ADDITIONAL_CHARGE_LABEL"]["example"]
     assert "client qui passe la commande" in by_label["BUYER_CODE"]["help"]
     assert by_label["ORDER_DATE"]["defaultPath"] == "order.order_date.value"
-    assert by_label["ADDRESS_STREET_NAME"]["defaultPath"] == (
-        "order.addresses[0].components.street_name"
-    )
     assert by_label["BUYER_STREET_NAME"]["defaultPath"] == (
-        "order.parties.buyer.address.street_name"
+        "order.addresses.buyer.selected.components.street_name"
     )
+    assert by_label["SHIP_TO_HOUSE_NUMBER"]["defaultPath"] == (
+        "order.addresses.ship_to.selected.components.house_number"
+    )
+    assert not any(label.startswith("ADDRESS_") for label in by_label)
+
+
+def test_training_safety_rejects_unscoped_or_derived_address_ground_truth():
+    fields = [
+        {
+            "path": "order.addresses[0].components.house_number",
+            "label": "ADDRESS_HOUSE_NUMBER",
+            "status": "CONFIRMED",
+            "extracted_value": "12",
+            "corrected_value": None,
+            "evidence": {"page": 1, "bbox": [10, 10, 20, 20]},
+        },
+        {
+            "path": "order.addresses[0].verification.matched_components.city",
+            "label": "SHIP_TO_CITY",
+            "status": "CONFIRMED",
+            "extracted_value": "PARIS",
+            "corrected_value": None,
+            "evidence": {"page": 1, "bbox": [30, 10, 60, 20]},
+        },
+    ]
+
+    issues = training_annotation_issues(fields)
+
+    assert {item["code"] for item in issues} == {
+        "UNSCOPED_ADDRESS_LABEL",
+        "DERIVED_METADATA_PATH",
+    }
+
+
+def test_human_validation_requires_role_specific_source_address_fields():
+    payload = {
+        "status": "HUMAN_VALIDATED",
+        "reviewed_by": "admin",
+        "field_annotations": [
+            {
+                "path": "order.addresses[0].components.house_number",
+                "label": "ADDRESS_HOUSE_NUMBER",
+                "status": "CONFIRMED",
+                "extracted_value": "12",
+                "corrected_value": None,
+                "evidence": {"page": 1, "bbox": [10, 10, 20, 20]},
+            }
+        ],
+    }
+
+    with pytest.raises(StudioContractError, match="label is not supported"):
+        normalize_studio_annotation(
+            payload,
+            document_id="jdoc-12345678",
+            document_sha256="a" * 64,
+            revision=1,
+        )
+
+
+def test_training_safety_rejects_overlapping_composite_and_atomic_street():
+    fields = [
+        {
+            "path": "order.addresses.ship_to.selected.components.street",
+            "label": "SHIP_TO_STREET",
+            "status": "CORRECTED",
+            "extracted_value": "",
+            "corrected_value": "1ERE AVENUE",
+            "evidence": {"page": 1, "bbox": [100, 100, 250, 130]},
+        },
+        {
+            "path": "order.addresses.ship_to.selected.components.street_type",
+            "label": "SHIP_TO_STREET_TYPE",
+            "status": "CORRECTED",
+            "extracted_value": "",
+            "corrected_value": "AVENUE",
+            "evidence": {"page": 1, "bbox": [180, 100, 250, 130]},
+        },
+    ]
+
+    issues = training_annotation_issues(fields)
+
+    assert any(item["code"] == "OVERLAPPING_COMPOSITE_STREET" for item in issues)
+
+
+def test_training_safety_requires_a_source_region_for_reviewed_values():
+    fields = [
+        {
+            "path": "order.addresses.ship_to.selected.components.country",
+            "label": "SHIP_TO_COUNTRY",
+            "status": "CONFIRMED",
+            "extracted_value": "France",
+            "corrected_value": None,
+        }
+    ]
+
+    issues = training_annotation_issues(fields)
+
+    assert [item["code"] for item in issues] == ["MISSING_SOURCE_REGION"]
+
+
+def test_training_safety_rejects_one_region_reused_by_two_order_lines():
+    fields = [
+        {
+            "path": "order.line_items[0].references.article_number",
+            "label": "LINE_ITEM_REFERENCE",
+            "status": "CONFIRMED",
+            "extracted_value": "8712345678",
+            "corrected_value": None,
+            "evidence": {"page": 1, "bbox": [10, 10, 80, 20]},
+        },
+        {
+            "path": "order.line_items[1].references.article_number",
+            "label": "LINE_ITEM_REFERENCE",
+            "status": "CONFIRMED",
+            "extracted_value": "8712345678",
+            "corrected_value": None,
+            "evidence": {"page": 1, "bbox": [10, 10, 80, 20]},
+        },
+    ]
+
+    issues = training_annotation_issues(fields)
+
+    assert any(item["code"] == "DUPLICATE_SOURCE_REGION" for item in issues)
+
+
+def test_training_safety_recognizes_a_derived_path_at_the_root():
+    fields = [
+        {
+            "path": "quality.output_audit.issues[0].details.city",
+            "label": "SHIP_TO_CITY",
+            "status": "CONFIRMED",
+            "extracted_value": "PARIS",
+            "corrected_value": None,
+            "evidence": {"page": 1, "bbox": [10, 10, 80, 20]},
+        }
+    ]
+
+    issues = training_annotation_issues(fields)
+
+    assert any(item["code"] == "DERIVED_METADATA_PATH" for item in issues)
+
+
+def test_training_safety_rejects_a_party_name_that_absorbs_its_street():
+    fields = [
+        {
+            "path": "order.parties.ship_to.name",
+            "label": "SHIP_TO_NAME",
+            "status": "CORRECTED",
+            "extracted_value": "",
+            "corrected_value": "REXEL-CENTRE LOGISTIQUE 1ERE AVENUE",
+            "evidence": {"page": 1, "bbox": [10, 10, 200, 30]},
+        },
+        {
+            "path": "order.addresses.ship_to.selected.components.street",
+            "label": "SHIP_TO_STREET",
+            "status": "CORRECTED",
+            "extracted_value": "",
+            "corrected_value": "1ERE AVENUE",
+            "evidence": {"page": 1, "bbox": [120, 25, 200, 40]},
+        },
+    ]
+
+    issues = training_annotation_issues(fields)
+
+    assert any(item["code"] == "PARTY_NAME_CONTAINS_ADDRESS" for item in issues)
 
 
 def annotation(status: str = "DRAFT", reviewer: str = "") -> dict:

@@ -43,6 +43,7 @@
     ]],
   ]);
   const PATH_PATTERN = /(?:^|\.)(?:lines|line_items)\[(\d+)\](?:\.|$)/;
+  const CHARGE_PATH_PATTERN = /(?:^|\.)additional_charges\[(\d+)\](?:\.|$)/;
 
   function isLineItemLabel(label) {
     return Object.prototype.hasOwnProperty.call(PATH_SUFFIXES, String(label || ''));
@@ -91,6 +92,10 @@
   function semanticKey(field) {
     const label = String(field?.label || '');
     if (!label) return '';
+    if (label.startsWith('ADDITIONAL_CHARGE_')) {
+      const match = String(field?.path || '').match(CHARGE_PATH_PATTERN);
+      return `${label}@charge-${match ? Number(match[1]) : 'unindexed'}`;
+    }
     if (!isLineItemLabel(label)) return label;
     const lineIndex = indexFromPath(field?.path);
     return `${label}@${lineIndex >= 0 ? lineIndex : 'unindexed'}`;
@@ -203,6 +208,10 @@
       }
       if (isLineItemLabel(field?.label) && indexFromPath(path) < 0) {
         errors.push(`Le champ ${field.label} doit appartenir a order.line_items[index].`);
+      }
+      if (String(field?.label || '').startsWith('ADDITIONAL_CHARGE_')
+        && !CHARGE_PATH_PATTERN.test(path)) {
+        errors.push(`Le champ ${field.label} doit appartenir a order.additional_charges[index].`);
       }
     }
     const found = indices(fields);

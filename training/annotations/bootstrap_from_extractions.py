@@ -23,28 +23,6 @@ except ImportError:  # Native-text annotations still work without OCR extras.
     Output = None
 
 FIELD_LABELS = {
-    "building": "ADDRESS_BUILDING",
-    "residence": "ADDRESS_RESIDENCE",
-    "entry": "ADDRESS_ENTRY",
-    "floor": "ADDRESS_FLOOR",
-    "unit": "ADDRESS_UNIT",
-    "house_number": "ADDRESS_HOUSE_NUMBER",
-    "house_number_suffix": "ADDRESS_HOUSE_NUMBER_SUFFIX",
-    "street_type": "ADDRESS_STREET_TYPE",
-    "street_name": "ADDRESS_STREET_NAME",
-    "industrial_zone": "ADDRESS_INDUSTRIAL_ZONE",
-    "activity_park": "ADDRESS_ACTIVITY_PARK",
-    "place_name": "ADDRESS_PLACE_NAME",
-    "postal_box": "ADDRESS_POSTAL_BOX",
-    "tsa": "ADDRESS_TSA",
-    "cs": "ADDRESS_CS",
-    "postal_routing_code": "ADDRESS_POSTAL_ROUTING_CODE",
-    "postal_code": "ADDRESS_POSTAL_CODE",
-    "city": "ADDRESS_CITY",
-    "cedex_number": "ADDRESS_CEDEX_NUMBER",
-    "insee_code": "ADDRESS_INSEE_CODE",
-    "country": "ADDRESS_COUNTRY",
-    "country_code": "ADDRESS_COUNTRY_CODE",
     "purchase_order_number": "ORDER_NUMBER",
     "customer_order_number": "ORDER_NUMBER",
     "order_number": "ORDER_NUMBER",
@@ -154,6 +132,20 @@ def _line_context(path: str) -> bool:
 LINE_GROUP_RE = re.compile(r"(?:^|\.)(?:lines|line_items)\[\d+\]", re.IGNORECASE)
 CHARGE_GROUP_RE = re.compile(r"(?:^|\.)additional_charges\[\d+\]", re.IGNORECASE)
 ADDRESS_GROUP_RE = re.compile(r"(?:^|\.)addresses\[\d+\]", re.IGNORECASE)
+IGNORED_DERIVED_BRANCHES = frozenset(
+    {
+        "verification",
+        "normalization",
+        "ban_verification",
+        "clean_address",
+        "quality",
+        "reference_data",
+        "output_audit",
+        "matched_components",
+        "suggested_components",
+        "warnings",
+    }
+)
 
 
 def _total_context(path: str) -> bool:
@@ -216,6 +208,11 @@ def _field_label(key: str, path: str, role: str | None) -> str | None:
             marker in lowered for marker in (".address.", ".components.", ".delivery_address.")
         ):
             return f"{role}_{ADDRESS_LABEL_SUFFIX[key]}"
+    # An address component without a resolved business role is not usable as
+    # supervised ground truth.  The old ADDRESS_* fallback mixed buyer,
+    # supplier and delivery addresses into the same singleton labels.
+    if key in ADDRESS_LABEL_SUFFIX:
+        return None
     label = FIELD_LABELS.get(key)
     if key in {
         "description", "quantity", "unit_price", "net_unit_price", "line_total",
@@ -284,11 +281,22 @@ def collect_candidates(
     role: str | None = None,
     label_hint: str | None = None,
     inherited_evidence: Any = None,
+    suppressed_keys: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if isinstance(obj, dict):
         role = _party_role(path, obj, role)
         own_evidence = obj.get("evidence") or inherited_evidence
+        local_suppressed = set(suppressed_keys)
+        warnings = {
+            str(item).strip().lower()
+            for item in (obj.get("warnings") or [])
+            if str(item).strip()
+        }
+        if "country_inferred_from_postal_pattern" in warnings:
+            local_suppressed.update({"country", "country_code"})
+        if "untyped_postal_routing_code_inferred" in warnings:
+            local_suppressed.add("postal_routing_code")
         if label_hint and scalar(obj.get("value")):
             display_value = obj.get("raw_value") or obj.get("value")
             _append_candidate(
@@ -302,6 +310,14 @@ def collect_candidates(
             )
             return out
         for key, value in obj.items():
+            if str(key).lower() in IGNORED_DERIVED_BRANCHES:
+                continue
+            # V3 exposes unresolved candidates under ``alternatives``. They
+            # are intentionally not ground truth and must never seed a box.
+            if str(key).lower() == "alternatives":
+                continue
+            if str(key).lower() in local_suppressed:
+                continue
             child_path = f"{path}.{key}" if path else key
             label = _field_label(key, child_path, role)
             if label and scalar(value) and str(value).strip():
@@ -321,6 +337,7 @@ def collect_candidates(
                         role=role,
                         label_hint=label,
                         inherited_evidence=child_evidence,
+                        suppressed_keys=frozenset(local_suppressed),
                     )
                 )
     elif isinstance(obj, list):
@@ -332,6 +349,7 @@ def collect_candidates(
                     role=role,
                     label_hint=label_hint,
                     inherited_evidence=inherited_evidence,
+                    suppressed_keys=suppressed_keys,
                 )
             )
     elif label_hint and scalar(obj):
@@ -370,19 +388,32 @@ def _reference_prior(value: Any) -> int:
     return 0
 
 
-def _candidate_preference(candidate: dict[str, Any]) -> tuple[int, int, float, int]:
+def _candidate_preference(candidate: dict[str, Any]) -> tuple[int, int, int, float, int]:
     path = str(candidate.get("path") or "").lower()
+    role_source_priority = 0
+    if re.search(r"\.addresses\.[a-z_]+\.selected\.components\.", path):
+        role_source_priority = 5
+    elif ".delivery_address.components." in path:
+        role_source_priority = 4
+    elif re.search(r"\.parties\.(?:buyer|supplier|ship_to|bill_to|payer|ship_from)\.address\.", path):
+        role_source_priority = 3
+    elif re.search(r"\.addresses\[\d+\]\.components\.", path):
+        role_source_priority = 2
+    elif ".parties." in path:
+        role_source_priority = 1
     canonical_leaf = int(
         any(
             path.endswith(suffix)
             for suffix in (
-                ".material_number", ".unit_price", ".net", ".name", ".value"
+                ".material_number", ".unit_price", ".net", ".name", ".value",
+                ".description", ".amount",
             )
         )
     )
     return (
         _reference_prior(candidate.get("value"))
         if candidate.get("label") == "LINE_ITEM_REFERENCE" else 0,
+        role_source_priority,
         int(bool(candidate.get("bbox_hint"))),
         float(candidate.get("source_confidence") or 0.0),
         canonical_leaf,
@@ -401,6 +432,13 @@ def deduplicate_candidates(
         semantic_value = norm(candidate.get("value"))
         if group and candidate["label"] == "LINE_ITEM_REFERENCE":
             semantic_value = "primary-reference"
+        elif group and str(candidate["label"]).startswith("ADDITIONAL_CHARGE_"):
+            semantic_value = "one-field-per-charge"
+        elif not group:
+            # Header/footer and role-specific party fields are singletons.
+            # Different projections of the same business object must compete
+            # for one canonical label instead of creating duplicate fields.
+            semantic_value = "singleton"
         key = (
             group,
             str(candidate["label"]),
@@ -412,7 +450,25 @@ def deduplicate_candidates(
             continue
         if _candidate_preference(candidate) > _candidate_preference(selected[key]):
             selected[key] = candidate
-    return [selected[key] for key in ordered_keys]
+    result = [selected[key] for key in ordered_keys]
+    atomic_street_roles = {
+        label.rsplit("_", 2)[0]
+        for candidate in result
+        if (
+            (label := str(candidate.get("label") or "")).endswith(
+                ("_STREET_TYPE", "_STREET_NAME")
+            )
+        )
+    }
+    return [
+        candidate
+        for candidate in result
+        if not (
+            str(candidate.get("label") or "").endswith("_STREET")
+            and str(candidate.get("label") or "").removesuffix("_STREET")
+            in atomic_street_roles
+        )
+    ]
 
 
 def _line_group(path: str) -> str | None:

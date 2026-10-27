@@ -211,7 +211,7 @@
         <div class="section-header">
           <div>
             <h2>Entraînements</h2>
-            <p>JIN fige les documents en entraînement, validation et test, entraîne un candidat puis le compare au JIN actif champ par champ. Le runtime actif n’est jamais remplacé automatiquement.</p>
+              <p>JIN fige les documents en entraînement, validation et test, puis confie l’exécution à un worker isolé. Le candidat est comparé au JIN actif champ par champ et le runtime actif n’est jamais remplacé automatiquement.</p>
           </div>
         </div>
         <div id="trainingMessage" class="inline-notice hidden"></div>
@@ -368,6 +368,6 @@
 
   <script src="vendor/pdfjs-3.11.174/pdf.min.js"></script>
   <script src="studio_line_items.js?v=3"></script>
-  <script src="studio.js?v=15"></script>
+  <script src="studio.js?v=18"></script>
 </body>
 </html>

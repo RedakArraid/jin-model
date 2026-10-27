@@ -1,9 +1,9 @@
 # JIN runtime setup
 
 This runbook covers the two supported runtime modes for
-`5.19.0-studio-identity`. The full image combines the JIN core `5.1.0`,
+`5.20.0-canonical-contract`. The full image combines the JIN core `5.1.0`,
 the versioned `core_overrides/` layer and the runtime/UI. The clean consumer
-contract is versioned independently as `jin-clean-extraction-v2`.
+contract is versioned independently as `jin-clean-extraction-v3`.
 
 See [README.md](README.md) for the documentation index and version map.
 
@@ -131,7 +131,7 @@ The full stack exposes only the Nginx frontend on the host:
 - health: `http://localhost:8080/api/health`
 - full extraction: `POST http://localhost:8080/api/extract`
 - clean extraction: `POST http://localhost:8080/api/extract?view=clean`
-- clean schema: `http://localhost:8080/api/schemas/jin-clean-extraction-v2`
+- clean schema: `http://localhost:8080/api/schemas/jin-clean-extraction-v3`
 
 ```bash
 curl http://localhost:8080/api/health

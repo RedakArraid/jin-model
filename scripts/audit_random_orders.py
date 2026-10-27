@@ -267,7 +267,13 @@ def _extract_model(payload: dict[str, Any]) -> dict[str, Any]:
     number = header.get("number") or header.get("order_number") or {}
     clean = payload.get("normalized_output") or {}
     clean_order = clean.get("order") or payload.get("order") or {}
-    delivery = clean_order.get("delivery_address") or {}
+    clean_addresses = clean_order.get("addresses") or {}
+    ship_to_address = clean_addresses.get("ship_to") or {}
+    delivery = ship_to_address.get("selected") or {}
+    # Compatibility for archived V2 campaign payloads only. New extractions
+    # always use order.addresses.ship_to.selected.
+    if not delivery and clean.get("schema_version") == "jin-clean-extraction-v2":
+        delivery = clean_order.get("delivery_address") or {}
     delivery_value = (
         delivery.get("normalized_value")
         or delivery.get("formatted")

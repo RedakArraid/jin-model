@@ -211,6 +211,11 @@ au worker, isolés dans deux espaces utilisateurs Docker, d'écrire dans la mêm
 base. Il élargit les droits Unix uniquement sous `JIN_STUDIO_DIR`, jamais sur
 le reste du volume `data/`.
 
+Le mode de journal SQLite (`JIN_STUDIO_SQLITE_JOURNAL_MODE`, `DELETE` par
+défaut) est appliqué une seule fois pendant l'initialisation sérialisée du
+schéma. Les connexions API, MCP et worker ne tentent donc plus de reprendre un
+verrou exclusif à chaque requête.
+
 ## Stockage
 
 Toutes les données sont conservées sous `JIN_STUDIO_DIR` :
@@ -322,6 +327,42 @@ champ. Les flèches ↑/↓ déplacent visuellement un champ à l'intérieur de 
 compartiment ; pour une ligne de commande, le déplacement reste volontairement
 limité à la ligne concernée. L'ordre sauvegardé suit l'ordre affiché, tout en
 conservant le bloc des lignes de commande à la fin.
+
+### Adresses et rôles métier
+
+Chaque composant d'adresse entraînable doit être rattaché à la partie qu'il
+décrit. Par exemple :
+
+- **Livraison — numéro de voie** correspond à
+  `order.addresses.ship_to.selected.components.house_number` ;
+- **Acheteur — numéro de voie** correspond à
+  `order.addresses.buyer.selected.components.house_number` ;
+- **Fournisseur — numéro de voie** correspond à
+  `order.addresses.supplier.selected.components.house_number`.
+
+Les champs sans rôle de la famille historique `ADDRESS_*` ne font plus partie
+du catalogue V3. Les anciens brouillons ont été sauvegardés puis remplacés par
+des préannotations V3 : l'annotateur ne doit jamais choisir entre deux chemins
+qui décrivent le même composant postal.
+
+Les préannotations issues de `verification`, `matched_components`, des
+suggestions BAN, de `quality`, de `reference_data` ou des `alternatives` ne sont
+pas des preuves imprimées dans le PDF. Elles sont ignorées. Studio annote
+uniquement le bloc `selected` d'un rôle ; un rôle `AMBIGUOUS` doit être arbitré
+avant de devenir une vérité d'apprentissage.
+
+Une même région ne peut pas porter deux labels différents dans le modèle de
+classification de tokens. La validation et la création du dataset refusent
+donc les zones conflictuelles. La voie complète historique (`*_STREET`) reste
+lisible, mais n'est plus proposée si les composants atomiques numéro, suffixe,
+type et nom de voie sont annotés séparément.
+
+Enfin, un champ **Confirmé** ou **Corrigé** doit toujours posséder une page et
+un rectangle source. Une valeur calculée, enrichie ou seulement recopiée dans
+le JSON ne doit pas être encadrée si elle n'est pas imprimée dans le PDF : le
+champ doit être marqué **Absent**. Deux champs distincts ne peuvent pas non
+plus réutiliser exactement le même rectangle. Ces règles empêchent notamment
+un pays déduit du code postal d'entrer silencieusement dans le dataset.
 
 ### Masques d'annotation
 

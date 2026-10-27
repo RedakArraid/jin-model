@@ -75,7 +75,8 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
   assert.match(studioJs, /streamable-http/);
   assert.match(studioJs, /\/api\/studio/);
   assert.match(studioHtml, /studio_line_items\.js\?v=3/);
-  assert.match(studioHtml, /studio\.js\?v=15/);
+  assert.doesNotMatch(studioHtml, /studio_address_fields\.js/);
+  assert.match(studioHtml, /studio\.js\?v=18/);
   assert.match(studioHtml, /studio\.css\?v=11/);
   assert.match(studioJs, /updateFieldFromRegion/);
   assert.match(studioJs, /value \/ \(index % 2 === 0 \? annotationCanvas\.width : annotationCanvas\.height\) \* 1000/);

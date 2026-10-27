@@ -1,25 +1,26 @@
 from scripts.audit_random_orders import _automatic_checks, _extract_model
 
 
-def test_extract_model_reads_public_delivery_value_contract():
+def test_extract_model_reads_v3_canonical_delivery_value_contract():
     payload = {
         "document": {"primary_document_type": "purchase_order"},
         "normalized_output": {
+            "schema_version": "jin-clean-extraction-v3",
             "order": {
-                "delivery_address": {
-                    "normalized_value": (
-                        "REXEL-CENTRE LOGISTIQUE MEUNG/LOIRE\n"
-                        "1ERE AVENUE\n"
-                        "ZAC SYNERGIE VAL DE LOIRE\n"
-                        "45130 MEUNG-SUR-LOIRE\n"
-                        "FRANCE"
-                    ),
-                    "value": (
-                        "1ERE AVENUE, ZAC SYNERGIE VAL DE LOIRE, "
-                        "45130 MEUNG-SUR-LOIRE, France"
-                    ),
-                    "components": {"street": "1ERE AVENUE"},
-                }
+                "addresses": {"ship_to": {"status": "SELECTED", "selected": {
+                        "normalized_value": (
+                            "REXEL-CENTRE LOGISTIQUE MEUNG/LOIRE\n"
+                            "1ERE AVENUE\n"
+                            "ZAC SYNERGIE VAL DE LOIRE\n"
+                            "45130 MEUNG-SUR-LOIRE\n"
+                            "FRANCE"
+                        ),
+                        "value": (
+                            "1ERE AVENUE, ZAC SYNERGIE VAL DE LOIRE, "
+                            "45130 MEUNG-SUR-LOIRE, France"
+                        ),
+                        "components": {"street": "1ERE AVENUE"},
+                    }}},
             }
         },
     }
@@ -37,10 +38,11 @@ def test_extract_model_reads_public_delivery_value_contract():
     ]
 
 
-def test_extract_model_keeps_legacy_delivery_fields_compatible():
+def test_extract_model_reads_archived_v2_delivery_fields_only_when_versioned():
     payload = {
         "document": {"primary_document_type": "purchase_order"},
         "normalized_output": {
+            "schema_version": "jin-clean-extraction-v2",
             "order": {
                 "delivery_address": {
                     "formatted": "PIECES EXPRESS, 1 RUE PHILIPPE LEBON",

@@ -1,6 +1,7 @@
 """Stable, consumer-oriented JSON view of the verbose core extraction."""
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 import re
@@ -76,6 +77,12 @@ def _clean_party_name(value: Any) -> str | None:
         or re.match(r"^[:;]\s*", original)
         or re.match(r"^[.\-_*]{3,}", original)
         or re.match(r"^\+\s*\d+\b", original)
+    ):
+        return None
+    normalized_heading = _name_key(original)
+    if re.fullmatch(
+        r"(?:BONDE)?COMMANDE(?:FOURNISSEUR|CLIENT)?|PURCHASEORDER|ORDER",
+        normalized_heading,
     ):
         return None
     # Remove explicit billing prose before validating the party itself.  The
@@ -327,9 +334,19 @@ def _same_party(left: Any, right: Any) -> bool:
     return bool(left_words & right_words and {"LEBLANC", "BOSCH"} & left_words & right_words)
 
 
-def clean_output_schema() -> dict[str, Any]:
-    """Return the published JSON Schema for the clean extraction contract."""
-    path = Path(__file__).with_name("schemas") / "jin-clean-extraction-v2.schema.json"
+def clean_output_schema(version: str = "v3") -> dict[str, Any]:
+    """Return a published JSON Schema for the clean extraction contract.
+
+    V3 is the current contract. V2 remains readable through its versioned
+    endpoint, but new extractions must never publish its duplicated address
+    projections (``parties.*.address`` and ``delivery_address``).
+    """
+    normalized = str(version or "v3").strip().lower().removeprefix(
+        "jin-clean-extraction-"
+    )
+    if normalized not in {"v2", "v3"}:
+        raise ValueError(f"Unsupported clean extraction schema: {version}")
+    path = Path(__file__).with_name("schemas") / f"jin-clean-extraction-{normalized}.schema.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -1846,6 +1863,375 @@ def _business_address(source: dict[str, Any]) -> dict[str, Any]:
     return _sync_address_value_contract(address)
 
 
+def _complete_business_addresses(
+    purchase_order: dict[str, Any],
+    addresses: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Promote role-owned postal data when no address record exists.
+
+    Core extractors can still attach a postal block directly to a party. V3
+    does not publish that duplicate shape, so it is converted here into the
+    canonical role address before party reconciliation.
+    """
+    represented = {
+        _canonical_address_role(address.get("role"))
+        for address in addresses
+        if address.get("role")
+    }
+    completed = list(addresses)
+    for role in PARTY_ROLES:
+        canonical_role = _canonical_address_role(role)
+        if canonical_role in represented:
+            continue
+        party = purchase_order.get(role)
+        if not isinstance(party, dict):
+            continue
+        components = _address_components(party)
+        if not components:
+            continue
+        completed.append(_business_address({
+            "address_id": "party",
+            "role": canonical_role,
+            "party_name": _party_display_name(party),
+            "party_code": party.get("code"),
+            "department": party.get("department"),
+            "address": components,
+            "evidence": party.get("evidence"),
+        }))
+        represented.add(canonical_role)
+    return completed
+
+
+_CANONICAL_ADDRESS_ROLES = {
+    "deliver_to": "ship_to",
+    "delivery_address": "ship_to",
+    "consignee": "ship_to",
+    "invoice_to": "bill_to",
+}
+
+
+def _canonical_address_role(value: Any) -> str:
+    role = str(value or "unknown").strip().lower() or "unknown"
+    return _CANONICAL_ADDRESS_ROLES.get(role, role)
+
+
+def _address_record(address: dict[str, Any]) -> dict[str, Any]:
+    """Return the postal record, without duplicating its owning party.
+
+    The role is represented by the parent key in ``order.addresses``. Party
+    identity, internal code and contact data live exclusively in
+    ``order.parties``. ``normalized_value`` is a derived printable label and
+    is deliberately retained for UI/export consumers.
+    """
+    record = dict(address)
+    for key in (
+        "role",
+        "role_label",
+        "party_name",
+        "party_code",
+        "customer_agency_code",
+        "department",
+        "contact",
+    ):
+        record.pop(key, None)
+    components = dict(record.get("components") or {})
+    components.pop("recipient", None)
+    components.pop("department", None)
+    if components:
+        record["components"] = components
+    else:
+        record.pop("components", None)
+    return _compact(record)
+
+
+def _merge_address_party_metadata(
+    parties: dict[str, dict[str, Any]],
+    addresses: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Move role identity metadata to its single canonical owner."""
+    for address in addresses:
+        role = _canonical_address_role(address.get("role"))
+        if role == "unknown":
+            continue
+        party = parties.setdefault(role, {})
+        if not _party_display_name(party) and address.get("party_name"):
+            party["name"] = address["party_name"]
+        if not party.get("code") and address.get("party_code"):
+            party["code"] = address["party_code"]
+        if not party.get("customer_agency_code") and address.get("customer_agency_code"):
+            party["customer_agency_code"] = address["customer_agency_code"]
+        if not party.get("department") and address.get("department"):
+            party["department"] = address["department"]
+        address_contact = address.get("contact") or {}
+        if isinstance(address_contact, dict) and address_contact:
+            contact = dict(party.get("contact") or {})
+            for key, value in address_contact.items():
+                if value not in (None, "") and not contact.get(key):
+                    contact[key] = value
+            if contact:
+                party["contact"] = contact
+    return {role: _compact(party) for role, party in parties.items() if _compact(party)}
+
+
+def _canonicalize_parties(
+    parties: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Merge role aliases into one identity owner without overwriting facts."""
+    canonical: dict[str, dict[str, Any]] = {}
+    for raw_role, raw_party in parties.items():
+        if not isinstance(raw_party, dict):
+            continue
+        role = _canonical_address_role(raw_role)
+        target = canonical.setdefault(role, {})
+        for key, value in raw_party.items():
+            if key == "address" or value in (None, "", [], {}):
+                continue
+            if key in {"name", "legal_name"}:
+                value = _clean_party_name(value)
+                if not value:
+                    continue
+            if key == "contact" and isinstance(value, dict):
+                contact = target.setdefault("contact", {})
+                if isinstance(contact, dict):
+                    for contact_key, contact_value in value.items():
+                        if contact_value not in (None, "") and not contact.get(contact_key):
+                            contact[contact_key] = contact_value
+                continue
+            if not target.get(key):
+                target[key] = value
+    return {
+        role: _compact(party)
+        for role, party in canonical.items()
+        if role != "unknown" and _compact(party)
+    }
+
+
+def _selection_id_matches(selected_id: Any, address_id: Any) -> bool:
+    selected = str(selected_id or "").strip()
+    candidate = str(address_id or "").strip()
+    if not selected or not candidate:
+        return False
+    return candidate == selected or candidate.rsplit(":", 1)[0] == selected
+
+
+def _address_fingerprint(address: dict[str, Any]) -> str:
+    """Return a role-independent identity for one physical postal address."""
+    components = {
+        key: value
+        for key, value in (address.get("components") or {}).items()
+        if key not in {"recipient", "department"} and value not in (None, "")
+    }
+    if components:
+        normalized = {
+            key: _name_key(value) if isinstance(value, str) else value
+            for key, value in sorted(components.items())
+        }
+        return "components:" + json.dumps(
+            normalized, ensure_ascii=True, sort_keys=True, default=str
+        )
+    label = (
+        address.get("value")
+        or address.get("normalized_value")
+        or address.get("formatted")
+    )
+    if label:
+        return "label:" + _name_key(label)
+    return "id:" + str(address.get("id") or id(address))
+
+
+def _deduplicate_address_candidates(
+    candidates: list[dict[str, Any]],
+    preferred: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    ordered = ([preferred] if preferred is not None else []) + [
+        candidate for candidate in candidates if candidate is not preferred
+    ]
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in ordered:
+        fingerprint = _address_fingerprint(candidate)
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        unique.append(candidate)
+    return unique
+
+
+def _role_address_contract(
+    addresses: list[dict[str, Any]],
+    primary_delivery: dict[str, Any] | None,
+    legacy_selection: dict[str, Any] | None,
+    preferred_by_role: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Build one canonical address container per business role.
+
+    A selected address appears exactly once. Other candidates are exposed as
+    alternatives only when ambiguity genuinely exists; no convenience alias
+    copies the selected delivery address elsewhere in the contract.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for address in addresses:
+        role = _canonical_address_role(address.get("role"))
+        grouped.setdefault(role, []).append(address)
+
+    selected_delivery_id = (legacy_selection or {}).get("selected_address_id")
+    if primary_delivery:
+        selected_delivery_id = primary_delivery.get("id") or selected_delivery_id
+
+    result: dict[str, dict[str, Any]] = {}
+    for role, candidates in grouped.items():
+        selected: dict[str, Any] | None = None
+        preferred = _deduplicate_address_candidates(
+            list((preferred_by_role or {}).get(role) or [])
+        )
+        if len(preferred) == 1:
+            preferred_fingerprint = _address_fingerprint(preferred[0])
+            selected = next(
+                (
+                    candidate for candidate in candidates
+                    if _address_fingerprint(candidate) == preferred_fingerprint
+                ),
+                None,
+            )
+        elif role == "ship_to" and selected_delivery_id:
+            selected = next(
+                (
+                    candidate for candidate in candidates
+                    if _selection_id_matches(selected_delivery_id, candidate.get("id"))
+                ),
+                None,
+            )
+        candidates = _deduplicate_address_candidates(candidates, selected)
+        if selected is not None:
+            selected = candidates[0]
+        elif len(candidates) == 1 and role != "unknown":
+            selected = candidates[0]
+
+        alternatives = [
+            _address_record(candidate)
+            for candidate in candidates
+            if candidate is not selected
+        ]
+        role_contract: dict[str, Any] = {
+            "status": "SELECTED" if selected is not None else "AMBIGUOUS",
+            "selected": _address_record(selected) if selected is not None else None,
+            "alternatives": alternatives,
+        }
+        result[role] = _compact(role_contract)
+    return result
+
+
+def canonicalize_clean_output_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize an already-versioned V3 payload after persisted-data migration."""
+    if payload.get("schema_version") != "jin-clean-extraction-v3":
+        raise ValueError("Only jin-clean-extraction-v3 can be canonicalized")
+    canonical = copy.deepcopy(payload)
+    order = canonical.get("order")
+    if not isinstance(order, dict):
+        return canonical
+
+    raw_parties = {
+        str(role): dict(party)
+        for role, party in (order.get("parties") or {}).items()
+        if isinstance(party, dict)
+    }
+    order["parties"] = _canonicalize_parties(raw_parties)
+
+    flat_addresses: list[dict[str, Any]] = []
+    preferred_by_role: dict[str, list[dict[str, Any]]] = {}
+    for raw_role, block in (order.get("addresses") or {}).items():
+        if not isinstance(block, dict):
+            continue
+        role = _canonical_address_role(raw_role)
+        selected = block.get("selected")
+        if isinstance(selected, dict) and selected:
+            selected_record = {**selected, "role": role}
+            flat_addresses.append(selected_record)
+            preferred_by_role.setdefault(role, []).append(selected_record)
+        for alternative in block.get("alternatives") or []:
+            if isinstance(alternative, dict) and alternative:
+                flat_addresses.append({**alternative, "role": role})
+    order["addresses"] = _role_address_contract(
+        flat_addresses,
+        None,
+        None,
+        preferred_by_role,
+    )
+    return canonical
+
+
+def upgrade_clean_output_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    """One-way data migration from the duplicated V2 address contract.
+
+    This function is intentionally a migration utility, not a runtime fallback:
+    persisted Studio documents can be rewritten once and all subsequent code
+    can consume the canonical V3 structure only.
+    """
+    if payload.get("schema_version") == "jin-clean-extraction-v3":
+        return canonicalize_clean_output_v3(payload)
+    if payload.get("schema_version") != "jin-clean-extraction-v2":
+        raise ValueError("Only jin-clean-extraction-v2 can be migrated to v3")
+
+    migrated = copy.deepcopy(payload)
+    order = migrated.get("order")
+    if not isinstance(order, dict):
+        migrated["schema_version"] = "jin-clean-extraction-v3"
+        return migrated
+
+    parties = {
+        str(role): dict(party)
+        for role, party in (order.get("parties") or {}).items()
+        if isinstance(party, dict)
+    }
+    addresses = [
+        dict(address)
+        for address in (order.get("addresses") or [])
+        if isinstance(address, dict)
+    ]
+    represented_roles = {
+        _canonical_address_role(address.get("role")) for address in addresses
+    }
+    for role, party in parties.items():
+        components = party.get("address")
+        canonical_role = _canonical_address_role(role)
+        if (
+            isinstance(components, dict)
+            and components
+            and canonical_role not in represented_roles
+        ):
+            addresses.append({
+                "id": f"migrated:{canonical_role}",
+                "role": canonical_role,
+                "components": copy.deepcopy(components),
+            })
+            represented_roles.add(canonical_role)
+
+    legacy_delivery = order.get("delivery_address")
+    if isinstance(legacy_delivery, dict) and legacy_delivery:
+        delivery_id = legacy_delivery.get("id")
+        if not any(
+            _selection_id_matches(delivery_id, address.get("id"))
+            or _address_fingerprint(legacy_delivery) == _address_fingerprint(address)
+            for address in addresses
+        ):
+            addresses.append(dict(legacy_delivery))
+
+    parties = _canonicalize_parties(_merge_address_party_metadata(parties, addresses))
+    order["parties"] = {
+        role: _compact({key: value for key, value in party.items() if key != "address"})
+        for role, party in parties.items()
+    }
+    order["addresses"] = _role_address_contract(
+        addresses,
+        legacy_delivery if isinstance(legacy_delivery, dict) else None,
+        order.get("delivery_address_selection"),
+    )
+    order.pop("delivery_address", None)
+    order.pop("delivery_address_selection", None)
+    migrated["schema_version"] = "jin-clean-extraction-v3"
+    return canonicalize_clean_output_v3(migrated)
+
+
 def _line(source: dict[str, Any]) -> dict[str, Any]:
     refs = {key: source.get(key) for key in REFERENCE_FIELDS}
     description = source.get("description")
@@ -1931,6 +2317,7 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
         addresses = [
             item for item in addresses if item.get("role") != "bill_to"
         ] + [_business_address(explicit_billing_address)]
+    addresses = _complete_business_addresses(po, addresses)
     delivery_addresses = [item for item in addresses if item.get("role") == "ship_to"]
     primary_delivery = delivery_addresses[0] if len(delivery_addresses) == 1 else None
     parties = _reconcile_clean_parties(parties, primary_delivery, payload)
@@ -1938,6 +2325,16 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
     primary_delivery = _align_primary_delivery_party(primary_delivery, parties)
     for address in addresses:
         _publish_address_value_contract(address)
+    parties = _canonicalize_parties(_merge_address_party_metadata(parties, addresses))
+    parties = {
+        role: _compact({key: value for key, value in party.items() if key != "address"})
+        for role, party in parties.items()
+    }
+    role_addresses = _role_address_contract(
+        addresses,
+        primary_delivery,
+        po.get("delivery_address_selection"),
+    )
     order_fields = {
         "customer_order_number": _field(
             _first_field(header.get("number"), header.get("order_number"))
@@ -1972,7 +2369,7 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
         ),
     }
     clean = {
-        "schema_version": "jin-clean-extraction-v2",
+        "schema_version": "jin-clean-extraction-v3",
         "generator": {"runtime": __version__, "core": document.get("engine_version")},
         "document": {
             "filename": source_filename or document.get("filename"),
@@ -2007,9 +2404,8 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
             **order_fields,
             "customer_order_numbers": grouped_numbers,
             "groups": payload.get("grouped_orders"),
-            "parties": parties, "addresses": addresses,
-            "delivery_address": primary_delivery,
-            "delivery_address_selection": po.get("delivery_address_selection"),
+            "parties": parties,
+            "addresses": role_addresses,
             "line_items": [_line(item) for item in po.get("lines") or []],
             "additional_charges": [_charge(item) for item in po.get("additional_charges") or []],
             "quote_references": po.get("quote_references"),
@@ -2037,4 +2433,6 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
         },
         "reference_data": payload.get("reference_data"),
     }
-    return _compact(clean)
+    compact = _compact(clean)
+    compact.setdefault("quality", {})
+    return compact

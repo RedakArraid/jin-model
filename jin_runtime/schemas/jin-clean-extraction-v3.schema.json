@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "/schemas/jin-clean-extraction-v3",
+  "title": "JIN clean extraction v3",
+  "description": "Canonical consumer view of a JIN extraction. Party identity and postal addresses have one owner and are never published as competing projections.",
+  "type": "object",
+  "required": ["schema_version", "generator", "document", "quality"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "jin-clean-extraction-v3"},
+    "generator": {
+      "type": "object",
+      "required": ["runtime"],
+      "properties": {
+        "runtime": {"type": "string"},
+        "core": {"type": ["string", "number"]}
+      },
+      "additionalProperties": false
+    },
+    "document": {
+      "type": "object",
+      "properties": {
+        "filename": {"type": "string"},
+        "sha256": {"type": "string"},
+        "mime_type": {"type": "string"},
+        "type": {"type": "string"},
+        "classification": {
+          "type": "object",
+          "required": ["document_type", "source"],
+          "properties": {
+            "document_type": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "source": {"const": "jin-model"}
+          },
+          "additionalProperties": false
+        },
+        "format": {"type": "string"},
+        "page_count": {"type": "integer", "minimum": 0},
+        "languages": {},
+        "processing_seconds": {"type": "number", "minimum": 0},
+        "order_structure": {"enum": ["single", "grouped"]},
+        "grouped_order_count": {"type": "integer", "minimum": 2},
+        "references": {
+          "type": "object",
+          "properties": {
+            "customer_order_number": {"$ref": "#/$defs/extracted_field"},
+            "request_for_quotation_number": {"$ref": "#/$defs/extracted_field"},
+            "referenced_order_number": {"$ref": "#/$defs/extracted_field"},
+            "customer_order_numbers": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/extracted_field"}
+            }
+          },
+          "additionalProperties": false
+        },
+        "tax_identifiers": {"type": "array", "items": {"type": "object"}}
+      },
+      "additionalProperties": false
+    },
+    "order": {
+      "type": "object",
+      "properties": {
+        "customer_order_number": {"$ref": "#/$defs/extracted_field"},
+        "customer_order_numbers": {"type": "array", "items": {"$ref": "#/$defs/extracted_field"}},
+        "groups": {"type": "array", "items": {"type": "object"}},
+        "order_date": {"$ref": "#/$defs/extracted_field"},
+        "currency": {"$ref": "#/$defs/extracted_field"},
+        "customer_reference": {"$ref": "#/$defs/extracted_field"},
+        "supplier_reference": {"$ref": "#/$defs/extracted_field"},
+        "quote_number": {"$ref": "#/$defs/extracted_field"},
+        "quote_numbers": {"type": "array", "items": {"$ref": "#/$defs/extracted_field"}},
+        "derogation_number": {"$ref": "#/$defs/extracted_field"},
+        "derogation_numbers": {"type": "array", "items": {"$ref": "#/$defs/extracted_field"}},
+        "contract_number": {"$ref": "#/$defs/extracted_field"},
+        "project_number": {"$ref": "#/$defs/extracted_field"},
+        "requested_delivery_date": {"$ref": "#/$defs/extracted_field"},
+        "customer_agency_code": {"$ref": "#/$defs/extracted_field"},
+        "parties": {
+          "type": "object",
+          "propertyNames": {
+            "enum": ["buyer", "supplier", "sold_to", "bill_to", "ship_to", "payer", "end_customer", "ship_from"]
+          },
+          "additionalProperties": {"$ref": "#/$defs/party"}
+        },
+        "addresses": {
+          "type": "object",
+          "description": "Canonical addresses keyed by business role. The selected record is not repeated in alternatives.",
+          "propertyNames": {
+            "enum": ["buyer", "supplier", "sold_to", "bill_to", "ship_to", "payer", "end_customer", "ship_from", "unknown"]
+          },
+          "additionalProperties": {"$ref": "#/$defs/role_address"}
+        },
+        "line_items": {"type": "array", "items": {"$ref": "#/$defs/line_item"}},
+        "additional_charges": {"type": "array", "items": {"type": "object"}},
+        "quote_references": {"type": "array", "items": {"type": "object"}},
+        "derogation_references": {"type": "array", "items": {"type": "object"}},
+        "totals": {"type": "object"},
+        "commercial_terms": {},
+        "logistics": {},
+        "tax_identifiers": {"type": "array", "items": {"type": "object"}}
+      },
+      "additionalProperties": false
+    },
+    "quality": {
+      "type": "object",
+      "properties": {
+        "classification_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "decision": {"enum": ["CHECKS_PASSED", "REVIEW_REQUIRED"]},
+        "requires_review": {"type": "boolean"},
+        "review_reasons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["code", "path"],
+            "properties": {"code": {"type": "string"}, "path": {"type": "string"}},
+            "additionalProperties": true
+          }
+        },
+        "business_validation": {"type": "object"},
+        "output_audit": {"type": "object"},
+        "order_number": {"type": "object"},
+        "qualification": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "reference_data": {"type": "object"}
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "page": {"type": "integer", "minimum": 1},
+        "bbox": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}},
+        "source_text": {"type": "string"},
+        "method": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "extracted_field": {
+      "type": "object",
+      "required": ["value"],
+      "properties": {
+        "value": {},
+        "site": {"type": "string"},
+        "raw_value": {},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "status": {"type": "string"},
+        "warnings": {"type": "array"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      },
+      "additionalProperties": false
+    },
+    "party": {
+      "type": "object",
+      "description": "Business identity only. Postal data belongs exclusively to order.addresses.<role>.",
+      "properties": {
+        "id": {"type": "string"},
+        "code": {"type": "string"},
+        "customer_agency_code": {"type": "string"},
+        "name": {"type": "string"},
+        "legal_name": {"type": "string"},
+        "department": {"type": "string"},
+        "contact": {"type": "object"},
+        "vat_number": {"type": "string"},
+        "company_registration_number": {"type": "string"},
+        "siren": {"type": "string"},
+        "siret": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "address_components": {
+      "type": "object",
+      "description": "Postal components only; recipient identity is owned by order.parties.",
+      "additionalProperties": true
+    },
+    "address": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string"},
+        "value": {"type": "string", "description": "Source address label."},
+        "normalized_value": {"type": "string", "description": "Derived printable label; never an annotation source."},
+        "components": {"$ref": "#/$defs/address_components"},
+        "normalization": {"type": "object", "readOnly": true},
+        "role_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "address_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "verification": {"type": "object", "readOnly": true},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "warnings": {"type": "array"}
+      },
+      "additionalProperties": false
+    },
+    "role_address": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["SELECTED", "AMBIGUOUS"]},
+        "selected": {"$ref": "#/$defs/address"},
+        "alternatives": {"type": "array", "items": {"$ref": "#/$defs/address"}}
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "SELECTED"}}},
+          "then": {"required": ["selected"]}
+        },
+        {
+          "if": {"properties": {"status": {"const": "AMBIGUOUS"}}},
+          "then": {"required": ["alternatives"]}
+        }
+      ]
+    },
+    "line_item": {
+      "type": "object",
+      "properties": {
+        "line_number": {},
+        "references": {"type": "object"},
+        "description": {"type": "string"},
+        "product_family": {"type": "string"},
+        "quantity": {"type": "number"},
+        "unit": {"type": "string"},
+        "pricing": {"type": "object"},
+        "amounts": {"type": "object"},
+        "delivery": {"type": "object"},
+        "status": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "reference_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "reference_status": {"type": "string"},
+        "warnings": {"type": "array"},
+        "evidence": {"type": "object"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

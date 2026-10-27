@@ -66,14 +66,18 @@ class RuntimeProxyTests(unittest.TestCase):
         response = self.client.post("/extract?view=clean", content=b"dummy")
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["schema_version"], "jin-clean-extraction-v2")
+        self.assertEqual(body["schema_version"], "jin-clean-extraction-v3")
         self.assertNotIn("raw_text", body)
         self.assertNotIn("weak_field_suggestions", body)
 
     def test_clean_contract_schema_is_published(self):
-        response = self.client.get("/schemas/jin-clean-extraction-v2")
+        response = self.client.get("/schemas/jin-clean-extraction-v3")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["$id"], "/schemas/jin-clean-extraction-v2")
+        self.assertEqual(response.json()["$id"], "/schemas/jin-clean-extraction-v3")
+
+        legacy = self.client.get("/schemas/jin-clean-extraction-v2")
+        self.assertEqual(legacy.status_code, 200)
+        self.assertEqual(legacy.json()["$id"], "/schemas/jin-clean-extraction-v2")
 
 
 if __name__ == "__main__":

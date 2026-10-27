@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 
-STUDIO_ANNOTATION_SCHEMA_VERSION = 2
+STUDIO_ANNOTATION_SCHEMA_VERSION = 3
 ANNOTATION_STATUSES = frozenset(
     {"UNREVIEWED", "CONFIRMED", "CORRECTED", "ABSENT", "AMBIGUOUS"}
 )
@@ -49,16 +49,20 @@ _DEFAULT_FIELD_PATHS = {
 _LINE_ITEM_LABELS = frozenset(
     label for label in _DEFAULT_FIELD_PATHS if label.startswith("LINE_ITEM_")
 )
+_ADDITIONAL_CHARGE_LABELS = frozenset(
+    label for label in _DEFAULT_FIELD_PATHS if label.startswith("ADDITIONAL_CHARGE_")
+)
 _LINE_ITEM_PATH = re.compile(
     r"(?:^|\.)(?:lines|line_items)\[(?P<index>\d+)\](?:\.|$)"
+)
+_ADDITIONAL_CHARGE_PATH = re.compile(
+    r"(?:^|\.)additional_charges\[(?P<index>\d+)\](?:\.|$)"
 )
 
 
 def _canonical_field_path(label: str) -> str:
     if label in _DEFAULT_FIELD_PATHS:
         return _DEFAULT_FIELD_PATHS[label]
-    if label.startswith("ADDRESS_"):
-        return f"order.addresses[0].components.{label.removeprefix('ADDRESS_').lower()}"
     for role in ("BUYER", "SUPPLIER", "SHIP_TO", "BILL_TO", "PAYER", "SHIP_FROM"):
         prefix = f"{role}_"
         if not label.startswith(prefix):
@@ -69,7 +73,7 @@ def _canonical_field_path(label: str) -> str:
             return f"order.parties.{party}.contact.{component.removeprefix('CONTACT_').lower()}"
         if component in {"NAME", "CODE", "VAT_NUMBER", "SIREN", "SIRET"}:
             return f"order.parties.{party}.{component.lower()}"
-        return f"order.parties.{party}.address.{component.lower()}"
+        return f"order.addresses.{party}.selected.components.{component.lower()}"
     return f"manual.{label.lower()}"
 
 
@@ -78,7 +82,8 @@ def _field(
     name: str,
     help_text: str,
     example_text: str,
-) -> dict[str, str]:
+    **metadata: Any,
+) -> dict[str, Any]:
     """Build a catalog entry with mandatory annotation guidance."""
     return {
         "label": label,
@@ -86,6 +91,7 @@ def _field(
         "help": help_text,
         "example": example_text,
         "defaultPath": _canonical_field_path(label),
+        **metadata,
     }
 
 
@@ -141,17 +147,6 @@ _ADDRESS_EXAMPLES: dict[str, str] = {
     "COUNTRY_CODE": "Dans « Pays : FR », encadrez « FR ».",
 }
 
-_GENERIC_ADDRESS_FIELDS = tuple(
-    _field(
-        f"ADDRESS_{suffix}",
-        component[0].upper() + component[1:],
-        f"Encadrez uniquement {instruction}. Ne sélectionnez pas toute l'adresse.",
-        _ADDRESS_EXAMPLES[suffix],
-    )
-    for suffix, component, instruction in _ADDRESS_COMPONENTS
-    if suffix != "STREET"
-)
-
 _ROLE_IDENTITIES: tuple[tuple[str, str, str], ...] = (
     ("BUYER", "Acheteur", "l'acheteur / client qui passe la commande"),
     ("SUPPLIER", "Fournisseur", "le fournisseur qui reçoit la commande"),
@@ -183,7 +178,7 @@ _ROLE_CORE_EXAMPLES: dict[str, str] = {
     "CONTACT_EMAIL": "Dans « E-mail : achats@exemple.fr », encadrez « achats@exemple.fr ».",
 }
 
-FIELD_CATALOG: tuple[dict[str, str], ...] = (
+FIELD_CATALOG: tuple[dict[str, Any], ...] = (
     _field(
         "DOCUMENT_TYPE",
         "Type de document",
@@ -195,7 +190,6 @@ FIELD_CATALOG: tuple[dict[str, str], ...] = (
     _field("CUSTOMER_REFERENCE", "Référence client", "Encadrez uniquement la référence de dossier ou de chantier donnée par le client, pas le numéro principal de commande.", "Dans « Réf. chantier : CAC2410TOU00034 », encadrez « CAC2410TOU00034 »."),
     _field("CUSTOMER_CODE", "Code client", "Encadrez uniquement le code interne du client qui passe la commande, pas un numéro de commande, de fournisseur ou d'article.", "Dans « Code client : 17532053 », encadrez « 17532053 »."),
     _field("DELIVERY_DATE", "Date de livraison souhaitée", "Encadrez uniquement la date de livraison demandée au niveau de la commande ; ignorez les dates propres à une ligne article.", "Dans « Livraison souhaitée : 05/11/2026 », encadrez « 05/11/2026 »."),
-    *_GENERIC_ADDRESS_FIELDS,
     _field("LINE_ITEM_NUMBER", "Numéro de ligne", "Encadrez uniquement le numéro ordinal de la ligne d'article.", "Dans « 10 | 8738717111 | BLOC GAZ », encadrez seulement « 10 »."),
     _field("LINE_ITEM_REFERENCE", "Référence article", "Encadrez uniquement le code article de cette ligne, jamais la description complète ni toute la ligne.", "Dans « 8738717111 BLOC GAZ 2 PCE », encadrez seulement « 8738717111 »."),
     _field("LINE_ITEM_DESCRIPTION", "Description article", "Encadrez uniquement la désignation de l'article ; excluez référence, quantité, prix et montant.", "Dans « 8738717111 BLOC GAZ 2 PCE », encadrez seulement « BLOC GAZ »."),
@@ -222,16 +216,218 @@ FIELD_CATALOG: tuple[dict[str, str], ...] = (
             f"{role_name} — {component}",
             f"Encadrez uniquement {instruction}, pour {role_description}. Ne mélangez pas les blocs d'autres parties.",
             _ROLE_CORE_EXAMPLES.get(suffix, _ADDRESS_EXAMPLES.get(suffix, "Encadrez uniquement la valeur imprimée.")),
+            selectable=suffix != "STREET",
+            composite=suffix == "STREET",
+            scope="business_party",
+            role=role.lower(),
+            component=suffix.lower(),
         )
         for role, role_name, role_description in _ROLE_IDENTITIES
         for suffix, component, instruction in (*_ROLE_CORE_COMPONENTS, *_ADDRESS_COMPONENTS)
     ),
 )
 FIELD_LABELS = frozenset(item["label"] for item in FIELD_CATALOG)
+LEGACY_GENERIC_ADDRESS_LABELS = frozenset(
+    f"ADDRESS_{suffix}" for suffix, _component, _instruction in _ADDRESS_COMPONENTS
+    if suffix != "STREET"
+)
+_ACTIVE_TRAINING_STATUSES = frozenset({"CONFIRMED", "CORRECTED"})
+_DERIVED_PATH = re.compile(
+    r"(?:^|\.)(?:verification|normalization|ban_verification|clean_address|"
+    r"quality|reference_data|output_audit|matched_components|"
+    r"suggested_components|warnings)(?:\.|\[|$)",
+    re.IGNORECASE,
+)
+_ATOMIC_STREET_SUFFIXES = frozenset(
+    {"HOUSE_NUMBER", "HOUSE_NUMBER_SUFFIX", "STREET_TYPE", "STREET_NAME"}
+)
+_ROLE_LABEL = re.compile(
+    r"^(BUYER|SUPPLIER|SHIP_TO|BILL_TO|PAYER|SHIP_FROM)_(.+)$"
+)
+_NAME_ADDRESS_COMPONENTS = frozenset(
+    {"STREET", "STREET_NAME", "POSTAL_CODE", "CITY"}
+)
 
 
 class StudioContractError(ValueError):
     """Raised when an annotation cannot be trusted as human ground truth."""
+
+
+def _boxes_overlap(left: list[float], right: list[float]) -> bool:
+    return (
+        min(left[2], right[2]) > max(left[0], right[0])
+        and min(left[3], right[3]) > max(left[1], right[1])
+    )
+
+
+def _role_component(label: str) -> tuple[str, str]:
+    match = _ROLE_LABEL.fullmatch(label)
+    return match.groups() if match else ("", "")
+
+
+def _training_text(field: Mapping[str, Any]) -> str:
+    value = (
+        field.get("corrected_value")
+        if str(field.get("status") or "").upper() == "CORRECTED"
+        else field.get("extracted_value")
+    )
+    return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
+
+
+def training_annotation_issues(
+    fields: list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return blockers that would make token-classification ground truth unsafe.
+
+    Address components must carry a business role.  Derived verification data
+    is never source evidence, and one token region cannot truthfully carry two
+    different labels in a single-head token classifier.
+    """
+
+    issues: list[dict[str, Any]] = []
+    active: list[tuple[int, Mapping[str, Any]]] = []
+    for index, field in enumerate(fields):
+        if str(field.get("status") or "").upper() not in _ACTIVE_TRAINING_STATUSES:
+            continue
+        evidence = field.get("evidence")
+        label = str(field.get("label") or "").upper()
+        path = str(field.get("path") or "")
+        if label in LEGACY_GENERIC_ADDRESS_LABELS:
+            issues.append(
+                {
+                    "code": "UNSCOPED_ADDRESS_LABEL",
+                    "fieldIndex": index,
+                    "label": label,
+                    "path": path,
+                    "message": (
+                        "Le composant d'adresse n'a pas de rôle métier. "
+                        "Choisissez Acheteur, Fournisseur, Livraison, "
+                        "Facturation, Payeur ou Expéditeur."
+                    ),
+                }
+            )
+        if _DERIVED_PATH.search(path):
+            issues.append(
+                {
+                    "code": "DERIVED_METADATA_PATH",
+                    "fieldIndex": index,
+                    "label": label,
+                    "path": path,
+                    "message": (
+                        "Le champ pointe vers une vérification ou une suggestion "
+                        "dérivée, pas vers une valeur source du document."
+                    ),
+                }
+            )
+        if not isinstance(evidence, Mapping) or not evidence.get("bbox"):
+            issues.append(
+                {
+                    "code": "MISSING_SOURCE_REGION",
+                    "fieldIndex": index,
+                    "label": label,
+                    "path": path,
+                    "message": (
+                        "Le champ confirmé n'a pas de rectangle source dans le PDF. "
+                        "Tracez la zone imprimée ou marquez le champ absent."
+                    ),
+                }
+            )
+            continue
+        active.append((index, field))
+
+    for position, (left_index, left) in enumerate(active):
+        left_evidence = left.get("evidence") or {}
+        left_box = left_evidence.get("bbox")
+        left_page = left_evidence.get("page")
+        left_label = str(left.get("label") or "").upper()
+        for right_index, right in active[position + 1 :]:
+            right_evidence = right.get("evidence") or {}
+            right_box = right_evidence.get("bbox")
+            if left_page != right_evidence.get("page") or not left_box or not right_box:
+                continue
+            right_label = str(right.get("label") or "").upper()
+            if list(left_box) == list(right_box):
+                if left_label == right_label:
+                    issues.append(
+                        {
+                            "code": "DUPLICATE_SOURCE_REGION",
+                            "fieldIndex": left_index,
+                            "otherFieldIndex": right_index,
+                            "label": left_label,
+                            "otherLabel": right_label,
+                            "message": (
+                                "Une même zone source est utilisée par deux champs "
+                                "distincts. Chaque occurrence doit avoir son propre cadre."
+                            ),
+                        }
+                    )
+                    continue
+                issues.append(
+                    {
+                        "code": "CONFLICTING_REGION_LABELS",
+                        "fieldIndex": left_index,
+                        "otherFieldIndex": right_index,
+                        "label": left_label,
+                        "otherLabel": right_label,
+                        "message": "Une même zone porte deux étiquettes incompatibles.",
+                    }
+                )
+                continue
+            if left_label == right_label:
+                continue
+            left_role, left_suffix = _role_component(left_label)
+            right_role, right_suffix = _role_component(right_label)
+            if not left_role or left_role != right_role:
+                continue
+            if (
+                {left_suffix, right_suffix} & {"STREET"}
+                and {left_suffix, right_suffix} & _ATOMIC_STREET_SUFFIXES
+                and _boxes_overlap(list(left_box), list(right_box))
+            ):
+                issues.append(
+                    {
+                        "code": "OVERLAPPING_COMPOSITE_STREET",
+                        "fieldIndex": left_index,
+                        "otherFieldIndex": right_index,
+                        "label": left_label,
+                        "otherLabel": right_label,
+                        "message": (
+                            "La voie complète chevauche un composant atomique. "
+                            "Conservez les composants numéro/type/nom pour "
+                            "l'apprentissage."
+                        ),
+                    }
+                )
+            name_field: tuple[int, Mapping[str, Any]] | None = None
+            address_field: tuple[int, Mapping[str, Any]] | None = None
+            if left_suffix == "NAME" and right_suffix in _NAME_ADDRESS_COMPONENTS:
+                name_field = (left_index, left)
+                address_field = (right_index, right)
+            elif right_suffix == "NAME" and left_suffix in _NAME_ADDRESS_COMPONENTS:
+                name_field = (right_index, right)
+                address_field = (left_index, left)
+            if name_field and address_field:
+                name_text = _training_text(name_field[1])
+                address_text = _training_text(address_field[1])
+                if (
+                    len(address_text) >= 4
+                    and address_text != name_text
+                    and address_text in name_text
+                ):
+                    issues.append(
+                        {
+                            "code": "PARTY_NAME_CONTAINS_ADDRESS",
+                            "fieldIndex": name_field[0],
+                            "otherFieldIndex": address_field[0],
+                            "label": str(name_field[1].get("label") or ""),
+                            "otherLabel": str(address_field[1].get("label") or ""),
+                            "message": (
+                                "Le nom de la partie contient aussi un composant "
+                                "d'adresse. Réduisez son cadre au nom seul."
+                            ),
+                        }
+                    )
+    return issues
 
 
 def utc_now() -> str:
@@ -328,6 +524,7 @@ def _validate_line_item_structure(fields: list[dict[str, Any]]) -> None:
         label = field["label"]
         path = field["path"]
         match = _LINE_ITEM_PATH.search(path)
+        charge_match = _ADDITIONAL_CHARGE_PATH.search(path)
         if label in _LINE_ITEM_LABELS and match is None:
             raise StudioContractError(
                 f"field_annotations[{position}].path must contain "
@@ -340,6 +537,16 @@ def _validate_line_item_structure(fields: list[dict[str, Any]]) -> None:
             )
         if match is not None:
             indexes.add(int(match.group("index")))
+        if label in _ADDITIONAL_CHARGE_LABELS and charge_match is None:
+            raise StudioContractError(
+                f"field_annotations[{position}].path must contain "
+                "additional_charges[index] for an additional-charge label"
+            )
+        if charge_match is not None and label not in _ADDITIONAL_CHARGE_LABELS:
+            raise StudioContractError(
+                f"field_annotations[{position}].label must be an additional-charge "
+                "label when its path belongs to additional_charges[index]"
+            )
 
     if indexes and indexes != set(range(max(indexes) + 1)):
         missing = sorted(set(range(max(indexes) + 1)) - indexes)
@@ -352,15 +559,22 @@ def _validate_line_item_structure(fields: list[dict[str, Any]]) -> None:
 def _validate_unique_semantic_fields(fields: list[dict[str, Any]]) -> None:
     """Reject a repeated singleton field or a repeated column within one line."""
 
-    seen: dict[tuple[str, int | None], int] = {}
+    seen: dict[tuple[str, str | None], int] = {}
     for position, field in enumerate(fields):
         label = field["label"]
         match = _LINE_ITEM_PATH.search(field["path"])
-        line_index = int(match.group("index")) if match and label in _LINE_ITEM_LABELS else None
-        key = (label, line_index)
+        charge_match = _ADDITIONAL_CHARGE_PATH.search(field["path"])
+        collection_index: str | None = None
+        if match and label in _LINE_ITEM_LABELS:
+            collection_index = f"line_items[{int(match.group('index'))}]"
+        elif charge_match and label in _ADDITIONAL_CHARGE_LABELS:
+            collection_index = (
+                f"additional_charges[{int(charge_match.group('index'))}]"
+            )
+        key = (label, collection_index)
         previous = seen.get(key)
         if previous is not None:
-            location = f" in line_items[{line_index}]" if line_index is not None else ""
+            location = f" in {collection_index}" if collection_index is not None else ""
             raise StudioContractError(
                 f"field_annotations[{position}] duplicates label {label}{location}; "
                 f"first occurrence is field_annotations[{previous}]"
@@ -429,6 +643,14 @@ def normalize_studio_annotation(
             raise StudioContractError("reviewed_by is required for human validation")
         if any(item["status"] == "UNREVIEWED" for item in fields):
             raise StudioContractError("all fields must be reviewed before validation")
+        training_issues = training_annotation_issues(fields)
+        if training_issues:
+            first = training_issues[0]
+            raise StudioContractError(
+                "annotation is not training-safe: "
+                f"{first['code']} at field_annotations[{first['fieldIndex']}]: "
+                f"{first['message']}"
+            )
 
     normalized_id = _text(document_id)
     normalized_sha = _text(document_sha256).lower()
@@ -459,9 +681,11 @@ __all__ = [
     "DOCUMENT_STATUSES",
     "FIELD_CATALOG",
     "FIELD_LABELS",
+    "LEGACY_GENERIC_ADDRESS_LABELS",
     "STUDIO_ANNOTATION_SCHEMA_VERSION",
     "StudioContractError",
     "annotation_digest",
     "normalize_studio_annotation",
+    "training_annotation_issues",
     "utc_now",
 ]

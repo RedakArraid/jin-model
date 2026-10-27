@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 5.20.0-canonical-contract
+
+- Replaced the duplicated V2 address projections with the canonical
+  `jin-clean-extraction-v3` contract: party identity lives in
+  `order.parties.<role>` and postal data in
+  `order.addresses.<role>.selected`.
+- Added a validated one-way V2-to-V3 migration and rebuilt every Studio draft
+  from the canonical contract while preserving PDFs and a SQLite backup.
+- Removed unscoped `ADDRESS_*` fields and derived/ambiguous address candidates
+  from annotation ground truth.
+- Canonicalized `deliver_to`/`consignee` to `ship_to` and `invoice_to` to
+  `bill_to`, and rejected document headings such as `Commande Fournisseur` as
+  party names.
 - Made Studio PDF references portable across Windows hosts and Docker, including
   automatic recovery of legacy documents with foreign absolute paths.
 - Kept the complete order-line annotation block last in Studio and persisted

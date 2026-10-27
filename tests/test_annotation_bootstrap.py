@@ -279,16 +279,19 @@ class AnnotationBootstrapTests(unittest.TestCase):
                         "vat_number": "FR00123456789",
                         "siren": "775708373",
                         "siret": "77570837300011",
-                    }
-                },
-                "delivery_address": {
-                    "role": "ship_to",
-                    "party_name": "CHANTIER A",
-                    "components": {
-                        "street_name": "ISAAC NEWTON",
-                        "postal_code": "75001",
-                        "city": "PARIS",
                     },
+                },
+                "addresses": {
+                    "ship_to": {
+                        "status": "SELECTED",
+                        "selected": {
+                            "components": {
+                                "street_name": "ISAAC NEWTON",
+                                "postal_code": "75001",
+                                "city": "PARIS",
+                            }
+                        },
+                    }
                 },
             }
         }
@@ -299,10 +302,127 @@ class AnnotationBootstrapTests(unittest.TestCase):
         self.assertIn("BUYER_VAT_NUMBER", labels)
         self.assertIn("BUYER_SIREN", labels)
         self.assertIn("BUYER_SIRET", labels)
-        self.assertIn("SHIP_TO_NAME", labels)
         self.assertIn("SHIP_TO_STREET_NAME", labels)
         self.assertIn("SHIP_TO_POSTAL_CODE", labels)
         self.assertIn("SHIP_TO_CITY", labels)
+
+    def test_unscoped_and_derived_address_components_are_not_preannotated(self):
+        payload = {
+            "document": {
+                "tax_identifiers": [{"country_code": "FR"}],
+            },
+            "order": {
+                "addresses": {
+                    "unknown": {
+                        "status": "AMBIGUOUS",
+                        "alternatives": [{
+                            "components": {"house_number": "12", "city": "PARIS"},
+                        "verification": {
+                            "matched_components": {
+                                "house_number": "12",
+                                "postal_code": "75001",
+                                "city": "PARIS",
+                            }
+                        },
+                        }],
+                    }
+                }
+            },
+            "quality": {"output_audit": {"issues": [{"details": {"city": "PARIS"}}]}},
+        }
+
+        candidates = collect_candidates(payload)
+
+        self.assertFalse(
+            any(item["label"].startswith("ADDRESS_") for item in candidates)
+        )
+        self.assertFalse(
+            any(item["path"].endswith(("country_code", "city", "postal_code")) for item in candidates)
+        )
+
+    def test_only_selected_role_address_is_annotation_ground_truth(self):
+        payload = {
+            "order": {
+                "addresses": {
+                    "ship_to": {
+                        "status": "SELECTED",
+                        "selected": {"components": {"postal_code": "75003"}},
+                        "alternatives": [
+                            {"components": {"postal_code": "75002"}},
+                        ],
+                    }
+                },
+            }
+        }
+
+        candidates = deduplicate_candidates(collect_candidates(payload))
+        postal_codes = [
+            item for item in candidates if item["label"] == "SHIP_TO_POSTAL_CODE"
+        ]
+
+        self.assertEqual(len(postal_codes), 1)
+        self.assertEqual(postal_codes[0]["value"], "75003")
+        self.assertEqual(
+            postal_codes[0]["path"],
+            "order.addresses.ship_to.selected.components.postal_code",
+        )
+
+    def test_atomic_street_components_replace_overlapping_composite_street(self):
+        payload = {
+            "order": {
+                "addresses": {
+                    "ship_to": {
+                        "status": "SELECTED",
+                        "selected": {"components": {
+                            "street": "RUE ISAAC NEWTON",
+                            "street_type": "RUE",
+                            "street_name": "ISAAC NEWTON",
+                        }},
+                    },
+                }
+            }
+        }
+
+        labels = {
+            item["label"]
+            for item in deduplicate_candidates(collect_candidates(payload))
+        }
+
+        self.assertIn("SHIP_TO_STREET_TYPE", labels)
+        self.assertIn("SHIP_TO_STREET_NAME", labels)
+        self.assertNotIn("SHIP_TO_STREET", labels)
+
+    def test_inferred_address_components_are_not_human_preannotations(self):
+        payload = {
+            "order": {
+                "addresses": {
+                    "ship_to": {
+                        "status": "SELECTED",
+                        "selected": {
+                            "components": {
+                                "postal_routing_code": "00013",
+                                "postal_code": "14120",
+                                "city": "MONDEVILLE",
+                                "country": "France",
+                                "country_code": "FR",
+                            },
+                            "warnings": [
+                                "country_inferred_from_postal_pattern",
+                                "untyped_postal_routing_code_inferred",
+                            ],
+                        }
+                    }
+                }
+            }
+        }
+
+        labels = {item["label"] for item in collect_candidates(payload)}
+
+        self.assertIn("SHIP_TO_POSTAL_CODE", labels)
+        self.assertIn("SHIP_TO_CITY", labels)
+        self.assertNotIn("SHIP_TO_COUNTRY", labels)
+        self.assertNotIn("SHIP_TO_COUNTRY_CODE", labels)
+        self.assertNotIn("SHIP_TO_POSTAL_ROUTING_CODE", labels)
 
     def test_studio_draft_keeps_regions_and_unresolved_fields_reviewable(self):
         annotation = {

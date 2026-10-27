@@ -1,4 +1,4 @@
-# Qualité des sorties JIN 5.17
+# Qualité des sorties JIN 5.20
 
 JIN applique plusieurs contrôles successifs. Aucun score isolé n'est considéré
 comme une preuve d'exactitude et une réponse HTTP réussie ne signifie pas que
@@ -15,7 +15,7 @@ le document peut être intégré sans revue.
 5. `extraction_decision` agrège les résultats et produit
    `CHECKS_PASSED` ou `REVIEW_REQUIRED`.
 6. `normalized_output` expose la même décision dans le contrat
-   `jin-clean-extraction-v2` sous `quality`.
+   `jin-clean-extraction-v3` sous `quality`.
 
 `CHECKS_PASSED` signifie que les contrôles automatiques connus sont satisfaits.
 Il ne constitue pas une vérité terrain ni une autorisation automatique de

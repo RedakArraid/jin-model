@@ -22,7 +22,7 @@ signifie pas que JIN est autorisé à déclencher seul un envoi SAP.
 
 | Élément | État constaté |
 | --- | ---: |
-| Runtime | `5.19.0-studio-identity` |
+| Runtime | `5.20.0-canonical-contract` |
 | Baseline applicative analysée | `088f920` |
 | Documents Studio | 102 |
 | Documents au statut `DRAFT` | 101 |

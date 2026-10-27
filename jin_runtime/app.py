@@ -94,8 +94,14 @@ def learning_status() -> dict[str, Any]:
 
 
 @app.get("/schemas/jin-clean-extraction-v2")
+def get_clean_output_schema_v2() -> dict[str, Any]:
+    """Published legacy schema for consumers finishing a V2 migration."""
+    return clean_output_schema("v2")
+
+
+@app.get("/schemas/jin-clean-extraction-v3")
 def get_clean_output_schema() -> dict[str, Any]:
-    return clean_output_schema()
+    return clean_output_schema("v3")
 
 
 @app.post("/learning/document-route")

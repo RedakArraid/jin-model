@@ -182,29 +182,8 @@ function inferLabel(path, explicitRole = '') {
   if (!role && component === 'vat_number') return 'VAT_NUMBER';
   if (!role && component === 'siren') return 'SIREN';
   if (!role && component === 'siret') return 'SIRET';
-  const address = /delivery_address|addresses\[\d+\]/.test(normalized);
-  if (address && /building/.test(normalized)) return 'ADDRESS_BUILDING';
-  if (address && /residence/.test(normalized)) return 'ADDRESS_RESIDENCE';
-  if (address && /entry/.test(normalized)) return 'ADDRESS_ENTRY';
-  if (address && /floor/.test(normalized)) return 'ADDRESS_FLOOR';
-  if (address && /(?:^|\.)unit$/.test(normalized)) return 'ADDRESS_UNIT';
-  if (address && /house_number_suffix/.test(normalized)) return 'ADDRESS_HOUSE_NUMBER_SUFFIX';
-  if (address && /house_number/.test(normalized)) return 'ADDRESS_HOUSE_NUMBER';
-  if (address && /street_type/.test(normalized)) return 'ADDRESS_STREET_TYPE';
-  if (address && /street_name|address_line1|\.street$/.test(normalized)) return 'ADDRESS_STREET_NAME';
-  if (address && /industrial_zone/.test(normalized)) return 'ADDRESS_INDUSTRIAL_ZONE';
-  if (address && /activity_park/.test(normalized)) return 'ADDRESS_ACTIVITY_PARK';
-  if (address && /place_name/.test(normalized)) return 'ADDRESS_PLACE_NAME';
-  if (address && /postal_box/.test(normalized)) return 'ADDRESS_POSTAL_BOX';
-  if (address && /(?:^|\.)tsa$/.test(normalized)) return 'ADDRESS_TSA';
-  if (address && /postal_routing_code/.test(normalized)) return 'ADDRESS_POSTAL_ROUTING_CODE';
-  if (address && /(?:^|\.)cs$/.test(normalized)) return 'ADDRESS_CS';
-  if (address && /postal_code/.test(normalized)) return 'ADDRESS_POSTAL_CODE';
-  if (address && /city/.test(normalized)) return 'ADDRESS_CITY';
-  if (address && /cedex/.test(normalized)) return 'ADDRESS_CEDEX_NUMBER';
-  if (address && /insee_code/.test(normalized)) return 'ADDRESS_INSEE_CODE';
-  if (address && /country_code/.test(normalized)) return 'ADDRESS_COUNTRY_CODE';
-  if (address && /\.country$/.test(normalized)) return 'ADDRESS_COUNTRY';
+  // Address components are only useful ground truth when the business role is
+  // known.  Never recreate the legacy ADDRESS_* singleton family here.
   return '';
 }
 
@@ -223,6 +202,8 @@ function extractFields(extraction) {
   const ignored = new Set([
     'confidence', 'source', 'bbox', 'page', 'evidence', 'normalization', 'verification',
     'requires_review', 'raw_value', 'source_text', 'source_path', 'cell_id',
+    'ban_verification', 'clean_address', 'quality', 'reference_data', 'output_audit',
+    'matched_components', 'suggested_components', 'warnings', 'alternatives',
   ]);
 
   function add(path, label, value, evidence = null) {
@@ -249,10 +230,15 @@ function extractFields(extraction) {
     }
   }
 
-  function visit(value, path, inheritedRole = '') {
+  function visit(value, path, inheritedRole = '', suppressedAddressKeys = new Set()) {
     if (value == null) return;
     if (Array.isArray(value)) {
-      value.forEach((item, index) => visit(item, `${path}[${index}]`, inheritedRole));
+      value.forEach((item, index) => visit(
+        item,
+        `${path}[${index}]`,
+        inheritedRole,
+        suppressedAddressKeys,
+      ));
       return;
     }
     if (typeof value !== 'object') {
@@ -265,17 +251,32 @@ function extractFields(extraction) {
       delivery_address: 'SHIP_TO', bill_to: 'BILL_TO', invoice_to: 'BILL_TO',
       payer: 'PAYER', ship_from: 'SHIP_FROM',
     }[roleName] || inheritedRole;
+    const localSuppressed = new Set(suppressedAddressKeys);
+    const warnings = Array.isArray(value.warnings)
+      ? value.warnings.map(item => String(item || '').toLowerCase())
+      : [];
+    if (warnings.includes('country_inferred_from_postal_pattern')) {
+      localSuppressed.add('country');
+      localSuppressed.add('country_code');
+    }
+    if (warnings.includes('untyped_postal_routing_code_inferred')) {
+      localSuppressed.add('postal_routing_code');
+    }
     if (Object.prototype.hasOwnProperty.call(value, 'value')) {
-      add(path, inferLabel(path, contextualRole), value.value, normalizedEvidence(value));
-      return;
+      const valueLabel = inferLabel(path, contextualRole);
+      if (valueLabel) {
+        add(path, valueLabel, value.value, normalizedEvidence(value));
+        return;
+      }
     }
     for (const [key, child] of Object.entries(value)) {
       if (ignored.has(key)) continue;
+      if (localSuppressed.has(key)) continue;
       if (path === 'order' && key === 'line_items') {
         if (Array.isArray(child)) addLineItemFields(child);
         continue;
       }
-      visit(child, path ? `${path}.${key}` : key, contextualRole);
+      visit(child, path ? `${path}.${key}` : key, contextualRole, localSuppressed);
     }
   }
 
@@ -773,7 +774,8 @@ async function rereadWithJinModel() {
 async function openDocument(documentId) {
   const document = await api(`/documents/${encodeURIComponent(documentId)}`);
   state.activeDocument = document;
-  state.fields = document.latestAnnotation?.field_annotations?.map(item => structuredClone(item))
+  const latestAnnotation = document.latestAnnotation;
+  state.fields = latestAnnotation?.field_annotations?.map(item => structuredClone(item))
     || extractFields(document.extraction || {});
   state.fields = lineItemTools.compact(state.fields);
   state.selectedField = state.fields.length ? 0 : -1;
@@ -797,6 +799,7 @@ async function openDocument(documentId) {
   renderFields();
   await loadPdf(documentId);
   renderAnnotationMasks();
+  showMessage($('annotationMessage'), '');
 }
 
 function editableAnnotation() {
@@ -1043,6 +1046,7 @@ function populateLabelSelect(select, current, fieldIndex) {
   const currentLineIndex = fieldLineIndex(state.fields[fieldIndex]);
   select.replaceChildren();
   for (const field of state.catalog) {
+    if (field.selectable === false && field.label !== current) continue;
     const option = document.createElement('option');
     option.value = field.label;
     option.textContent = field.name;
@@ -1086,6 +1090,11 @@ function moveField(index, direction) {
 
 function renderFields() {
   const editable = editableAnnotation();
+  const trainingProblemIndexes = new Set(
+    addressFieldTools.trainingIssues(state.fields)
+      .flatMap(issue => [issue.fieldIndex, issue.otherFieldIndex])
+      .filter(index => Number.isInteger(index)),
+  );
   fieldList.replaceChildren();
   const renderedLineHeaders = new Set();
   const renderedCompartments = new Set();
@@ -1126,7 +1135,10 @@ function renderFields() {
     node.classList.toggle('line-item-field', lineIndex >= 0);
     node.classList.toggle('selected', index === state.selectedField);
     node.classList.toggle('reviewed', ['CONFIRMED', 'CORRECTED'].includes(field.status));
-    node.classList.toggle('problem', ['ABSENT', 'AMBIGUOUS'].includes(field.status));
+    node.classList.toggle(
+      'problem',
+      ['ABSENT', 'AMBIGUOUS'].includes(field.status) || trainingProblemIndexes.has(index),
+    );
     const label = node.querySelector('.field-label');
     const lineBadge = node.querySelector('.line-item-badge');
     lineBadge.classList.toggle('hidden', lineIndex < 0);
@@ -1593,6 +1605,26 @@ async function saveAnnotation(status) {
   if (lineErrors.length) {
     return showMessage(message, lineErrors.join(' '), 'error');
   }
+  if (status === 'HUMAN_VALIDATED') {
+    const unreviewedIndex = state.fields.findIndex(field => field.status === 'UNREVIEWED');
+    if (unreviewedIndex >= 0) {
+      selectField(unreviewedIndex);
+      return showMessage(
+        message,
+        `Le champ « ${catalogName(state.fields[unreviewedIndex].label)} » n’a pas été vérifié.`,
+        'error',
+      );
+    }
+    const issue = addressFieldTools.trainingIssues(state.fields)[0];
+    if (issue) {
+      selectField(issue.fieldIndex);
+      return showMessage(
+        message,
+        `Le champ « ${catalogName(state.fields[issue.fieldIndex].label)} » n’est pas exploitable : ${issue.message}`,
+        'error',
+      );
+    }
+  }
   showMessage(message, status === 'DRAFT' ? 'Enregistrement…' : 'Validation…');
   try {
     await api(`/documents/${encodeURIComponent(state.activeDocument.documentId)}/annotation`, {
@@ -1603,6 +1635,7 @@ async function saveAnnotation(status) {
     showMessage(message, status === 'DRAFT' ? 'Brouillon enregistré.' : 'Annotation humaine validée.', 'success');
     await loadDocuments();
     await openDocument(state.activeDocument.documentId);
+    await loadStudioStatus();
     await loadDatasets();
   } catch (error) {
     showMessage(message, error.message, 'error');
@@ -1625,11 +1658,21 @@ function renderDatasetReadiness() {
   const target = $('datasetReadiness');
   if (!target) return;
   const validated = state.documents.filter(document => document.status === 'HUMAN_VALIDATED').length;
+  const safeValidated = Number(
+    state.studioStatus?.trainingSafeValidatedDocuments ?? validated,
+  );
+  const unsafe = state.studioStatus?.unsafeValidatedDocuments || [];
   const minimum = Number(state.studioStatus?.minimumTrainingDocuments || 20);
-  const remaining = Math.max(0, minimum - validated);
+  const remaining = Math.max(0, minimum - safeValidated);
+  const unsafeText = unsafe.length
+    ? ` ${unsafe.length} document(s) déjà validé(s) contiennent d’anciens champs d’adresse à reclasser.`
+    : '';
   target.textContent = remaining
-    ? `${validated}/${minimum} documents validés. Il en manque ${remaining} pour débloquer un premier entraînement technique.`
-    : `${validated} documents validés : le seuil technique est atteint. Vérifiez la diversité avant de figer le dataset.`;
+    ? `${safeValidated}/${minimum} documents exploitables. Il en manque ${remaining} pour débloquer un premier entraînement technique.${unsafeText}`
+    : `${safeValidated} documents exploitables : le seuil technique est atteint. Vérifiez la diversité avant de figer le dataset.${unsafeText}`;
+  target.title = unsafe.map(item => (
+    `${item.filename} — ${(item.issueCodes || []).join(', ')}`
+  )).join('\n');
   target.className = `inline-notice ${remaining ? '' : 'success'}`.trim();
 }
 
@@ -2131,17 +2174,40 @@ $('annotationCompartmentFilter').addEventListener('change', event => {
   if (firstVisible >= 0) selectField(firstVisible);
 });
 $('confirmAllButton').addEventListener('click', () => {
-  state.fields.forEach(field => { if (field.status === 'UNREVIEWED') field.status = 'CONFIRMED'; });
+  let confirmed = 0;
+  let missingRegion = 0;
+  state.fields.forEach(field => {
+    if (field.status !== 'UNREVIEWED') return;
+    const value = effectiveValue(field);
+    if (!field.evidence?.bbox || value == null || value === '') {
+      missingRegion += 1;
+      return;
+    }
+    field.status = 'CONFIRMED';
+    confirmed += 1;
+  });
   markDirty();
   renderFields();
+  const suffix = missingRegion
+    ? ` ${missingRegion} champ(s) restent à vérifier faute de rectangle source ou de valeur.`
+    : '';
+  showMessage(
+    $('annotationMessage'),
+    `${confirmed} champ(s) confirmé(s).${suffix}`,
+    missingRegion ? 'error' : 'success',
+  );
 });
 function addRegularField() {
   const preferredCompartment = state.annotationCompartment === 'FOOTER' ? 'FOOTER' : 'HEADER';
   const label = state.catalog.find(item => (
+    item.selectable !== false
+    &&
     !lineItemTools.isLineItemLabel(item.label)
     && !duplicateLabelExists(item.label)
     && fieldCompartment({ label: item.label, path: item.defaultPath }) === preferredCompartment
   ))?.label || state.catalog.find(item => (
+    item.selectable !== false
+    &&
     !lineItemTools.isLineItemLabel(item.label)
     && !duplicateLabelExists(item.label)
   ))?.label;

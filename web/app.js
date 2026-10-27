@@ -190,7 +190,13 @@ function uiDeliveryAddresses(result) {
     ['ship_to', 'deliver_to', 'consignee'].includes(String(address?.role || '').toLowerCase())
     && !/superseded/i.test(String(address?.role_label || ''))
   ));
-  const normalized = result?.normalized_output?.order?.delivery_address
+  const clean = result?.normalized_output || (
+    String(result?.schema_version || '').startsWith('jin-clean-extraction-') ? result : null
+  );
+  const canonicalDelivery = clean?.order?.addresses?.ship_to?.selected || null;
+  const canonicalParty = clean?.order?.parties?.ship_to || {};
+  const normalized = canonicalDelivery
+    || result?.normalized_output?.order?.delivery_address
     || (result?.schema_version === 'jin-clean-extraction-v2'
       ? result?.order?.delivery_address : null);
   const candidates = [
@@ -214,7 +220,7 @@ function uiDeliveryAddresses(result) {
     return [{
       role: source.role || 'ship_to',
       role_label: source.role_label || 'Adresse de livraison sélectionnée',
-      party_name: '',
+      party_name: canonicalParty.name || canonicalParty.legal_name || '',
       customer_agency_code: source.customer_agency_code || order.ship_to?.customer_agency_code || '',
       lines: [directDisplay],
       role_confidence: source.role_confidence,

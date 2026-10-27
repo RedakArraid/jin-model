@@ -75,6 +75,16 @@ def load_regions(annotation_path: Path | None, page_number: int, width: int, hei
                     "source_path": str(region.get("source_path") or ""),
                 }
             )
+        by_box: dict[tuple[int, int, int, int], str] = {}
+        for region in regions:
+            key = tuple(region["bbox"])
+            previous = by_box.get(key)
+            if previous is not None and previous != region["label"]:
+                raise RuntimeError(
+                    "Conflicting annotation labels share the same region on "
+                    f"page {page_number}: {previous} and {region['label']}"
+                )
+            by_box[key] = region["label"]
         return regions
     return []
 
@@ -88,7 +98,18 @@ def label_for_box(box: list[int], regions: list[dict[str, Any]]) -> str:
         if x0 <= cx <= x1 and y0 <= cy <= y1:
             area = max(1, (x1 - x0) * (y1 - y0))
             candidates.append((area, region["label"]))
-    return min(candidates)[1] if candidates else "O"
+    if not candidates:
+        return "O"
+    smallest_area = min(area for area, _ in candidates)
+    smallest_labels = {
+        label for area, label in candidates if area == smallest_area
+    }
+    if len(smallest_labels) > 1:
+        raise RuntimeError(
+            "A token belongs to equally specific regions with conflicting "
+            f"labels: {', '.join(sorted(smallest_labels))}"
+        )
+    return next(iter(smallest_labels))
 
 
 def ocr_page(image: Image.Image, lang: str, regions: list[dict[str, Any]]) -> tuple[list[str], list[list[int]], list[str]]:

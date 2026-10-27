@@ -14,7 +14,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from jin_runtime.studio_contract import normalize_studio_annotation, utc_now
+from jin_runtime.studio_contract import (
+    normalize_studio_annotation,
+    training_annotation_issues,
+    utc_now,
+)
 from jin_runtime.studio_masks import (
     apply_annotation_mask as apply_mask_to_document,
     build_annotation_mask,
@@ -185,12 +189,6 @@ class StudioStore:
                 connection.row_factory = sqlite3.Row
                 connection.execute("PRAGMA busy_timeout=30000")
                 connection.execute("PRAGMA foreign_keys=ON")
-                journal_mode = str(
-                    os.getenv("JIN_STUDIO_SQLITE_JOURNAL_MODE") or "DELETE"
-                ).strip().upper()
-                if journal_mode not in {"DELETE", "WAL"}:
-                    journal_mode = "DELETE"
-                connection.execute(f"PRAGMA journal_mode={journal_mode}")
                 self._apply_shared_permissions()
                 return connection
             except sqlite3.OperationalError as exc:
@@ -210,6 +208,15 @@ class StudioStore:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
+            # journal_mode can require an exclusive database lock. Schema
+            # initialization is already serialized across API, MCP and worker;
+            # ordinary request connections must never renegotiate it.
+            journal_mode = str(
+                os.getenv("JIN_STUDIO_SQLITE_JOURNAL_MODE") or "DELETE"
+            ).strip().upper()
+            if journal_mode not in {"DELETE", "WAL"}:
+                journal_mode = "DELETE"
+            connection.execute(f"PRAGMA journal_mode={journal_mode}")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS studio_documents (
@@ -704,12 +711,38 @@ class StudioStore:
             runs = connection.execute(
                 "SELECT COUNT(*) count FROM studio_training_runs"
             ).fetchone()["count"]
+            validated_rows = connection.execute(
+                """SELECT d.document_id, d.filename,
+                          (SELECT a.payload_json FROM studio_annotations a
+                           WHERE a.document_id=d.document_id
+                           ORDER BY a.revision DESC LIMIT 1) annotation_json
+                   FROM studio_documents d WHERE d.status='HUMAN_VALIDATED'"""
+            ).fetchall()
+        unsafe_validated = []
+        for row in validated_rows:
+            annotation = _loads(row["annotation_json"], {})
+            issues = training_annotation_issues(
+                annotation.get("field_annotations") or []
+            )
+            if issues:
+                unsafe_validated.append(
+                    {
+                        "documentId": row["document_id"],
+                        "filename": row["filename"],
+                        "issueCodes": sorted({item["code"] for item in issues}),
+                        "issueCount": len(issues),
+                    }
+                )
         return {
             "documents": {row["status"]: row["count"] for row in documents},
             "annotations": annotation_count,
             "annotationMasks": masks,
             "datasets": datasets,
             "trainingRuns": runs,
+            "trainingSafeValidatedDocuments": (
+                len(validated_rows) - len(unsafe_validated)
+            ),
+            "unsafeValidatedDocuments": unsafe_validated,
             "minimumTrainingDocuments": minimum_training_documents(),
             "storage": str(self.root),
         }
@@ -1008,6 +1041,23 @@ class StudioStore:
                         f"Document {document_id} has no human-validated annotation"
                     )
                 annotations.append(annotation)
+            unsafe_annotations = [
+                (document_id, issues)
+                for document_id, annotation in zip(unique_ids, annotations)
+                if (
+                    issues := training_annotation_issues(
+                        annotation.get("field_annotations") or []
+                    )
+                )
+            ]
+            if unsafe_annotations:
+                document_id, issues = unsafe_annotations[0]
+                first = issues[0]
+                raise StudioConflictError(
+                    "Dataset contains address annotations that are not training-safe: "
+                    f"document {document_id}, {first['code']}: {first['message']} "
+                    "Reopen and revalidate the document with role-specific fields."
+                )
             version_row = connection.execute(
                 "SELECT MAX(version) version FROM studio_datasets WHERE name=?",
                 (clean_name,),

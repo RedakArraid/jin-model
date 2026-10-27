@@ -142,3 +142,18 @@ test('model preannotation can be reduced to one occurrence of each semantic fiel
 
   assert.deepEqual(lines.deduplicate(fields), [fields[0], fields[2], fields[4]]);
 });
+
+test('additional charges repeat by charge index but not inside one charge', () => {
+  const fields = [
+    { path: 'order.additional_charges[0].description', label: 'ADDITIONAL_CHARGE_LABEL' },
+    { path: 'order.additional_charges[0].type', label: 'ADDITIONAL_CHARGE_LABEL' },
+    { path: 'order.additional_charges[1].description', label: 'ADDITIONAL_CHARGE_LABEL' },
+  ];
+
+  assert.deepEqual(lines.deduplicate(fields), [fields[0], fields[2]]);
+  assert.match(
+    lines.validate(fields.slice(0, 2)).join(' '),
+    /ADDITIONAL_CHARGE_LABEL.*plusieurs fois/,
+  );
+  assert.deepEqual(lines.validate([fields[0], fields[2]]), []);
+});
