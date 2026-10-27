@@ -404,15 +404,26 @@ résolus automatiquement à partir de leur identifiant ; un déplacement entre l
 VM, l'hôte et les conteneurs ne rend donc pas le document introuvable.
 
 Sur un autre PDF, **Appliquer le masque** remplace la préannotation affichée,
-relit le texte natif ou OCR à l'intérieur de chaque cadre, puis recrée tous les
-champs avec le statut `UNREVIEWED`. Rien n'est enregistré tant que
+compare d'abord le PDF source au PDF cible et recale les cadres par translation.
+Le recalage V3 utilise uniquement des mots alphabétiques uniques comme ancres,
+exige au moins deux ancres concordantes et un consensus de 75 %, limite le
+décalage accepté et traite séparément les zones d'en-tête et de pied de page.
+Le texte des ancres n'est jamais enregistré dans le masque. Si le décalage
+n'est pas démontré — notamment sur un PDF image sans texte natif — JIN conserve
+les coordonnées du masque au lieu d'inventer une position.
+
+Studio relit ensuite le texte natif ou OCR à l'intérieur de chaque cadre, puis
+recrée tous les champs avec le statut `UNREVIEWED`. La réponse API expose le
+détail non sensible du recalage dans `alignment` : stratégie, confiance,
+nombre d'ancres et translations `dx`/`dy`, sans texte documentaire. Rien n'est
+enregistré tant que
 l'annotateur n'utilise pas **Enregistrer le brouillon** ou **Valider pour
 l'apprentissage**. Studio avertit avant application et après relecture lorsque
 le type, le nombre de pages, l'orientation ou le ratio des pages diffèrent.
 
-Les anciens masques V1 pouvant contenir des lignes restent consultables pour
-l'audit, mais ces champs de ligne sont filtrés côté serveur lors de leur
-application.
+Les anciens masques V1/V2 restent consultables et bénéficient aussi du recalage
+si leur document source est encore disponible. Les éventuels champs de ligne
+historiques sont toujours filtrés côté serveur lors de l'application.
 
 Les opérations sont disponibles à distance avec
 `GET/POST /api/studio/annotation-masks` et

@@ -23,8 +23,9 @@ comptes nominatifs, rôles et garde-fous métier de 5.19 :
 - l'annotation humaine des PDF, les révisions immuables et les datasets
   versionnés sont gérés hors de GenieCommande ;
 - les masques d'annotation nommés réutilisent les cadres sur les commandes de
-  même mise en page, relisent les nouvelles valeurs et imposent une nouvelle
-  validation humaine ;
+  même mise en page, recalent automatiquement les cadres par translation à
+  partir d'ancres textuelles concordantes, relisent les nouvelles valeurs et
+  imposent une nouvelle validation humaine ;
 - les entraînements LayoutLMv3 sont mis en file et exécutés dans un worker
   Docker isolé du runtime d'extraction ;
 - chaque dataset fige un split par document et chaque candidat est benchmarké

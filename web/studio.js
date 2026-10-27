@@ -1329,10 +1329,14 @@ async function applySelectedAnnotationMask() {
     markDirty();
     renderFields();
     await selectField(0);
+    const translationCount = Number(result.alignment?.translatedFieldCount || 0);
+    const alignmentDetails = translationCount
+      ? ` ${translationCount} cadre(s) recalé(s) automatiquement par ancres textuelles.`
+      : '';
     const details = result.warnings?.length ? ` ${result.warnings.join(' ')}` : '';
     showMessage(
       $('annotationMaskMessage'),
-      `${result.appliedFieldCount} champ(s) relus. Vérifiez chaque valeur avant validation.${details}`,
+      `${result.appliedFieldCount} champ(s) relus.${alignmentDetails} Vérifiez chaque valeur avant validation.${details}`,
       result.warnings?.length ? 'error' : 'success',
     );
   } catch (error) {

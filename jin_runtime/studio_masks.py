@@ -1,7 +1,10 @@
 """Reusable, value-free annotation masks for JIN Studio."""
 from __future__ import annotations
 
+import unicodedata
+from collections import defaultdict
 from pathlib import Path
+from statistics import median
 from typing import Any, Mapping
 
 import fitz
@@ -10,7 +13,10 @@ from jin_runtime.studio_contract import FIELD_LABELS, normalize_studio_annotatio
 from jin_runtime.studio_region_text import StudioRegionError, extract_pdf_region_text
 
 
-ANNOTATION_MASK_SCHEMA_VERSION = 2
+ANNOTATION_MASK_SCHEMA_VERSION = 3
+MASK_ALIGNMENT_POLICY = "SOURCE_TARGET_TEXT_TRANSLATION_V1"
+_MAX_TRANSLATION = 180.0
+_ANCHOR_TOLERANCE = 10.0
 
 
 def _is_line_item_field(field: Mapping[str, Any]) -> bool:
@@ -62,6 +68,152 @@ def inspect_pdf_layout(pdf_path: str | Path) -> dict[str, Any]:
     if not pages:
         raise StudioMaskError("Le PDF ne contient aucune page")
     return {"pageCount": len(pages), "pages": pages}
+
+
+def _anchor_token(value: Any) -> str:
+    """Keep stable alphabetic words and discard likely document values."""
+
+    folded = unicodedata.normalize("NFKD", _text(value).casefold())
+    token = "".join(character for character in folded if character.isalpha())
+    return token if len(token) >= 3 else ""
+
+
+def _pdf_anchor_words(pdf_path: str | Path) -> dict[int, list[dict[str, Any]]]:
+    pages: dict[int, list[dict[str, Any]]] = {}
+    with fitz.open(Path(pdf_path)) as document:
+        for page_index, page in enumerate(document):
+            rectangle = page.rect
+            width = max(float(rectangle.width), 1.0)
+            height = max(float(rectangle.height), 1.0)
+            words: list[dict[str, Any]] = []
+            for word in page.get_text("words", sort=True):
+                if len(word) < 5:
+                    continue
+                token = _anchor_token(word[4])
+                if not token:
+                    continue
+                words.append(
+                    {
+                        "token": token,
+                        "x": round(
+                            (((float(word[0]) + float(word[2])) / 2) - rectangle.x0)
+                            / width
+                            * 1000,
+                            3,
+                        ),
+                        "y": round(
+                            (((float(word[1]) + float(word[3])) / 2) - rectangle.y0)
+                            / height
+                            * 1000,
+                            3,
+                        ),
+                    }
+                )
+            pages[page_index + 1] = words
+    return pages
+
+
+def _page_anchor_matches(
+    source_pdf_path: str | Path | None,
+    target_pdf_path: str | Path,
+) -> dict[int, list[dict[str, float]]]:
+    """Match unique static words without persisting their text in the mask."""
+
+    if not source_pdf_path:
+        return {}
+    try:
+        source_pages = _pdf_anchor_words(source_pdf_path)
+        target_pages = _pdf_anchor_words(target_pdf_path)
+    except (OSError, RuntimeError, ValueError):
+        return {}
+
+    matches_by_page: dict[int, list[dict[str, float]]] = {}
+    for page_number in sorted(set(source_pages) & set(target_pages)):
+        source_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        target_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for word in source_pages[page_number]:
+            source_index[word["token"]].append(word)
+        for word in target_pages[page_number]:
+            target_index[word["token"]].append(word)
+        matches: list[dict[str, float]] = []
+        for token in sorted(set(source_index) & set(target_index)):
+            # Repeated words are ambiguous and must never drive a translation.
+            if len(source_index[token]) != 1 or len(target_index[token]) != 1:
+                continue
+            source = source_index[token][0]
+            target = target_index[token][0]
+            matches.append(
+                {
+                    "x": float(source["x"]),
+                    "y": float(source["y"]),
+                    "dx": round(float(target["x"]) - float(source["x"]), 3),
+                    "dy": round(float(target["y"]) - float(source["y"]), 3),
+                }
+            )
+        matches_by_page[page_number] = matches
+    return matches_by_page
+
+
+def _translation_consensus(matches: list[dict[str, float]]) -> dict[str, Any] | None:
+    if len(matches) < 2:
+        return None
+    center_dx = float(median(item["dx"] for item in matches))
+    center_dy = float(median(item["dy"] for item in matches))
+    inliers = [
+        item
+        for item in matches
+        if abs(item["dx"] - center_dx) <= _ANCHOR_TOLERANCE
+        and abs(item["dy"] - center_dy) <= _ANCHOR_TOLERANCE
+    ]
+    if len(inliers) < 2 or len(inliers) * 4 < len(matches) * 3:
+        return None
+    dx = float(median(item["dx"] for item in inliers))
+    dy = float(median(item["dy"] for item in inliers))
+    spread = max(
+        float(median(abs(item["dx"] - dx) for item in inliers)),
+        float(median(abs(item["dy"] - dy) for item in inliers)),
+    )
+    if abs(dx) > _MAX_TRANSLATION or abs(dy) > _MAX_TRANSLATION:
+        return None
+    return {
+        "dx": round(dx, 3),
+        "dy": round(dy, 3),
+        "anchorCount": len(inliers),
+        "confidence": "HIGH" if len(inliers) >= 3 and spread <= 4 else "MEDIUM",
+    }
+
+
+def _field_translation(
+    matches: list[dict[str, float]],
+    bbox: list[float],
+    compartment: str,
+) -> dict[str, Any] | None:
+    center_x = (bbox[0] + bbox[2]) / 2
+    center_y = (bbox[1] + bbox[3]) / 2
+    local = [
+        item
+        for item in matches
+        if abs(item["x"] - center_x) <= 300 and abs(item["y"] - center_y) <= 170
+    ]
+    candidates: list[tuple[str, list[dict[str, float]]]] = [("LOCAL_ANCHORS", local)]
+    if compartment == "FOOTER":
+        zone = [item for item in matches if item["y"] >= max(450, center_y - 300)]
+    else:
+        zone = [item for item in matches if item["y"] <= min(650, center_y + 300)]
+    candidates.extend((("COMPARTMENT_ANCHORS", zone), ("PAGE_ANCHORS", matches)))
+    for mode, candidate_matches in candidates:
+        consensus = _translation_consensus(candidate_matches)
+        if consensus:
+            return {"mode": mode, **consensus}
+    return None
+
+
+def _translated_bbox(bbox: list[float], dx: float, dy: float) -> list[float]:
+    width = bbox[2] - bbox[0]
+    height = bbox[3] - bbox[1]
+    x0 = min(max(bbox[0] + dx, 0.0), 1000.0 - width)
+    y0 = min(max(bbox[1] + dy, 0.0), 1000.0 - height)
+    return [round(x0, 3), round(y0, 3), round(x0 + width, 3), round(y0 + height, 3)]
 
 
 def document_type_from_payload(document: Mapping[str, Any]) -> str:
@@ -188,6 +340,7 @@ def build_annotation_mask(
         "pageLayout": layout["pages"],
         "fieldCount": len(fields),
         "scope": "HEADER_AND_FOOTER",
+        "alignmentPolicy": MASK_ALIGNMENT_POLICY,
         "omittedLineItemCount": omitted_line_item_count,
         "fields": fields,
         "createdBy": _text(created_by),
@@ -199,6 +352,7 @@ def apply_annotation_mask(
     mask: Mapping[str, Any],
     *,
     pdf_path: str | Path,
+    source_pdf_path: str | Path | None = None,
     target_document_type: str = "",
 ) -> dict[str, Any]:
     """Read every stored region from a new PDF and return an unreviewed proposal."""
@@ -235,13 +389,15 @@ def apply_annotation_mask(
                 f"Géométrie différente sur la page {target_page['page']} ; contrôlez les cadres."
             )
 
+    anchor_matches = _page_anchor_matches(source_pdf_path, pdf_path)
+    field_alignments: list[dict[str, Any]] = []
     fields: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     excluded_line_items = 0
     for item in mask.get("fields") or []:
         if not isinstance(item, Mapping):
             continue
-        # Enforce the V2 scope while applying historical V1 masks as well.
+        # Enforce the header/footer scope while applying historical masks as well.
         if _is_line_item_field(item):
             excluded_line_items += 1
             continue
@@ -253,14 +409,44 @@ def apply_annotation_mask(
             skipped.append({"path": path, "reason": "page_absente"})
             continue
         try:
+            source_bbox = [float(value) for value in evidence.get("bbox") or []]
+            if len(source_bbox) != 4:
+                raise StudioRegionError("bbox doit contenir quatre coordonnées normalisées")
+            compartment = _text(item.get("compartment")).upper() or "HEADER"
+            translation = _field_translation(
+                anchor_matches.get(page, []),
+                source_bbox,
+                compartment,
+            )
+            translated_bbox = (
+                _translated_bbox(source_bbox, translation["dx"], translation["dy"])
+                if translation
+                else source_bbox
+            )
             region = extract_pdf_region_text(
                 pdf_path,
                 page_number=page,
-                bbox=evidence.get("bbox"),
+                bbox=translated_bbox,
             )
-        except StudioRegionError as exc:
+        except (StudioRegionError, TypeError, ValueError) as exc:
             skipped.append({"path": path, "reason": str(exc)})
             continue
+        shifted = bool(
+            translation
+            and (abs(float(translation["dx"])) >= 0.5 or abs(float(translation["dy"])) >= 0.5)
+        )
+        field_alignments.append(
+            {
+                "path": path,
+                "page": page,
+                "status": "TRANSLATED" if shifted else ("ALIGNED" if translation else "UNAVAILABLE"),
+                "mode": translation["mode"] if translation else "EXACT_COORDINATES",
+                "dx": translation["dx"] if translation else 0.0,
+                "dy": translation["dy"] if translation else 0.0,
+                "anchorCount": translation["anchorCount"] if translation else 0,
+                "confidence": translation["confidence"] if translation else "NONE",
+            }
+        )
         fields.append(
             {
                 "path": path,
@@ -284,6 +470,14 @@ def apply_annotation_mask(
         warnings.append(
             f"{excluded_line_items} champ(s) de ligne historiques ont été exclus du masque."
         )
+    translated_count = sum(item["status"] == "TRANSLATED" for item in field_alignments)
+    aligned_count = sum(
+        item["status"] in {"TRANSLATED", "ALIGNED"} for item in field_alignments
+    )
+    alignment_status = (
+        "TRANSLATED" if translated_count
+        else ("ALIGNED" if aligned_count else "UNAVAILABLE")
+    )
     return {
         "mask": {
             "maskId": mask.get("maskId"),
@@ -299,11 +493,20 @@ def apply_annotation_mask(
         "appliedFieldCount": len(fields),
         "excludedLineItemCount": excluded_line_items,
         "skippedFields": skipped,
+        "alignment": {
+            "policy": MASK_ALIGNMENT_POLICY,
+            "status": alignment_status,
+            "alignedFieldCount": aligned_count,
+            "translatedFieldCount": translated_count,
+            "unchangedFieldCount": len(field_alignments) - translated_count,
+            "fields": field_alignments,
+        },
     }
 
 
 __all__ = [
     "ANNOTATION_MASK_SCHEMA_VERSION",
+    "MASK_ALIGNMENT_POLICY",
     "StudioMaskError",
     "apply_annotation_mask",
     "build_annotation_mask",

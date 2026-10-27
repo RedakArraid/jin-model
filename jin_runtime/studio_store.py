@@ -1006,9 +1006,17 @@ class StudioStore:
     def apply_annotation_mask(self, *, document_id: str, mask_id: str) -> dict[str, Any]:
         document = self.get_document(document_id)
         mask = self.get_annotation_mask(mask_id)
+        source_pdf_path = None
+        source_document_id = str(mask.get("sourceDocumentId") or "").strip()
+        if source_document_id:
+            try:
+                source_pdf_path = self.pdf_path(source_document_id)
+            except StudioNotFoundError:
+                source_pdf_path = None
         result = apply_mask_to_document(
             mask,
             pdf_path=self.pdf_path(document_id),
+            source_pdf_path=source_pdf_path,
             target_document_type=document_type_from_payload(document),
         )
         result["documentId"] = document_id

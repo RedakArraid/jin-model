@@ -38,7 +38,9 @@ valider chaque extraction contre le schéma V3 et préparer les rectangles OCR
 avant une écriture atomique. Un échec de document laisse la base inchangée et
 la sauvegarde contient les résultats intermédiaires pour diagnostic ou reprise.
 
-Les masques d'annotation ont un contrat distinct V2 limité aux en-têtes et aux
-pieds de page. Ils ne mémorisent jamais les lignes de commande. Lors de leur
-application dans l'interface, les lignes extraites par JIN sur le PDF cible
-sont conservées et restent à relire.
+Les masques d'annotation ont un contrat distinct V3 limité aux en-têtes et aux
+pieds de page. Ils ne mémorisent jamais les lignes de commande. Leur application
+recherche des ancres textuelles concordantes entre le PDF source et la cible
+pour translater prudemment les cadres, séparément par zone, sans enregistrer le
+texte des ancres. Les lignes extraites par JIN sur le PDF cible sont conservées
+et restent à relire.

@@ -24,6 +24,30 @@ def _pdf(text: str, *, pages: int = 1, landscape: bool = False) -> bytes:
     return payload
 
 
+def _section_shift_pdf(
+    header_value: str,
+    footer_value: str,
+    *,
+    header_shift: tuple[float, float] = (0, 0),
+    footer_shift: tuple[float, float] = (0, 0),
+) -> bytes:
+    document = fitz.open()
+    page = document.new_page(width=600, height=800)
+    header_x, header_y = header_shift
+    footer_x, footer_y = footer_shift
+    page.insert_text((50 + header_x, 55 + header_y), "BON COMMANDE", fontsize=10)
+    page.insert_text((50 + header_x, 75 + header_y), "NUMERO CLIENT", fontsize=10)
+    page.insert_text((50 + header_x, 95 + header_y), "REFERENCE FOURNISSEUR", fontsize=10)
+    page.insert_text((220 + header_x, 75 + header_y), header_value, fontsize=10)
+    page.insert_text((50 + footer_x, 690 + footer_y), "TOTAL GENERAL", fontsize=10)
+    page.insert_text((50 + footer_x, 710 + footer_y), "CONDITIONS PAIEMENT", fontsize=10)
+    page.insert_text((50 + footer_x, 730 + footer_y), "COORDONNEES BANCAIRES", fontsize=10)
+    page.insert_text((220 + footer_x, 710 + footer_y), footer_value, fontsize=10)
+    payload = document.tobytes()
+    document.close()
+    return payload
+
+
 def _field(value: str = "PO-SOURCE") -> dict:
     return {
         "path": "order.purchase_order.number",
@@ -102,6 +126,8 @@ def test_annotation_mask_is_value_free_versioned_and_re_reads_target_pdf(tmp_pat
     assert applied["compatibility"] == "MATCH"
     assert applied["warnings"] == []
     assert applied["appliedFieldCount"] == 1
+    assert applied["alignment"]["status"] == "UNAVAILABLE"
+    assert applied["alignment"]["translatedFieldCount"] == 0
     assert "PO-TARGET" in applied["fields"][0]["extracted_value"]
     assert applied["fields"][0]["status"] == "UNREVIEWED"
     assert applied["fields"][0]["corrected_value"] is None
@@ -202,11 +228,73 @@ def test_annotation_mask_excludes_line_items_and_keeps_header_footer(tmp_path):
         created_by="annotator",
     )
 
-    assert mask["schemaVersion"] == 2
+    assert mask["schemaVersion"] == 3
     assert mask["scope"] == "HEADER_AND_FOOTER"
+    assert mask["alignmentPolicy"] == "SOURCE_TARGET_TEXT_TRANSLATION_V1"
     assert mask["fieldCount"] == 1
     assert mask["omittedLineItemCount"] == 1
     assert all("line_items[" not in field["path"] for field in mask["fields"])
+
+
+def test_annotation_mask_translates_header_and_footer_independently(tmp_path):
+    store = StudioStore(tmp_path / "studio")
+    source = store.create_document(
+        filename="source.pdf",
+        pdf_bytes=_section_shift_pdf("PO-SOURCE", "NET 100 EUR"),
+        extraction={"document": {"type": "purchase_order"}},
+    )
+    target = store.create_document(
+        filename="target.pdf",
+        pdf_bytes=_section_shift_pdf(
+            "PO-TARGET",
+            "NET 200 EUR",
+            header_shift=(36, 24),
+            footer_shift=(-24, -16),
+        ),
+        extraction={"document": {"type": "purchase_order"}},
+    )
+    header_field = {
+        **_field(),
+        "compartment": "HEADER",
+        "evidence": {"page": 1, "bbox": [350, 75, 650, 110]},
+    }
+    footer_field = {
+        "path": "order.totals.total_net",
+        "label": "TOTAL_NET",
+        "compartment": "FOOTER",
+        "status": "CONFIRMED",
+        "extracted_value": 100,
+        "corrected_value": None,
+        "evidence": {"page": 1, "bbox": [350, 865, 650, 900]},
+        "comment": "",
+    }
+    mask = store.create_annotation_mask(
+        name="Masque avec recalage",
+        source_document_id=source["documentId"],
+        document_type="purchase_order",
+        field_annotations=[header_field, footer_field],
+        created_by="annotator",
+    )
+
+    applied = store.apply_annotation_mask(
+        document_id=target["documentId"],
+        mask_id=mask["maskId"],
+    )
+
+    assert applied["alignment"]["status"] == "TRANSLATED"
+    assert applied["alignment"]["translatedFieldCount"] == 2
+    alignments = {item["path"]: item for item in applied["alignment"]["fields"]}
+    header_alignment = alignments[header_field["path"]]
+    footer_alignment = alignments[footer_field["path"]]
+    assert header_alignment["anchorCount"] >= 2
+    assert header_alignment["dx"] == pytest.approx(60, abs=1)
+    assert header_alignment["dy"] == pytest.approx(30, abs=1)
+    assert footer_alignment["anchorCount"] >= 2
+    assert footer_alignment["dx"] == pytest.approx(-40, abs=1)
+    assert footer_alignment["dy"] == pytest.approx(-20, abs=1)
+    fields = {item["path"]: item for item in applied["fields"]}
+    assert "PO-TARGET" in fields[header_field["path"]]["extracted_value"]
+    assert "NET 200 EUR" in fields[footer_field["path"]]["extracted_value"]
 
 
 def test_applying_legacy_mask_also_excludes_line_items(tmp_path):
