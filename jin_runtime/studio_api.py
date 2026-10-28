@@ -8,9 +8,14 @@ from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from jin_runtime.studio_contract import FIELD_CATALOG, StudioContractError
 from jin_runtime.studio_masks import StudioMaskError
+from jin_runtime.studio_preannotation import (
+    generate_studio_preannotation,
+    machine_draft_payload,
+)
 from jin_runtime.studio_security import (
     ROLE_PERMISSIONS,
     StudioPrincipal,
@@ -239,15 +244,38 @@ def create_studio_router(store: StudioStore | None = None) -> APIRouter:
         source_json: str = Form("{}"),
     ) -> dict[str, Any]:
         principal = _authorize(request, repository, "documents.write", csrf=True)
+        extraction = _json_object(extraction_json, field="extraction_json")
+        source = _json_object(source_json, field="source_json")
         try:
             document = repository.create_document(
                 filename=file.filename or "document.pdf",
                 pdf_bytes=await file.read(),
-                extraction=_json_object(extraction_json, field="extraction_json"),
-                source=_json_object(source_json, field="source_json"),
+                extraction=extraction,
+                source=source,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        preannotation: dict[str, Any] | None = None
+        preannotation_warning = ""
+        if extraction:
+            try:
+                preannotation = await run_in_threadpool(
+                    generate_studio_preannotation,
+                    repository.pdf_path(document["documentId"]),
+                    extraction,
+                )
+                if preannotation["fields"]:
+                    repository.save_annotation(
+                        document["documentId"],
+                        machine_draft_payload(preannotation),
+                    )
+                    document = repository.get_document(document["documentId"])
+            except Exception:  # optional enrichment must never lose the uploaded PDF
+                preannotation_warning = (
+                    "Le document a été créé, mais ses cadres automatiques n'ont pas "
+                    "pu être localisés. Relancez la relecture JIN-model."
+                )
         _audit(
             repository,
             request,
@@ -255,8 +283,29 @@ def create_studio_router(store: StudioStore | None = None) -> APIRouter:
             "document.create",
             "document",
             document["documentId"],
-            {"filename": document["filename"]},
+            {
+                "filename": document["filename"],
+                "preannotationFieldCount": int(
+                    (preannotation or {}).get("fieldCount") or 0
+                ),
+                "preannotationFramedFieldCount": int(
+                    (preannotation or {}).get("framedFieldCount") or 0
+                ),
+                "preannotationWarning": bool(preannotation_warning),
+            },
         )
+        document["preannotation"] = {
+            "status": (
+                "READY"
+                if preannotation and preannotation.get("fields")
+                else "UNAVAILABLE"
+            ),
+            "fieldCount": int((preannotation or {}).get("fieldCount") or 0),
+            "framedFieldCount": int(
+                (preannotation or {}).get("framedFieldCount") or 0
+            ),
+            **({"warning": preannotation_warning} if preannotation_warning else {}),
+        }
         return document
 
     @router.get("/documents")
@@ -308,6 +357,50 @@ def create_studio_router(store: StudioStore | None = None) -> APIRouter:
             raise HTTPException(status_code=404, detail="Studio document not found") from exc
         except StudioRegionError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/documents/{document_id}/preannotation")
+    async def document_preannotation(document_id: str, request: Request) -> dict[str, Any]:
+        """Locate the latest JIN extraction in the PDF without saving a revision."""
+
+        principal = _authorize(request, repository, "annotations.draft", csrf=True)
+        payload = await _request_json_object(request, field="Préannotation JIN-model")
+        try:
+            document = repository.get_document(document_id)
+            pdf_path = repository.pdf_path(document_id)
+        except StudioNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Studio document not found") from exc
+
+        extraction = payload.get("extraction", document.get("extraction") or {})
+        if not isinstance(extraction, dict) or not extraction:
+            raise HTTPException(
+                status_code=422,
+                detail="Aucune extraction JIN-model n'est disponible pour ce document",
+            )
+        try:
+            result = await run_in_threadpool(
+                generate_studio_preannotation,
+                pdf_path,
+                extraction,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Préannotation géométrique impossible : {exc}",
+            ) from exc
+        _audit(
+            repository,
+            request,
+            principal,
+            "annotation.preannotate",
+            "document",
+            document_id,
+            {
+                "fieldCount": result["fieldCount"],
+                "framedFieldCount": result["framedFieldCount"],
+                "saved": False,
+            },
+        )
+        return result
 
     @router.get("/annotation-masks")
     def list_annotation_masks(

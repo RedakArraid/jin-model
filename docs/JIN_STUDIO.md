@@ -244,6 +244,20 @@ conserve la réponse complète, localise les valeurs dans le PDF et produit des
 zones normalisées. Les valeurs non localisées restent explicitement ambiguës :
 elles ne sont jamais supprimées silencieusement.
 
+Un PDF déposé directement dans Studio suit désormais exactement le même
+parcours : JIN-model extrait d'abord les valeurs, puis le serveur les relocalise
+dans le PDF et enregistre une première révision machine avec des cadres sur
+1000. Le bouton **Relire avec JIN-model** reconstruit aussi ces cadres à partir
+du PDF complet. Cette relecture reste locale tant que le brouillon n'est pas
+enregistré. Studio sélectionne en priorité le premier champ possédant un cadre,
+ce qui garantit sa visibilité même lorsque **Afficher les autres cadres** est
+désactivé.
+
+Une campagne ciblée ne doit pas être choisie uniquement par récence. Pour un
+client multi-sites tel qu'ISERBA, il faut répartir l'échantillon par code de
+site et par signature d'adresse de livraison afin qu'une adresse fréquente ne
+devienne pas une fausse constante du modèle.
+
 ```powershell
 python scripts/select_varied_annotation_sample.py `
   "C:\chemin\vers\Commandes_ESKER\tout" `
@@ -268,6 +282,40 @@ L'import est reprenable et idempotent : une interruption ne duplique ni le PDF
 ni sa révision. Les PDF sont copiés uniquement dans le stockage local ignoré
 par Git. Chaque document importé reste `DRAFT`, chaque zone trouvée reste
 `UNREVIEWED`, et chaque valeur sans zone reste `AMBIGUOUS`.
+
+Pour réexécuter le runtime courant sur les seuls brouillons machine encore
+intacts, sans toucher aux validations ni aux brouillons déjà modifiés par un
+humain :
+
+```powershell
+docker compose exec -T api python /app/scripts/reprocess_studio_documents.py `
+  --studio-dir /app/data/studio `
+  --endpoint http://localhost:8000/extract?view=clean `
+  --confirm REPROCESS-STUDIO-DOCUMENTS
+```
+
+La commande sauvegarde SQLite avant traitement, prépare toutes les nouvelles
+extractions hors transaction, puis ne les publie que si le lot est complet.
+Les documents `HUMAN_VALIDATED` et les brouillons portant une relecture ou une
+correction humaine sont systématiquement ignorés et consignés dans le rapport.
+
+Pour préparer une annotation ciblée par client, les noms déjà présents dans
+Studio peuvent recevoir un préfixe stable tel que `REXEL_...` ou
+`IZI_CONFORT_...` :
+
+```powershell
+# Aperçu sans écriture
+python scripts/prefix_studio_documents_with_client.py --studio-root data/studio
+
+# Sauvegarde automatique de SQLite, puis application
+python scripts/prefix_studio_documents_with_client.py --studio-root data/studio --apply
+```
+
+Le répertoire client de `sourceRelativePath` est prioritaire ; l'acheteur
+extrait sert uniquement de repli pour un document non classé. La migration ne
+modifie ni le `documentId`, ni le PDF interne, ni les annotations. Le nouveau
+nom est celui affiché, recherché et proposé au téléchargement. L'ancien nom et
+la provenance du préfixe restent consignés dans les métadonnées source.
 
 La revue humaine se fait dans `/studio.html` :
 

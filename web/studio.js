@@ -230,6 +230,16 @@ function normalizedEvidence(value) {
   return { page: Number(evidence.page || 1), bbox: evidence.bbox.map(Number) };
 }
 
+function firstFramedFieldIndex(fields) {
+  const index = fields.findIndex(field => (
+    Number(field?.evidence?.page || 0) > 0
+    && Array.isArray(field?.evidence?.bbox)
+    && field.evidence.bbox.length === 4
+    && field.evidence.bbox.every(Number.isFinite)
+  ));
+  return index >= 0 ? index : (fields.length ? 0 : -1);
+}
+
 function extractFields(extraction) {
   const found = [];
   const seen = new Set();
@@ -861,21 +871,33 @@ async function rereadWithJinModel() {
       blob,
       state.activeDocument.filename || 'document.pdf',
     );
-    const fields = lineItemTools.compact(extractFields(extraction));
+    showMessage($('annotationMessage'), 'JIN-model localise les valeurs dans le PDF…');
+    const proposal = await api(
+      `/documents/${encodeURIComponent(state.activeDocument.documentId)}/preannotation`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ extraction }),
+      },
+    );
+    const fields = lineItemTools.compact(
+      (proposal.fields || []).map(item => structuredClone(item)),
+    );
     if (!fields.length) throw new Error('JIN-model n’a trouvé aucun champ annotable dans ce document.');
 
     state.activeDocument.extraction = extraction;
     state.fields = fields;
-    state.selectedField = 0;
+    state.selectedField = firstFramedFieldIndex(fields);
     clearMultiFieldSelection();
     state.annotationCompartment = 'ALL';
     $('annotationCompartmentFilter').value = 'ALL';
     markDirty();
     renderFields();
-    await selectField(0);
+    await selectField(state.selectedField);
     showMessage(
       $('annotationMessage'),
-      `${fields.length} champ(s) relus par JIN-model. Contrôlez-les puis enregistrez le brouillon ou validez.`,
+      `${fields.length} champ(s) relus par JIN-model, dont ${Number(proposal.framedFieldCount || 0)} avec un cadre. `
+      + 'Contrôlez-les puis enregistrez le brouillon ou validez.',
       'success',
     );
   } catch (error) {
@@ -893,7 +915,7 @@ async function openDocument(documentId) {
   state.fields = latestAnnotation?.field_annotations?.map(item => structuredClone(item))
     || extractFields(document.extraction || {});
   state.fields = lineItemTools.compact(state.fields);
-  state.selectedField = state.fields.length ? 0 : -1;
+  state.selectedField = firstFramedFieldIndex(state.fields);
   clearMultiFieldSelection();
   state.annotationCompartment = 'ALL';
   $('annotationCompartmentFilter').value = 'ALL';
@@ -928,6 +950,7 @@ async function openDocument(documentId) {
   let pdfRenderError = null;
   try {
     await loadPdf(documentId);
+    if (state.selectedField >= 0) await selectField(state.selectedField);
   } catch (error) {
     pdfRenderError = error;
     console.error('Impossible d\'afficher le PDF d\'annotation.', error);

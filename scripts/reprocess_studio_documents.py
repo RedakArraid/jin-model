@@ -19,9 +19,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from jin_runtime.clean_output import clean_output_schema
 from jin_runtime.studio_contract import normalize_studio_annotation, utc_now
+from jin_runtime.studio_preannotation import (
+    generate_studio_preannotation,
+    machine_draft_payload,
+)
 from jin_runtime.studio_store import StudioStore
-from scripts.import_annotation_campaign_to_studio import draft_fields
-from training.annotations.bootstrap_from_extractions import annotate_one
 
 
 CONFIRMATION = "REPROCESS-STUDIO-DOCUMENTS"
@@ -52,23 +54,50 @@ def _backup_database(database: Path, destination: Path) -> None:
         source.backup(target)
 
 
-def _assert_replaceable(rows: list[sqlite3.Row]) -> None:
-    unsafe = []
+def _replaceability_reason(row: sqlite3.Row) -> str:
+    """Return why a document must not be superseded, or an empty string."""
+
+    if row["status"] != "DRAFT":
+        return f"status={row['status']}"
+    if not row["annotation_json"]:
+        return ""
+    annotation = json.loads(row["annotation_json"])
+    reviewer = str(annotation.get("reviewed_by") or "")
+    if reviewer not in {
+        "codex-preannotation",
+        "codex-preannotation-v3",
+        REVIEWER,
+    }:
+        return f"reviewer={reviewer or 'unknown'}"
+    for field in annotation.get("field_annotations") or []:
+        if str(field.get("status") or "UNREVIEWED") not in {
+            "UNREVIEWED",
+            "AMBIGUOUS",
+        }:
+            return "human field review detected"
+        if field.get("corrected_value") not in (None, ""):
+            return "human correction detected"
+    return ""
+
+
+def _partition_replaceable(
+    rows: list[sqlite3.Row],
+) -> tuple[list[sqlite3.Row], list[dict[str, str]]]:
+    selected: list[sqlite3.Row] = []
+    skipped: list[dict[str, str]] = []
     for row in rows:
-        if row["status"] != "DRAFT":
-            unsafe.append(f"{row['filename']}: status={row['status']}")
-            continue
-        if row["annotation_json"]:
-            annotation = json.loads(row["annotation_json"])
-            reviewer = str(annotation.get("reviewed_by") or "")
-            if reviewer not in {"codex-preannotation-v3", REVIEWER}:
-                unsafe.append(f"{row['filename']}: reviewer={reviewer or 'unknown'}")
-    if unsafe:
-        preview = "; ".join(unsafe[:5])
-        raise ValueError(
-            "Refusing to supersede reviewed Studio work. "
-            f"Unsafe documents: {preview}"
-        )
+        reason = _replaceability_reason(row)
+        if reason:
+            skipped.append(
+                {
+                    "document_id": row["document_id"],
+                    "filename": row["filename"],
+                    "reason": reason,
+                }
+            )
+        else:
+            selected.append(row)
+    return selected, skipped
 
 
 def _load_documents(database: Path) -> list[sqlite3.Row]:
@@ -88,23 +117,15 @@ def _load_documents(database: Path) -> list[sqlite3.Row]:
 
 
 def _preannotation_payload(pdf_path: Path, extraction: dict[str, Any], ambiguity: int) -> dict[str, Any]:
-    annotation, report = annotate_one(pdf_path, extraction, max_ambiguity=ambiguity)
-    return {
-        "status": "DRAFT",
-        "reviewed_by": REVIEWER,
-        "note": NOTE,
-        "field_annotations": draft_fields(annotation),
-        "generation_report": {
-            "candidate_fields": report.get("candidate_fields"),
-            "source_candidate_fields": report.get("source_candidate_fields"),
-            "semantic_aliases_removed": report.get("semantic_aliases_removed"),
-            "matched_fields": report.get("matched_fields"),
-            "ambiguous_fields": report.get("ambiguous_fields"),
-            "unmatched_fields": report.get("unmatched_fields"),
-            "match_methods": report.get("match_methods") or {},
-            "unresolved": report.get("unmatched") or [],
-        },
-    }
+    result = generate_studio_preannotation(
+        pdf_path,
+        extraction,
+        max_ambiguity=ambiguity,
+    )
+    payload = machine_draft_payload(result)
+    payload["reviewed_by"] = REVIEWER
+    payload["note"] = NOTE
+    return payload
 
 
 def _commit(
@@ -169,7 +190,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--reuse-extractions",
         type=Path,
-        help="Reuse a complete, previously staged new-extractions directory.",
+        help=(
+            "Reuse every available JSON from a previously staged "
+            "new-extractions directory and extract only missing documents."
+        ),
+    )
+    parser.add_argument(
+        "--strict-all",
+        action="store_true",
+        help="Fail if any Studio document is already human-reviewed.",
     )
     parser.add_argument("--confirm", required=True)
     args = parser.parse_args(argv)
@@ -178,8 +207,24 @@ def main(argv: list[str] | None = None) -> int:
 
     root = _safe_root(args.studio_dir)
     database = root / "studio.sqlite3"
-    rows = _load_documents(database)
-    _assert_replaceable(rows)
+    all_rows = _load_documents(database)
+    rows, skipped = _partition_replaceable(all_rows)
+    if args.strict_all and skipped:
+        preview = "; ".join(
+            f"{item['filename']}: {item['reason']}" for item in skipped[:5]
+        )
+        raise ValueError(
+            "Refusing to supersede reviewed Studio work. "
+            f"Unsafe documents: {preview}"
+        )
+    if not rows:
+        print("Aucun brouillon machine non relu à retraiter.", flush=True)
+        return 0
+    print(
+        f"Retraitement de {len(rows)} brouillon(s) machine ; "
+        f"{len(skipped)} document(s) humain(s) préservé(s).",
+        flush=True,
+    )
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup_root = root / "backups" / f"before-model-reprocess-{timestamp}"
     _backup_database(database, backup_root / "studio.sqlite3")
@@ -206,9 +251,12 @@ def main(argv: list[str] | None = None) -> int:
             document_id = row["document_id"]
             pdf_path = store.pdf_path(document_id)
             try:
-                if reused_root is not None:
+                reusable_extraction = (
+                    reused_root / f"{document_id}.json" if reused_root else None
+                )
+                if reusable_extraction is not None and reusable_extraction.is_file():
                     extraction = json.loads(
-                        (reused_root / f"{document_id}.json").read_text(encoding="utf-8")
+                        reusable_extraction.read_text(encoding="utf-8")
                     )
                 else:
                     with pdf_path.open("rb") as handle:
@@ -263,7 +311,10 @@ def main(argv: list[str] | None = None) -> int:
         "created_at": utc_now(),
         "endpoint": args.endpoint,
         "reused_extractions": str(reused_root) if reused_root else None,
+        "studio_document_count": len(all_rows),
         "document_count": len(rows),
+        "skipped_reviewed_count": len(skipped),
+        "skipped_reviewed": skipped,
         "prepared_count": len(prepared),
         "failures": failures,
         "database_updated": False,

@@ -44,6 +44,13 @@ test('JIN Studio can resolve displayed field values and still attempts PDF rende
   assert.match(js, /await loadPdf\(documentId\)/);
 });
 
+test('JIN Studio asks the server for geometric frames on model reread', () => {
+  assert.match(js, /\/preannotation`/);
+  assert.match(js, /firstFramedFieldIndex/);
+  assert.match(js, /proposal\.framedFieldCount/);
+  assert.match(html, /studio\.js\?v=27/);
+});
+
 test('JIN Studio launches and follows isolated training runs', () => {
   assert.match(html, /worker isolé/);
   assert.match(js, /Lancer l’entraînement/);
