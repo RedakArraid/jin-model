@@ -53,6 +53,7 @@ const state = {
   users: [],
   auditEvents: [],
   activeDocument: null,
+  openingDocumentId: null,
   fields: [],
   selectedField: -1,
   multiSelectedFields: new Set(),
@@ -61,6 +62,7 @@ const state = {
   page: 1,
   rendering: false,
   pendingRender: false,
+  pendingRenderWaiters: [],
   zoom: 1,
   showOtherAnnotations: storedOtherAnnotationsVisibility(),
   annotationCompartment: 'ALL',
@@ -778,6 +780,8 @@ function renderDocumentList() {
   documentList.replaceChildren();
   for (const item of visible) {
     const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.documentId = item.documentId;
     button.className = `document-item ${state.activeDocument?.documentId === item.documentId ? 'active' : ''}`;
     const name = document.createElement('strong');
     name.textContent = item.filename;
@@ -788,7 +792,10 @@ function renderDocumentList() {
     const date = document.createElement('span');
     date.textContent = String(item.updatedAt || '').slice(0, 10);
     meta.append(statusEl, date);
-    button.append(name, meta);
+    const progress = document.createElement('span');
+    progress.className = 'document-open-progress hidden';
+    progress.textContent = 'Ouverture en cours…';
+    button.append(name, meta, progress);
     button.addEventListener('click', () => {
       if (
         state.dirty
@@ -797,12 +804,49 @@ function renderDocumentList() {
       ) return;
       openDocument(item.documentId).catch(error => {
         console.error('Impossible d\'ouvrir le document JIN Studio.', error);
-        showAnnotationFeedback(`Impossible d\'ouvrir le document : ${error.message}`, 'error');
+        const message = `Impossible d'ouvrir le document : ${error.message}`;
+        showMessage($('documentOpenStatus'), message, 'error');
+        showAnnotationFeedback(message, 'error');
       });
     });
     documentList.appendChild(button);
   }
   documentCount.textContent = `${state.documents.length} document${state.documents.length > 1 ? 's' : ''}`;
+  updateDocumentOpenIndicators();
+}
+
+function updateDocumentOpenIndicators() {
+  for (const button of documentList.querySelectorAll('.document-item')) {
+    const opening = button.dataset.documentId === state.openingDocumentId;
+    button.disabled = Boolean(state.openingDocumentId);
+    button.classList.toggle('opening', opening);
+    button.setAttribute('aria-busy', String(opening));
+    button.querySelector('.document-open-progress').classList.toggle('hidden', !opening);
+  }
+}
+
+function setDocumentOpenPhase(message) {
+  const filename = state.documents.find(item => item.documentId === state.openingDocumentId)?.filename
+    || state.openingDocumentId || 'Document';
+  $('documentOpenPhase').textContent = message;
+  $('documentOpenFilename').textContent = filename;
+  showMessage($('documentOpenStatus'), `${message} ${filename}`);
+}
+
+function startDocumentOpening(documentId) {
+  state.openingDocumentId = documentId;
+  setDocumentOpenPhase('Ouverture du document…');
+  $('documentOpenOverlay').classList.remove('hidden');
+  annotationWorkspace.setAttribute('aria-busy', 'true');
+  updateDocumentOpenIndicators();
+}
+
+function finishDocumentOpening() {
+  state.openingDocumentId = null;
+  $('documentOpenOverlay').classList.add('hidden');
+  annotationWorkspace.removeAttribute('aria-busy');
+  showMessage($('documentOpenStatus'), '');
+  updateDocumentOpenIndicators();
 }
 
 async function extractWithJinModel(file, filename = 'document.pdf') {
@@ -909,7 +953,18 @@ async function rereadWithJinModel() {
 }
 
 async function openDocument(documentId) {
+  if (state.openingDocumentId) return;
+  startDocumentOpening(documentId);
+  try {
+    await openDocumentContents(documentId);
+  } finally {
+    finishDocumentOpening();
+  }
+}
+
+async function openDocumentContents(documentId) {
   const document = await api(`/documents/${encodeURIComponent(documentId)}`);
+  setDocumentOpenPhase('Préparation des champs…');
   state.activeDocument = document;
   const latestAnnotation = document.latestAnnotation;
   state.fields = latestAnnotation?.field_annotations?.map(item => structuredClone(item))
@@ -949,6 +1004,7 @@ async function openDocument(documentId) {
   }
   let pdfRenderError = null;
   try {
+    setDocumentOpenPhase('Chargement et affichage du PDF…');
     await loadPdf(documentId);
     if (state.selectedField >= 0) await selectField(state.selectedField);
   } catch (error) {
@@ -2020,7 +2076,9 @@ async function renderPdfPage() {
   if (!state.pdf) return;
   if (state.rendering) {
     state.pendingRender = true;
-    return;
+    return new Promise((resolve, reject) => {
+      state.pendingRenderWaiters.push({ resolve, reject });
+    });
   }
   state.rendering = true;
   try {
@@ -2062,7 +2120,13 @@ async function renderPdfPage() {
     state.rendering = false;
     if (state.pendingRender) {
       state.pendingRender = false;
-      window.setTimeout(() => renderPdfPage(), 0);
+      const waiters = state.pendingRenderWaiters.splice(0);
+      window.setTimeout(() => {
+        renderPdfPage().then(
+          () => waiters.forEach(waiter => waiter.resolve()),
+          error => waiters.forEach(waiter => waiter.reject(error)),
+        );
+      }, 0);
     }
   }
 }

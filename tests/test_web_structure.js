@@ -83,10 +83,10 @@ test('JIN Studio exposes synchronized values, removable fields and coordinate-sa
   assert.match(studioJs, /\/api\/studio/);
   assert.match(studioHtml, /studio_line_items\.js\?v=3/);
   assert.match(studioHtml, /studio_field_selection\.js\?v=4/);
-  assert.match(studioHtml, /studio\.js\?v=26/);
+  assert.match(studioHtml, /studio\.js\?v=28/);
   assert.doesNotMatch(studioJs, /addressFieldTools/);
   assert.doesNotMatch(studioHtml, /studio_address_fields\.js/);
-  assert.match(studioHtml, /studio\.css\?v=15/);
+  assert.match(studioHtml, /studio\.css\?v=16/);
   assert.match(studioJs, /Les lignes de commande relues par JIN seront conservées/);
   assert.match(studioJs, /updateFieldFromRegion/);
   assert.match(studioJs, /value \/ \(index % 2 === 0 \? annotationCanvas\.width : annotationCanvas\.height\) \* 1000/);

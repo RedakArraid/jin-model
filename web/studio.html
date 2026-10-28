@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>JIN Studio – Annotation et entraînement</title>
-  <link rel="stylesheet" href="studio.css?v=15" />
+  <link rel="stylesheet" href="studio.css?v=16" />
 </head>
 <body>
   <header class="topbar">
@@ -64,6 +64,7 @@
             </label>
           </div>
           <div id="uploadState" class="inline-notice hidden"></div>
+          <div id="documentOpenStatus" class="inline-notice hidden" role="status" aria-live="polite"></div>
           <div class="filters">
             <input id="documentSearch" type="search" placeholder="Rechercher un document" />
             <select id="documentStatusFilter">
@@ -235,6 +236,15 @@
               <button id="validateButton" class="button primary" type="button">Valider pour l’apprentissage</button>
             </div>
           </section>
+        </div>
+        <div id="documentOpenOverlay" class="document-open-overlay hidden" role="status" aria-live="polite">
+          <div class="document-open-card">
+            <span class="document-open-spinner" aria-hidden="true"></span>
+            <div>
+              <strong id="documentOpenPhase">Ouverture du document…</strong>
+              <span id="documentOpenFilename"></span>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -474,6 +484,6 @@
   <script src="vendor/pdfjs-3.11.174/pdf.min.js"></script>
   <script src="studio_line_items.js?v=3"></script>
   <script src="studio_field_selection.js?v=4"></script>
-  <script src="studio.js?v=27"></script>
+  <script src="studio.js?v=28"></script>
 </body>
 </html>
