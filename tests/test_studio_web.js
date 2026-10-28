@@ -101,6 +101,31 @@ test('PDF rendering queued behind an earlier page remains awaitable', async () =
   assert.equal(queuedComplete, true);
 });
 
+test('validation names both conflicting fields and the source page', () => {
+  const helperSource = js.match(/function validationTrainingBlocker\(issue\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(helperSource);
+  const context = {
+    state: {
+      fields: [
+        { name: 'Acheteur — numéro de voie', evidence: { page: 2 } },
+        { name: 'Livraison — numéro de voie', evidence: { page: 2 } },
+      ],
+    },
+    fieldDisplayName(field) { return field.name; },
+  };
+  vm.runInNewContext(`${helperSource}\nglobalThis.validationTrainingBlocker = validationTrainingBlocker;`, context);
+  const blocker = context.validationTrainingBlocker({
+    code: 'CONFLICTING_REGION_LABELS', fieldIndex: 0, otherFieldIndex: 1,
+  });
+  assert.match(blocker.message, /Page 2/);
+  assert.match(blocker.message, /Acheteur — numéro de voie/);
+  assert.match(blocker.message, /Livraison — numéro de voie/);
+  assert.match(blocker.message, /exactement le même cadre/);
+  assert.match(blocker.guidance, /Recadrez/);
+  assert.equal(blocker.otherFieldIndex, 1);
+  assert.match(js, /\[blocker\.fieldIndex, blocker\.otherFieldIndex\]\.forEach/);
+});
+
 test('JIN Studio uses same-origin sessions and CSRF without browser bearer tokens', () => {
   assert.match(js, /credentials: 'same-origin'/);
   assert.match(js, /headers\['X-CSRF-Token'\]/);
@@ -134,7 +159,7 @@ test('JIN Studio asks the server for geometric frames on model reread', () => {
   assert.match(js, /\/preannotation`/);
   assert.match(js, /firstFramedFieldIndex/);
   assert.match(js, /proposal\.framedFieldCount/);
-  assert.match(html, /studio\.js\?v=28/);
+  assert.match(html, /studio\.js\?v=29/);
 });
 
 test('JIN Studio launches and follows isolated training runs', () => {

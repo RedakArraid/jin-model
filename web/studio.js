@@ -2354,6 +2354,32 @@ function incompleteReviewedFieldIndex() {
   ));
 }
 
+function validationTrainingBlocker(issue) {
+  const first = state.fields[issue.fieldIndex];
+  const second = state.fields[issue.otherFieldIndex];
+  if (!second) return {
+    fieldIndex: issue.fieldIndex,
+    code: issue.code,
+    message: `${fieldDisplayName(first)} : ${issue.message}.`,
+  };
+
+  const page = Number(first?.evidence?.page);
+  const pageText = Number.isInteger(page) && page > 0 ? `Page ${page} — ` : '';
+  const names = `« ${fieldDisplayName(first)} » et « ${fieldDisplayName(second)} »`;
+  const overlapping = issue.code === 'OVERLAPPING_COMPOSITE_STREET';
+  return {
+    fieldIndex: issue.fieldIndex,
+    otherFieldIndex: issue.otherFieldIndex,
+    code: issue.code,
+    message: overlapping
+      ? `${pageText}Les cadres de ${names} se chevauchent.`
+      : `${pageText}${names} utilisent exactement le même cadre sur le PDF.`,
+    guidance: overlapping
+      ? 'Gardez la voie complète ou ses composants séparés : un même mot ne doit pas être annoté deux fois.'
+      : 'Vérifiez les deux champs. Recadrez celui qui pointe au mauvais endroit ; si sa valeur n’est pas imprimée séparément, retirez ce champ ou marquez-le absent.',
+  };
+}
+
 function validationReport() {
   const counts = {
     CONFIRMED: 0,
@@ -2378,10 +2404,7 @@ function validationReport() {
       message: `${fieldDisplayName(field)} est corrigé sans valeur corrigée.`,
     });
   });
-  annotationTrainingIssues(state.fields).forEach(issue => blockers.push({
-    fieldIndex: issue.fieldIndex,
-    message: `${fieldDisplayName(state.fields[issue.fieldIndex])} : ${issue.message}.`,
-  }));
+  annotationTrainingIssues(state.fields).forEach(issue => blockers.push(validationTrainingBlocker(issue)));
   return { counts, blockers };
 }
 
@@ -2417,6 +2440,29 @@ function openValidationReview() {
     issues.appendChild(ready);
   } else {
     report.blockers.forEach(blocker => {
+      if (Number.isInteger(blocker.otherFieldIndex)) {
+        const item = document.createElement('div');
+        item.className = 'validation-issue validation-issue-pair';
+        const message = document.createElement('strong');
+        message.textContent = blocker.message;
+        const guidance = document.createElement('p');
+        guidance.textContent = blocker.guidance;
+        const actions = document.createElement('div');
+        actions.className = 'validation-issue-actions';
+        [blocker.fieldIndex, blocker.otherFieldIndex].forEach((fieldIndex, position) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = `Ouvrir le champ ${position + 1} : ${fieldDisplayName(state.fields[fieldIndex])}`;
+          button.addEventListener('click', async () => {
+            $('validationDialog').close();
+            await revealValidationField(fieldIndex);
+          });
+          actions.appendChild(button);
+        });
+        item.append(message, guidance, actions);
+        issues.appendChild(item);
+        return;
+      }
       const item = document.createElement('button');
       item.type = 'button';
       item.className = `validation-issue ${Number.isInteger(blocker.fieldIndex) ? '' : 'global'}`.trim();

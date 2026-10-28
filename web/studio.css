@@ -428,6 +428,12 @@ kbd { padding: 3px 6px; border: 1px solid #c8d0dd; border-bottom-width: 2px; bor
 .validation-issue-list { display: grid; gap: 7px; max-height: 310px; overflow: auto; }
 .validation-issue { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; border: 1px solid #efbbc2; border-radius: 8px; color: #82202c; background: #fff2f4; cursor: pointer; text-align: left; }
 .validation-issue.global { cursor: default; }
+.validation-issue-pair { display: grid; gap: 8px; cursor: default; }
+.validation-issue-pair strong { line-height: 1.4; }
+.validation-issue-pair p { margin: 0; font-size: 12px; line-height: 1.45; }
+.validation-issue-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.validation-issue-actions button { padding: 7px 9px; border: 1px solid #dc9aa4; border-radius: 7px; color: #82202c; background: white; cursor: pointer; text-align: left; font-size: 12px; }
+.validation-issue-actions button:hover, .validation-issue-actions button:focus-visible { border-color: #82202c; background: #fff9fa; }
 .validation-ready { padding: 14px; border-radius: 9px; color: var(--success); background: #e4f7ef; font-weight: 700; }
 .validation-dialog-actions { display: flex; justify-content: flex-end; gap: 9px; }
 .add-field-dialog { width: min(560px, calc(100% - 32px)); }
