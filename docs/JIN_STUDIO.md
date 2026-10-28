@@ -521,6 +521,31 @@ ni une adresse pour justifier le type.
 Une validation est refusée si un champ reste `UNREVIEWED`. Un dataset refuse
 tout document dont la dernière révision n'est pas `HUMAN_VALIDATED`.
 
+### Assistance d'une campagne client depuis des annotations validées
+
+Le script `scripts/assist_studio_client_annotations.py` peut proposer les
+brouillons restants d'un client à partir de plusieurs annotations déjà
+`HUMAN_VALIDATED`. Il ne copie jamais les valeurs des documents sources. Pour
+chaque PDF cible, il relit les zones de chacun des gabarits validés, mesure
+l'alignement et l'accord avec l'extraction JIN courante, puis retient la
+proposition la plus compatible. Les lignes de commande du PDF cible sont
+conservées et restent en dernière position.
+
+Une simulation sans mutation est recommandée avant l'application :
+
+```powershell
+python scripts/assist_studio_client_annotations.py `
+  --client ISERBA `
+  --dry-run `
+  --confirm ASSIST-STUDIO-CLIENT-ANNOTATIONS
+```
+
+Retirer `--dry-run` applique le lot de manière atomique après sauvegarde de la
+base Studio sous `data/studio/backups/`. Le script préserve les documents
+validés, les brouillons portant une intervention humaine et les documents d'un
+autre type. Tous les champs produits restent `UNREVIEWED` : un relecteur doit
+les confirmer ou les corriger avant validation pour l'apprentissage.
+
 ## Dataset et entraînement
 
 L'enchaînement après annotation est volontairement explicite :
