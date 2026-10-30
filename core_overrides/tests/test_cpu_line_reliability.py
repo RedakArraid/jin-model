@@ -1193,6 +1193,59 @@ def test_product_fee_table_ignores_interleaved_supplier_offer_annotations():
     assert lines[0].raw_text.startswith("4 | 7733703987")
 
 
+@pytest.mark.parametrize("source_code", [".7733703987", ".7098850"])
+@pytest.mark.parametrize("offer_note", [
+    "Offre FGO-180926-1132",
+    "Offre FGO-180926-1132 frais de port offerts",
+])
+def test_product_table_strips_customer_dot_prefix_and_keeps_offer_as_note(source_code, offer_note):
+    table = SimpleNamespace(
+        data=[
+            [
+                "Lig.", "Produit", "Qté", "Condit.", "Prix Unitaire",
+                "Montant ligne HT", "Date de livraison",
+            ],
+            [
+                "1",
+                f"{source_code} 00645 MODULE WIFI CLE USB HOMECOM EASY\n"
+                f"Communication au Fournisseur :\n{offer_note}",
+                "4", "PIECE", "0,10000", "0,40000", "28-10-2026",
+            ],
+        ],
+        source=SimpleNamespace(page=1),
+        confidence=0.98,
+    )
+
+    lines, charges = _rexellike_product_fee_table(table)
+
+    assert len(lines) == 1
+    assert not charges
+    line = lines[0]
+    assert line.material_number == line.article_number == source_code[1:]
+    assert line.description == "00645 MODULE WIFI CLE USB HOMECOM EASY"
+    assert line.quantity == 4
+    assert line.unit_price == pytest.approx(0.1)
+    assert line.line_total == pytest.approx(0.4)
+    assert line.requested_delivery_date == "2026-10-28"
+    assert line.quote_number == "FGO-180926-1132"
+    assert line.quote_numbers == ["FGO-180926-1132"]
+    assert line.notes == [offer_note]
+    assert f"{source_code} 00645" in line.raw_text
+
+
+def test_detached_quote_label_is_not_a_product_even_with_borrowed_amount():
+    line = LineItem(
+        line_number="1", material_number="Offre", article_number="Offre",
+        description="FGO-180926-1132", quantity=4, unit_price=0.1,
+        line_total=0.4, raw_text="1 | Offre FGO-180926-1132 | 4 | 0.1 | 0.4",
+    )
+
+    kept, reasons = _sanitize_non_product_lines_v61([line], load_config())
+
+    assert kept == []
+    assert reasons == {"quote_note_as_product": 1}
+
+
 def test_complete_dual_reference_table_beats_sparse_material_anchor_hypothesis():
     page = _page([
         (180, [("Code", 30, 53), ("art", 55, 69), ("Reference", 79, 122),

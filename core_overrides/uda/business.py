@@ -3507,6 +3507,19 @@ def _rexellike_product_fee_table(table, default_currency: str = "EUR"):
         events = []
         for raw in products:
             folded_raw = _fold(raw)
+            offer_note = re.match(
+                r"\s*(?:offre|devis|quote)\s+(?:n[°ºo]?\s*[:.-]?\s*)?"
+                r"([A-Z0-9][A-Z0-9._/-]{2,49})(?=\s|$)",
+                raw,
+                flags=re.I,
+            )
+            if offer_note and any(char.isdigit() for char in offer_note.group(1)):
+                # A quote reference printed beneath a product has no matching
+                # quantity or amount. Keep it on the preceding product event.
+                if events and not events[-1]["fee_kind"]:
+                    events[-1]["quote_number"] = offer_note.group(1)
+                    events[-1]["notes"].append(raw.strip())
+                continue
             if (
                 re.match(
                     r"^communication\s+au\s+(?:fournisseur|transporteur|supplier|vendor)\b",
@@ -3522,15 +3535,28 @@ def _rexellike_product_fee_table(table, default_currency: str = "EUR"):
                 # product cell without any quantity/price/amount counterpart.
                 # Keeping them as events shifts every subsequent monetary row.
                 continue
-            m = re.match(r"^([A-Z0-9][A-Z0-9._/-]{3,30})\s+(.+)$", raw.strip(), flags=re.I)
+            m = re.match(
+                r"^(\.[0-9]{7,14}|[A-Z0-9][A-Z0-9._/-]{3,30})\s+(.+)$",
+                raw.strip(), flags=re.I,
+            )
             if not m:
                 continue
-            code, desc = m.group(1), " ".join(m.group(2).split())
+            source_code, desc = m.group(1), " ".join(m.group(2).split())
+            code = source_code[1:] if source_code.startswith(".") else source_code
+            if _fold(code) in {"offre", "devis", "quote"}:
+                continue
             kind = _fee_kind(f"{code} {desc}")
             # Strong fee codes should never become material lines.
             if code.upper().startswith(("D3EE", "DEEE", "WEEE")):
                 kind = "environmental_fee"
-            events.append({"code": code, "description": desc, "fee_kind": kind})
+            if not kind and not any(char.isdigit() for char in code):
+                # Alphabetic labels such as "Offre" cannot be article codes.
+                # Explicit charge labels are still accepted by the fee branch.
+                continue
+            events.append({
+                "code": code, "source_code": source_code, "description": desc,
+                "fee_kind": kind, "quote_number": None, "notes": [],
+            })
         if not events:
             continue
 
@@ -3578,8 +3604,11 @@ def _rexellike_product_fee_table(table, default_currency: str = "EUR"):
                 description=ev["description"], quantity=qty, ordered_quantity=qty, uom=uom,
                 unit_price=price, net_unit_price=price, line_total=amount, line_net_amount=amount,
                 currency=default_currency, requested_delivery_date=delivery_date,
+                quote_number=ev["quote_number"],
+                quote_numbers=[ev["quote_number"]] if ev["quote_number"] else [],
+                notes=ev["notes"],
                 raw_text=(
-                    f"{line_no} | {ev['code']} {ev['description']} | {qty} | "
+                    f"{line_no} | {ev['source_code']} {ev['description']} | {qty} | "
                     f"{uom or ''} | {price} | {amount} | {raw_date or ''}"
                 ),
                 page=table.source.page, confidence=float(table.confidence)*0.99,
@@ -5539,6 +5568,11 @@ def _sanitize_non_product_lines_v61(lines, config: dict):
             r"\b(?:poids|total\s+hors|total\s+ht|total\s+ttc|reglement|conditions?\s+generales?)\b",
             low,
         ))
+        if _fold(material) in {"offre", "devis", "quote"}:
+            # A detached commercial note can look like a complete product row
+            # after its quantity and amount were borrowed from a nearby item.
+            rejected["quote_note_as_product"] += 1
+            continue
         if is_date and footer:
             rejected["date_footer_as_product"] += 1
             continue
