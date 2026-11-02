@@ -35,6 +35,7 @@ from uda.business import (
     _enhance_order_header_from_page_layout,
     _enhance_inline_transaction_header_v46,
     _enhance_strict_order_number_v47,
+    _extract_amount_only_geometry_v47,
     _extract_geometry_table_items_v46,
     _line_hypothesis_total_fit_v66,
     _material_anchored_split_table_items_v61,
@@ -50,6 +51,9 @@ from uda.business import (
     _repair_order_number_evidence_bbox_v5172,
     _repair_purchase_order_party_roles_v5170,
     _repair_supplier_purchase_order_addressee_v5173,
+    _repair_scanned_supplier_order_header_roles_v5176,
+    _repair_issuer_name_from_legal_footer_v5177,
+    _reconcile_explicit_eco_tax_total_v5176,
     _rexellike_product_fee_table,
     _separate_promotional_continuation_notes_v5171,
     _repair_scan_currency_suffix_artifacts_v64,
@@ -1070,6 +1074,255 @@ def test_geometry_keeps_net_price_when_an_extra_list_price_column_is_present():
     assert line.uom == "PIECE"
 
 
+def test_scan_table_border_artifacts_do_not_turn_article_prices_into_discounts():
+    page = _page([
+        (180, [("Reference", 48, 76), ("Designation", 125, 165),
+               ("Quantite", 346, 370), ("Prix", 410, 430),
+               ("Remises", 480, 510), ("Montant", 548, 578)]),
+        (220, [("7733701995", 48, 82), ("PAC", 125, 140),
+               ("1,00", 352, 371), ("UN", 374, 386),
+               ("503,10}", 415, 438), ("55,00", 450, 471),
+               ("0,00", 486, 505), ("0,00", 514, 533),
+               ("503,10", 553, 583)]),
+        (250, [("DEEE", 48, 70), ("1,00", 352, 371),
+               ("1,75", 415, 441), ("1,75", 553, 580)]),
+        (280, [("7733701869", 48, 82), ("UNITE", 125, 155),
+               ("1,00", 352, 371), ("UN", 374, 386),
+               ("613,35|", 415, 438), ("55,00", 450, 471),
+               ("0,00", 486, 505), ("0,00", 514, 533),
+               ("613,35", 553, 583)]),
+        (310, [("DEEE", 48, 70), ("1,00", 352, 371),
+               ("7,69", 415, 441), ("7,69", 553, 580)]),
+        (340, [("7733701951", 48, 82), ("PASSERELLE", 125, 170),
+               ("1,00", 352, 371), ("UN", 374, 386),
+               ("33,75]", 415, 438), ("55,00", 450, 471),
+               ("0,00", 486, 505), ("0,00", 514, 533),
+               ("33,75", 553, 583)]),
+        (370, [("Eco-mobilier", 125, 177), ("1,00", 352, 371),
+               ("0,14", 415, 441), ("0,14", 553, 580)]),
+        (400, [("DEEE", 48, 70), ("1,00", 352, 371),
+               ("0,14", 415, 441), ("0,14", 553, 580)]),
+        (430, [("7733703987", 48, 82), ("MODULE", 125, 155),
+               ("1,00", 352, 371), ("UN", 374, 386),
+               ("33,75}", 415, 438), ("55,00", 450, 471),
+               ("0,00", 486, 505), ("0,00", 514, 533),
+               ("33,75", 553, 583)]),
+        (460, [("DEEE", 48, 70), ("1,00", 352, 371),
+               ("0,14", 415, 441), ("0,14", 553, 580)]),
+        (500, [("TOTAL", 40, 70), ("HT", 74, 88), ("1183,95", 550, 587)]),
+    ])
+    page.source_type = "scan_ocr"
+
+    lines, charges = _extract_geometry_table_items_v46([page], {})
+
+    assert [line.material_number for line in lines] == [
+        "7733701995", "7733701869", "7733701951", "7733703987"
+    ]
+    assert [line.unit_price for line in lines] == [503.10, 613.35, 33.75, 33.75]
+    assert sum(line.line_total for line in lines) == pytest.approx(1183.95)
+    assert len(charges) == 5
+    assert {charge.charge_type for charge in charges} == {"environmental_fee"}
+    assert sum(charge.amount for charge in charges) == pytest.approx(9.86)
+
+
+def test_total_volume_deee_summary_is_not_a_second_environmental_charge():
+    page = _page([
+        (700, [("TOTAL", 20, 58), ("VOLUME", 62, 110),
+               ("0,00", 125, 150), ("M3", 155, 170),
+               ("DEEE", 480, 510), ("9,72€", 547, 580)]),
+    ], number=2)
+    page.source_type = "scan_ocr"
+    po = SimpleNamespace(lines=[], additional_charges=[], totals=Totals(currency="EUR"))
+
+    po, recovered = _merge_explicit_page_charges_v63(po, [page], {})
+
+    assert recovered == {}
+    assert po.additional_charges == []
+
+
+def test_eco_mobilier_summary_repeats_but_does_not_duplicate_detail_fee():
+    detail = _page([
+        (250, [("Eco-mobilier", 110, 175), ("1,00", 352, 371),
+               ("0,14", 415, 441), ("0,14", 553, 580)]),
+    ])
+    summary = _page([
+        (700, [("TOTAL", 20, 58), ("VOLUME", 62, 110),
+               ("DEEE", 480, 510), ("9,72€", 547, 580)]),
+        (730, [("TOTAL", 20, 58), ("CONDITIONNEMENT", 62, 180),
+               ("4,00", 550, 580)]),
+        (755, [("J", 20, 27), ("Eco-mobilier", 30, 100),
+               ("0,14", 550, 580)]),
+        (790, [("HT", 20, 38), ("Eco-taxes", 42, 105),
+               ("1193,81", 550, 590)]),
+    ], number=2)
+    po = SimpleNamespace(lines=[], additional_charges=[], totals=Totals(currency="EUR"))
+
+    po, recovered = _merge_explicit_page_charges_v63(po, [detail, summary], {})
+
+    assert recovered == {"environmental_fee": 1}
+    assert len(po.additional_charges) == 1
+    assert po.additional_charges[0].description == "Eco-mobilier"
+    assert po.additional_charges[0].amount == 0.14
+
+
+def test_scanned_supplier_order_uses_issuer_and_vendor_header_columns():
+    page = _page([
+        (130, [("Est", 20, 40), ("Sanitaire", 44, 88),
+               ("ELM", 355, 380), ("LEBLANC", 385, 435)]),
+        (160, [("11", 20, 30), ("rue", 33, 49), ("des", 52, 68),
+               ("tuileries", 70, 111), ("124/126", 355, 390),
+               ("RUE", 394, 415), ("DE", 420, 431),
+               ("STALINGRAD", 435, 495)]),
+        (190, [("67460", 20, 52), ("Souffelweyersheim", 55, 155),
+               ("93711", 355, 387), ("DRANCY", 392, 435),
+               ("CEDEX", 440, 475)]),
+        (280, [("Adresse", 20, 64), ("de", 67, 78),
+               ("livraison", 80, 125), ("COMMANDE", 355, 420),
+               ("FOURNISSEUR", 425, 505), ("2200", 515, 550)]),
+        (810, [("Est", 20, 40), ("Sanitaire", 44, 88),
+               ("Siret", 160, 190), ("31983368700043", 193, 278),
+               ("TVA", 290, 312), ("FR62319833687", 315, 400)]),
+    ])
+    po = SimpleNamespace(
+        purchase_order=SimpleNamespace(number=ExtractedField(value="2200 ESTSANITAIRE")),
+        buyer=Party(name="DEEE 1.75", vat_number="FR62319833687",
+                    company_registration_number="31983368700043"),
+        supplier=Party(name="2200 ESTSANITAIRE"),
+        ship_to=Party(name="Est Sanitaire", address=Address(
+            line1="11 rue des tuileries", postal_code="67460",
+            city="Souffelweyersheim")),
+    )
+
+    po, repairs = _repair_scanned_supplier_order_header_roles_v5176(po, [page], {})
+
+    assert repairs == 1
+    assert po.buyer.name == "Est Sanitaire"
+    assert po.buyer.address.postal_code == "67460"
+    assert po.buyer.vat_number == "FR62319833687"
+    assert po.supplier.name == "ELM LEBLANC"
+    assert po.supplier.address.postal_code == "93711"
+    assert po.supplier.vat_number is None
+
+
+def test_scanned_supplier_order_does_not_replace_a_plausible_buyer():
+    page = _page([(280, [("COMMANDE", 350, 420), ("FOURNISSEUR", 425, 505)])])
+    po = SimpleNamespace(
+        purchase_order=SimpleNamespace(number=ExtractedField(value="2200 ESTSANITAIRE")),
+        buyer=Party(name="Est Sanitaire"),
+        supplier=Party(name="2200 ESTSANITAIRE"),
+        ship_to=Party(name="Autre depot", address=Address(postal_code="67460")),
+    )
+
+    po, repairs = _repair_scanned_supplier_order_header_roles_v5176(po, [page], {})
+
+    assert repairs == 0
+    assert po.buyer.name == "Est Sanitaire"
+
+
+def test_legal_footer_replaces_activity_slogan_not_issuer_address():
+    issuer = "Comptoir des Plombiers du Maine"
+    page = _page([
+        (20, [("PLOMBERIE - REGULATION - CHAUFFAGE", 10, 300)]),
+        (35, [("16 rue de Portland - 72100 Le Mans", 10, 280)]),
+        (70, [(issuer, 10, 280)]),
+        (110, [("ELM LEBLANC - BOSCH", 350, 550)]),
+        (160, [("COMMANDE FOURNISSEUR : 26 290 / CPM", 10, 350)]),
+        (810, [(issuer + " au capital de 39 636 € - Siret : 35359875800020", 10, 550)]),
+    ])
+    po = SimpleNamespace(
+        buyer=Party(name="PLOMBERIE - REGULATION - CHAUFFAGE",
+                    address=Address(line1="16 rue de Portland", postal_code="72100", city="Le Mans")),
+        supplier=Party(name="ELM LEBLANC - BOSCH"),
+        ship_to=Party(name=issuer, address=Address(line1="25 Bis rue de Sydney")),
+    )
+    _, repaired = _repair_issuer_name_from_legal_footer_v5177(po, [page], {})
+    assert repaired == 1
+    assert po.buyer.name == issuer
+    assert po.buyer.address.line1 == "16 rue de Portland"
+    assert po.ship_to.address.line1 == "25 Bis rue de Sydney"
+
+
+def test_delivery_recipient_alone_does_not_replace_buyer_name():
+    page = _page([(20, [("COMMANDE FOURNISSEUR", 10, 200)]),
+                  (60, [("Other Delivery Company", 10, 200)])])
+    po = SimpleNamespace(
+        buyer=Party(name="PLOMBERIE - REGULATION - CHAUFFAGE"),
+        supplier=Party(name="ELM LEBLANC - BOSCH"),
+        ship_to=Party(name="Other Delivery Company"),
+    )
+    _, repaired = _repair_issuer_name_from_legal_footer_v5177(po, [page], {})
+    assert repaired == 0
+
+
+def test_explicit_eco_tax_total_reconciles_product_subtotal_and_fees():
+    page = _page([
+        (700, [("HT", 20, 40), ("Eco-taxes", 45, 100),
+               ("1", 525, 535), ("193,81", 540, 580)]),
+    ])
+    po = SimpleNamespace(
+        lines=[LineItem(line_total=1183.95)],
+        additional_charges=[AdditionalCharge(
+            charge_type="environmental_fee", amount=9.86)],
+        totals=Totals(subtotal=1183.95, total_net=1183.95,
+                      total_before_tax=1183.95),
+    )
+
+    po, reconciled = _reconcile_explicit_eco_tax_total_v5176(po, [page], {})
+
+    assert reconciled == 1
+    assert po.totals.subtotal == 1183.95
+    assert po.totals.total_product_lines == 1183.95
+    assert po.totals.total_line_charges == 9.86
+    assert po.totals.total_net == 1193.81
+    assert po.totals.total_before_tax == 1193.81
+
+
+def test_explicit_ht_plus_eco_taxes_reconciles_only_matching_sum():
+    page = _page([(700, [("HT", 20, 40), ("+", 42, 46),
+                         ("Eco-taxes", 50, 112), ("1 009,86", 520, 580)])])
+    po = SimpleNamespace(
+        lines=[LineItem(line_total=1000.0)],
+        additional_charges=[AdditionalCharge(amount=9.86)],
+        totals=Totals(subtotal=1000.0, total_net=1000.0),
+    )
+    _, changed = _reconcile_explicit_eco_tax_total_v5176(po, [page], {})
+    assert changed == 1
+    assert (po.totals.subtotal, po.totals.total_net) == (1000.0, 1009.86)
+
+
+def test_amount_only_table_stops_at_delivery_block_and_keeps_derogation_separate():
+    page = _page([
+        (200, [("REFERENCE", 10, 65), ("DESIGNATION", 130, 230),
+               ("QTE", 410, 430), ("MONTANT", 520, 565)]),
+        (220, [("87167639490", 10, 70), ("SOUPAPE SECURITE", 130, 250),
+               ("1", 410, 420), ("90,00", 520, 555)]),
+        (235, [("SELON DEROG N° RLE-250626-1607", 130, 315)]),
+        (260, [("ADRESSE DE LIVRAISON", 130, 300)]),
+        (275, [("G2C DISTRIBUTION NARBONNE", 130, 335)]),
+    ])
+    lines = _extract_amount_only_geometry_v47([page], {})
+    assert len(lines) == 1
+    assert lines[0].description == "SOUPAPE SECURITE"
+    assert lines[0].derogation_number == "RLE-250626-1607"
+    assert lines[0].derogation_numbers == ["RLE-250626-1607"]
+
+
+def test_eco_tax_total_is_not_inferred_without_matching_printed_amount():
+    page = _page([(700, [("HT", 20, 40), ("Eco-taxes", 45, 100),
+                          ("1", 525, 535), ("190,00", 540, 580)])])
+    po = SimpleNamespace(
+        lines=[LineItem(line_total=1183.95)],
+        additional_charges=[AdditionalCharge(
+            charge_type="environmental_fee", amount=9.86)],
+        totals=Totals(subtotal=1183.95, total_net=1183.95),
+    )
+
+    po, reconciled = _reconcile_explicit_eco_tax_total_v5176(po, [page], {})
+
+    assert reconciled == 0
+    assert po.totals.total_net == 1183.95
+
+
 def test_geometry_recognizes_purchase_price_pa_header_and_free_type_error_total():
     page = _page([
         (180, [("Code", 30, 53), ("art", 55, 69), ("Référence", 79, 122),
@@ -1529,6 +1782,25 @@ def test_semantic_text_table_recovers_quantity_first_product_and_shipping():
     assert lines[0].description == "CONSOLE CL5000IU CN35E"
     assert (lines[0].quantity, lines[0].unit_price, lines[0].line_total) == (1, 497.48, 497.48)
     assert charges[0].charge_type == "shipping" and charges[0].amount == 55
+
+
+def test_semantic_table_preserves_repeated_printed_products_and_fees():
+    page = _page([
+        (180, [("Réf. article Désignation Quantité Prix Montant", 10, 500)]),
+        (220, [("PCE Climate 5000 1 44/26", 20, 320)]),
+        (235, [("7733701933 PCE 724,05 724,05", 20, 450)]),
+        (245, [("DEEE 7.69 7,69", 20, 200)]),
+        (260, [("PCE Climate 5000 1 44/26", 20, 320)]),
+        (275, [("7733701933 PCE 724,05 724,05", 20, 450)]),
+        (285, [("DEEE 7.69 7,69", 20, 200)]),
+    ])
+    lines, charges = _semantic_text_table_items_v68([page], {})
+    assert len(lines) == 2
+    assert [line.line_number for line in lines] == ["1", "2"]
+    assert [line.material_number for line in lines] == ["7733701933"] * 2
+    assert [line.description for line in lines] == ["Climate 5000"] * 2
+    assert [charge.amount for charge in charges] == [7.69, 7.69]
+    assert [charge.parent_line_number for charge in charges] == ["1", "2"]
 
 
 def test_semantic_text_table_recovers_dual_reference_rows_and_unit_eco_fees():

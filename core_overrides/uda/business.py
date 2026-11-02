@@ -761,9 +761,15 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
             close=get_close_matches(token,known,n=1,cutoff=0.84)
             if close: return close[0]
         return token
+    def numeric_token(text):
+        # OCR can attach a scanned table border to an amount (``503,10}``,
+        # ``613,35|``). Only remove edge border/currency glyphs, then keep the
+        # strict numeric grammar so descriptions never become prices.
+        token=str(text).strip().strip("|[]{}€")
+        return token if re.fullmatch(r"[-+]?\d[\d.,']*", token) else None
     def number_from_words(ws):
         if not ws: return None
-        raw=" ".join(w.text for w in ws).strip()
+        raw=" ".join(numeric_token(w.text) or w.text for w in ws).strip()
         return parse_number(raw)
 
     for pg in pages:
@@ -875,8 +881,8 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
             for w in row.words:
                 if center(w)<q_left:
                     continue
-                token=w.text.strip().replace("€","")
-                if re.fullmatch(r"[-+]?\d[\d.,']*", token):
+                token=numeric_token(w.text)
+                if token is not None:
                     numeric_words.append(w)
             groups=[]
             for w in numeric_words:
@@ -1813,7 +1819,6 @@ def _semantic_text_table_items_v68(pages, config: dict, default_currency="EUR"):
     amount_rel_tolerance = float(cfg.get("semantic_text_table_amount_tolerance_rel", 0.006))
     items = []
     charges = []
-    charge_signatures = set()
 
     def decimal(value):
         return _parse_native_decimal(value)
@@ -1838,13 +1843,8 @@ def _semantic_text_table_items_v68(pages, config: dict, default_currency="EUR"):
                    confidence=0.0):
         if amount is None:
             return
-        signature = (
-            page, kind, _fold(description), round(float(amount), 6),
-            getattr(parent, "material_number", None),
-        )
-        if signature in charge_signatures:
-            return
-        charge_signatures.add(signature)
+        # One call represents one physical text row.  Identical DEEE rows can
+        # legitimately recur for repeated articles on the same page.
         charges.append(AdditionalCharge(
             charge_type=kind,
             code=code_value,
@@ -1917,6 +1917,7 @@ def _semantic_text_table_items_v68(pages, config: dict, default_currency="EUR"):
         re.I,
     )
 
+    last_product = None
     for page in pages:
         lines = [" ".join(line.split()) for line in str(page.text or "").splitlines() if line.strip()]
         header_idx = table_header_index(lines)
@@ -1925,7 +1926,6 @@ def _semantic_text_table_items_v68(pages, config: dict, default_currency="EUR"):
         confidence = max(0.0, min(1.0, float(page.confidence or 0.0) * 0.94))
         pending = None
         awaiting_supplier = None
-        last_product = None
         page_items_before = len(items)
 
         for raw in lines[header_idx + 1:]:
@@ -1962,6 +1962,12 @@ def _semantic_text_table_items_v68(pages, config: dict, default_currency="EUR"):
             detail = two_row_detail.fullmatch(text) if pending is not None else None
             if detail is not None:
                 description, quantity, week, description_raw = pending
+                # The first row can repeat the unit before the actual product
+                # name; the detail row already supplies that unit separately.
+                leading_unit = description.split(None, 1)
+                if (len(leading_unit) == 2
+                        and _fold(leading_unit[0]) == _fold(detail.group("uom"))):
+                    description = leading_unit[1]
                 price = decimal(detail.group("price"))
                 amount = decimal(detail.group("amount"))
                 if arithmetic_ok(quantity, price, amount):
@@ -1983,6 +1989,7 @@ def _semantic_text_table_items_v68(pages, config: dict, default_currency="EUR"):
                         )
                         primary = supplier or internal
                         item = LineItem(
+                            line_number=str(len(items) + 1),
                             material_number=primary,
                             article_number=primary,
                             customer_material_number=internal if supplier else None,
@@ -2017,6 +2024,7 @@ def _semantic_text_table_items_v68(pages, config: dict, default_currency="EUR"):
                 internal = reference_candidate(match.group("internal"))
                 if supplier and internal and arithmetic_ok(quantity, price, amount):
                     item = LineItem(
+                        line_number=str(len(items) + 1),
                         material_number=supplier,
                         article_number=supplier,
                         customer_material_number=internal,
@@ -2048,6 +2056,7 @@ def _semantic_text_table_items_v68(pages, config: dict, default_currency="EUR"):
                 reference = reference_candidate(match.group("reference"))
                 if reference and arithmetic_ok(quantity, price, amount):
                     item = LineItem(
+                        line_number=str(len(items) + 1),
                         material_number=reference,
                         article_number=reference,
                         customer_material_number=reference,
@@ -2118,6 +2127,7 @@ def _semantic_text_table_items_v68(pages, config: dict, default_currency="EUR"):
                     continue
                 if printed_reference and description and amount is not None:
                     item = LineItem(
+                        line_number=str(len(items) + 1),
                         material_number=printed_reference,
                         article_number=printed_reference,
                         supplier_material_number=printed_reference,
@@ -2186,6 +2196,11 @@ def _semantic_text_table_items_v68(pages, config: dict, default_currency="EUR"):
                     continue
             pending = None
 
+    for item in items:
+        description = str(item.description or "")
+        prefix, separator, remainder = description.partition(" ")
+        if separator and item.uom and normalize_unit(prefix) == item.uom:
+            item.description = remainder
     return _dedupe_line_items(items), charges
 
 
@@ -3381,6 +3396,155 @@ def _repair_supplier_purchase_order_addressee_v5173(po, pages, config: dict):
     return po, repairs
 
 
+def _repair_scanned_supplier_order_header_roles_v5176(po, pages, config: dict):
+    """Use a two-column order header when fee/metadata text polluted both roles.
+
+    The purchasing issuer must agree with an explicit ship-to block *and* the
+    left-hand masthead. The vendor must have a separate name, street and postal
+    code in the right-hand addressee column. These independent source anchors
+    keep this repair from swapping parties on ordinary orders.
+    """
+    import re
+    from po_ocr.extract import all_rows
+
+    if not config.get("layout", {}).get("scanned_supplier_order_header_roles_v5176", True):
+        return po, 0
+    if not pages or not po.ship_to or not po.ship_to.name or not po.ship_to.address.postal_code:
+        return po, 0
+    page = pages[0]
+    if not re.search(r"\bcommande\s+fournisseur\b", _fold(page.text)):
+        return po, 0
+    order_number = str(po.purchase_order.number.value or "").strip()
+    supplier_name = str(po.supplier.name or "").strip()
+    supplier_is_metadata = bool(
+        order_number and _fold(order_number) == _fold(supplier_name)
+    )
+    buyer_is_polluted = bool(
+        _explicit_charge_kind_v62(po.buyer.name)
+        or _bad_party_name(po.buyer.name)
+        or _company_name_quality_v48(po.buyer.name) < 0.35
+    )
+    if not (supplier_is_metadata and buyer_is_polluted):
+        return po, 0
+
+    rows = all_rows([page], y_factor=0.48)
+    midpoint = page.width * 0.5
+
+    def column_text(row, *, left):
+        words = [
+            word.text for word in row.words
+            if ((word.bbox[0] + word.bbox[2]) / 2 < midpoint) == left
+        ]
+        return " ".join(words).strip()
+
+    header_rows = [row for row in rows if _row_center_safe(row) < page.height * 0.30]
+    left_header = " ".join(column_text(row, left=True) for row in header_rows)
+    issuer_name = _fold(po.ship_to.name)
+    if (
+        issuer_name not in _fold(left_header)
+        or po.ship_to.address.postal_code not in left_header
+    ):
+        return po, 0
+
+    vendor = None
+    for index, row in enumerate(header_rows):
+        cy = _row_center_safe(row)
+        if not page.height * 0.13 <= cy <= page.height * 0.25:
+            continue
+        name = column_text(row, left=False)
+        folded = _fold(name)
+        if (
+            len(re.findall(r"[a-z]{2,}", folded)) < 2
+            or _company_name_quality_v48(name) < 0.65
+            or _explicit_charge_kind_v62(name)
+            or re.search(r"\b(?:rue|avenue|route|boulevard|chemin|tel|fax|france)\b|\d{5}", folded)
+        ):
+            continue
+        following = [
+            column_text(candidate, left=False)
+            for candidate in header_rows[index + 1:]
+            if 0 < _row_center_safe(candidate) - cy < page.height * 0.10
+        ]
+        right_block = " ".join(following)
+        if not (
+            re.search(r"\b(?:rue|avenue|route|boulevard|chemin)\b", _fold(right_block))
+            and re.search(r"\b\d{5}\b", right_block)
+        ):
+            continue
+        vendor = _party_from_lines_v47([name, *following], role="supplier")
+        if vendor.name and vendor.address.postal_code:
+            break
+        vendor = None
+    if vendor is None:
+        return po, 0
+
+    new_buyer = po.ship_to.model_copy(deep=True)
+    former_buyer = po.buyer
+    # Transfer tax registrations only when the printed footer ties the value
+    # to the issuer's name. The other party's registration must not leak here.
+    for field in ("vat_number", "company_registration_number", "tax_number"):
+        value = getattr(former_buyer, field, None)
+        if not value or getattr(new_buyer, field, None):
+            continue
+        value_key = re.sub(r"\W", "", _fold(str(value)))
+        if any(
+            issuer_name in _fold(row.text)
+            and value_key in re.sub(r"\W", "", _fold(row.text))
+            for source_page in pages
+            for row in all_rows([source_page], y_factor=0.48)
+        ):
+            setattr(new_buyer, field, value)
+    po.buyer = new_buyer
+    po.supplier = vendor
+    return po, 1
+
+
+def _repair_issuer_name_from_legal_footer_v5177(po, pages, config: dict):
+    """Prefer a printed legal issuer over a trade-category masthead slogan.
+
+    A delivery block alone is not enough: its recipient may differ from the
+    purchasing company.  Require the same name in the document's legal footer
+    and in the first-page header, with a distinct vendor addressee.
+    """
+    import re
+
+    if not config.get("layout", {}).get("issuer_legal_footer_name_v5177", True):
+        return po, 0
+    if not pages or not po.ship_to or not po.ship_to.name or not po.buyer:
+        return po, 0
+    issuer = " ".join(str(po.ship_to.name).split())
+    issuer_key = _fold(issuer)
+    buyer_key = _fold(po.buyer.name)
+    if (
+        len(issuer_key) < 8 or issuer_key == buyer_key
+        or issuer_key == _fold(po.supplier.name)
+        or _company_name_quality_v48(issuer) < 0.62
+    ):
+        return po, 0
+    if not re.search(r"\bcommande\s+fournisseur\b", _fold(pages[0].text)):
+        return po, 0
+    first_lines = [line.strip() for line in str(pages[0].text).splitlines() if line.strip()]
+    if not any(issuer_key in _fold(line) for line in first_lines[:25]):
+        return po, 0
+    footer_lines = [line.strip() for page in pages for line in str(page.text).splitlines()]
+    if not any(
+        issuer_key in _fold(line)
+        and re.search(r"\b(?:capital|siret|rcs)\b", _fold(line))
+        for line in footer_lines
+    ):
+        return po, 0
+    # An all-caps activity list is not a company name even when core party
+    # heuristics assigned it high confidence.
+    if not (
+        re.search(r"\s[-–—]\s", str(po.buyer.name or ""))
+        or _company_name_quality_v48(po.buyer.name) < 0.5
+    ):
+        return po, 0
+    po.buyer.name = issuer
+    po.buyer.legal_name = issuer
+    return po, 1
+
+
 def _downgrade_unreconciled_derived_lines_v5170(po, config: dict):
     """Do not leave arithmetic-derived rows highly trusted after a total failure."""
     if not config.get("layout", {}).get(
@@ -3432,7 +3596,7 @@ def _explicit_charge_kind_v62(text: str | None) -> str | None:
         return None
     if (
         re.search(r"(?<![a-z0-9])(?:deee|d3ee|weee)(?=$|[\s_./:+-]|\d)", low)
-        or re.search(r"\beco[- ]?(?:participation|contribution)\b", low)
+        or re.search(r"\beco[- ]?(?:participation|contribution|mobilier)\b", low)
     ):
         return "environmental_fee"
     if (
@@ -5268,11 +5432,31 @@ def _extract_amount_only_geometry_v47(pages, config: dict, default_currency: str
         for row in rows[header_idx+1:]:
             low=_fold(row.text)
             if "total ht" in low: break
+            # These are table trailers, not a continuation of the last product.
+            if current and re.search(
+                r"\b(?:adresse\s+de\s+livraison|adresse\s+de\s+facturation|"
+                r"livrer\s+a|facturer\s+a)\b", low
+            ):
+                break
             left=[w for w in row.words if w.bbox[2]<ref_desc]
             code=" ".join(w.text for w in left).strip()
             qty_txt=" ".join(w.text for w in row.words if q_left<=((w.bbox[0]+w.bbox[2])/2)<qa).strip()
             amount_txt=" ".join(w.text for w in row.words if ((w.bbox[0]+w.bbox[2])/2)>=qa).strip()
             desc=" ".join(w.text for w in row.words if ref_desc<=((w.bbox[0]+w.bbox[2])/2)<q_left).strip()
+            if current and not code:
+                derogation = re.search(
+                    r"\b(?:selon\s+)?d[eé]rog(?:ation)?\s*n[°ºo.]?\s*[:.-]?\s*"
+                    r"([A-Za-z0-9][A-Za-z0-9._/-]{2,49})",
+                    desc or row.text, flags=re.I,
+                )
+                if derogation:
+                    reference = derogation.group(1)
+                    current.derogation_number = reference
+                    if reference not in current.derogation_numbers:
+                        current.derogation_numbers.append(reference)
+                    if desc and desc not in current.notes:
+                        current.notes.append(desc)
+                    continue
             if code and re.fullmatch(r"[A-Za-z0-9._/-]{5,40}",code) and re.search(r"\d",code):
                 qty=parse_number(qty_txt); amount=parse_number(amount_txt)
                 if qty is None or amount is None: continue
@@ -5783,20 +5967,42 @@ def _merge_explicit_page_charges_v63(po, pages, config: dict):
         )
 
     for page in pages or []:
-        for row in all_rows([page], y_factor=0.50):
+        page_rows = all_rows([page], y_factor=0.50)
+        for row_index, row in enumerate(page_rows):
             low = _fold(row.text)
             # Summary grids often contain the words ``Ecotaxe`` and ``Port`` next
             # to VAT/TTC totals. Their right-most number is the document total, not
             # a charge. Only detail rows belong in ``additional_charges``.
             if re.search(
                 r"\b(?:total\s+ttc|net\s+a\s+payer|montant\s+tva|regle\s+ce\s+jour|"
-                r"montant\s+ht\s+ecotaxe|total\s+eco[- ]?participation)\b",
+                r"montant\s+ht\s+ecotaxe|total\s+eco[- ]?participation|"
+                r"total\s+(?:poids|volume|conditionnement))\b",
                 low,
             ):
                 continue
             kind = _explicit_charge_kind_v62(row.text)
             if not kind:
                 continue
+            # An Eco-mobilier subtotal is often printed as an unnumbered row
+            # between TOTAL CONDITIONNEMENT and HT Eco-taxes. It repeats the
+            # per-item fee and must not become a second charge.
+            if kind == "environmental_fee" and re.search(r"\beco[- ]?mobilier\b", low):
+                preceding = page_rows[max(0, row_index - 3):row_index]
+                following = page_rows[row_index + 1:row_index + 4]
+                in_summary_grid = (
+                    any(
+                        0 <= row.bbox[1] - prior.bbox[3] < page.height * 0.06
+                        and re.search(r"\btotal\s+(?:volume|conditionnement)\b", _fold(prior.text))
+                        for prior in preceding
+                    )
+                    and any(
+                        0 <= later.bbox[1] - row.bbox[3] < page.height * 0.06
+                        and re.search(r"\bht\s+eco[- ]?taxes\b", _fold(later.text))
+                        for later in following
+                    )
+                )
+                if in_summary_grid:
+                    continue
             # A selected parser may already have recovered the exact labelled row
             # and calculated a per-unit fee using its parent quantity. Source-row
             # identity is therefore a stronger duplicate key than amount equality.
@@ -5894,6 +6100,51 @@ def _merge_explicit_page_charges_v63(po, pages, config: dict):
     if shipping:
         po.totals.total_shipping = round(sum(shipping), 6)
     return po, dict(sorted(counts.items()))
+
+
+def _reconcile_explicit_eco_tax_total_v5176(po, pages, config: dict):
+    """Distinguish printed product HT from printed HT including eco-fees."""
+    import re
+    from po_ocr.extract import all_rows
+
+    if not config.get("layout", {}).get("explicit_eco_tax_total_reconciliation_v5176", True):
+        return po, 0
+    product_amounts = [line.line_total for line in po.lines if line.line_total is not None]
+    charge_amounts = [charge.amount for charge in po.additional_charges if charge.amount is not None]
+    if not product_amounts or not charge_amounts:
+        return po, 0
+    product_sum = round(sum(float(value) for value in product_amounts), 2)
+    charge_sum = round(sum(float(value) for value in charge_amounts), 2)
+    document_sum = round(product_sum + charge_sum, 2)
+    if charge_sum <= 0:
+        return po, 0
+    for page in pages or []:
+        for row in all_rows([page], y_factor=0.50):
+            if not re.search(r"\bht\s*(?:\+\s*)?eco[- ]?taxes\b", _fold(row.text)):
+                continue
+            amounts = re.findall(
+                r"(?<!\d)(?:\d{1,3}(?:[ \u00a0]\d{3})+|\d+)[,.]\d{2}(?!\d)",
+                row.text,
+            )
+            if not amounts:
+                continue
+            printed = _parse_native_decimal(amounts[-1])
+            if printed is None or abs(float(printed) - document_sum) > 0.03:
+                continue
+            if any(
+                value is not None
+                and abs(float(value) - product_sum) > 0.03
+                and abs(float(value) - document_sum) > 0.03
+                for value in (po.totals.subtotal, po.totals.total_net, po.totals.total_before_tax)
+            ):
+                continue
+            po.totals.subtotal = product_sum
+            po.totals.total_product_lines = product_sum
+            po.totals.total_line_charges = charge_sum
+            po.totals.total_net = round(float(printed), 2)
+            po.totals.total_before_tax = round(float(printed), 2)
+            return po, 1
+    return po, 0
 
 
 def _material_anchored_numeric_row_items_v61(
@@ -6991,6 +7242,7 @@ def _sanitize_party_addresses_v48(po, config:dict):
         for v in vals:
             if not v: continue
             text=" ".join(str(v).split()).strip()
+            text=re.sub(r"\s+Page\s+\d+\s*/\s*\d+\s*$", "", text, flags=re.I).strip()
             low=_fold(text)
             if any(x in low for x in ("commande par", "commande par :", "adresse de livraison :", "a facturer a :")):
                 continue
@@ -7470,6 +7722,12 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     po,parser_diag["supplier_purchase_order_addressee_repairs"]=(
         _repair_supplier_purchase_order_addressee_v5173(po,pages,config)
     )
+    po,parser_diag["scanned_supplier_order_header_role_repairs"]=(
+        _repair_scanned_supplier_order_header_roles_v5176(po,pages,config)
+    )
+    po,parser_diag["issuer_legal_footer_name_repairs"]=(
+        _repair_issuer_name_from_legal_footer_v5177(po,pages,config)
+    )
     po = _sanitize_summary_totals_v46(po, pages, config, default_currency=default_currency)
     po = _enhance_strict_totals_v47(po, pages, config)
     po = _summary_table_totals_v48(po, tables, config, default_currency=default_currency)
@@ -7481,8 +7739,12 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
         po, pages, config
     )
     po = _sanitize_double_counted_shipping_v47(po, config)
+    po, parser_diag["explicit_eco_tax_total_reconciliations"] = (
+        _reconcile_explicit_eco_tax_total_v5176(po, pages, config)
+    )
     po = _sanitize_internal_reference_v47(po)
     po.supplier.code = _normalize_labeled_party_code_v5166(po.supplier.code)
+    po = _sanitize_party_addresses_v48(po, config)
     # Refresh normalized address-role records after structural party corrections.
     po.business_addresses = build_business_addresses(po, pages, config)
     # Re-run validation/confidence after structural corrections.
