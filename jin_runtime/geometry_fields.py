@@ -391,6 +391,24 @@ def _explicit_order_number_v3(rows):
         digits = sum(char.isdigit() for char in compact)
         if len(compact) < 5 or digits < 4:
             return None
+        # In two-column headers a large "Bon de commande" title can share a
+        # visual row with the fax value from the neighboring column.  The fax
+        # label is then on the row immediately above that value; it is not an
+        # order-number label even though the value sits right of "commande".
+        value_left = min(token["bbox"][0] for token in selected)
+        value_top = min(token["bbox"][1] for token in selected)
+        for preceding in rows:
+            if preceding["cy"] >= value_top:
+                continue
+            for label in preceding["tokens"]:
+                if _norm(label["text"]) not in {
+                    "FAX", "TELECOPIE", "TELEPHONE", "TEL"
+                }:
+                    continue
+                vertical_gap = value_top - label["bbox"][3]
+                if (0 <= vertical_gap <= 35
+                        and abs(value_left - label["bbox"][0]) <= 40):
+                    return None
         return _field(value, _union_bbox_v3(selected), selected[0], 0.998) | {
             "source": "geometry_explicit_order_label_v3",
         }

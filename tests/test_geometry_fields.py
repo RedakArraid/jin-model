@@ -2,11 +2,32 @@ import unittest
 
 import fitz
 
-from jin_runtime.geometry_fields import extract_geometry_suggestions
+from jin_runtime.geometry_fields import (
+    _explicit_order_number_v3,
+    extract_geometry_suggestions,
+    visual_lines,
+)
 from jin_runtime.weak_field_router import _extract_first_page_lines
 
 
 class GeometryFieldTests(unittest.TestCase):
+    def test_order_title_does_not_promote_fax_from_neighboring_column(self):
+        def token(text, box):
+            return {
+                "text": text, "bbox": box,
+                "page_width": 595, "page_height": 842,
+            }
+
+        rows = visual_lines([[
+            token("N°", (317, 216, 326, 225)),
+            token("télécopie", (328, 216, 363, 225)),
+            token("Bon", (24, 230, 70, 257)),
+            token("de", (77, 230, 105, 257)),
+            token("commande", (112, 230, 239, 257)),
+            token("01.43.11.73.17", (317, 238, 377, 248)),
+        ]])
+        self.assertIsNone(_explicit_order_number_v3(rows))
+
     @staticmethod
     def make_pdf() -> bytes:
         doc = fitz.open()
