@@ -885,12 +885,18 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                 if token is not None:
                     numeric_words.append(w)
             groups=[]
+            def numeric_column(word):
+                x = center(word)
+                return 0 if x < qp else (1 if x < pa else 2)
             for w in numeric_words:
                 if not groups:
                     groups.append([w]); continue
                 gap=w.bbox[0]-groups[-1][-1].bbox[2]
                 # Small gaps are thousands-group spacing, not a new numeric column.
-                if gap <= max(5.0, pg.width*0.012):
+                # A narrow quantity cell may be only a few points from the price
+                # cell; never combine words that cross their header-derived boundary.
+                if (gap <= max(5.0, pg.width*0.012)
+                        and numeric_column(w) == numeric_column(groups[-1][-1])):
                     groups[-1].append(w)
                 else:
                     groups.append([w])
@@ -995,6 +1001,16 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
             code=code_word.text.strip()
             secondary=None
             secondary_words=[]
+            barcode_word=None
+            if sec_x is None:
+                barcode_candidates=[w for w in left if w is not code_word
+                                    and center(code_word)<center(w)<desc_x
+                                    and re.fullmatch(r"\d{13}",w.text)
+                                    and (sum((1 if i%2==0 else 3)*int(d)
+                                             for i,d in enumerate(w.text[:12]))
+                                         +int(w.text[-1]))%10==0]
+                if len(barcode_candidates)==1:
+                    barcode_word=barcode_candidates[0]
             if sec_x is not None:
                 # The explicit supplier-reference column is often narrow while
                 # its first description token starts well before the centre of
@@ -1035,7 +1051,7 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                 max(word.bbox[2] for word in secondary_words)
                 if secondary_words else sec_desc_boundary
             )
-            desc_words=[w.text for w in left if w is not code_word and id(w) not in secondary_word_ids and (sec_x is None or center(w)>=row_desc_start)
+            desc_words=[w.text for w in left if w is not code_word and w is not barcode_word and id(w) not in secondary_word_ids and (sec_x is None or center(w)>=row_desc_start)
                         and (unit_anchor is None or center(w)<unit_anchor-15)
                         and (auxiliary_start is None or center(w)<auxiliary_start)
                         and (desc_family_boundary is None or center(w)<desc_family_boundary)]
@@ -1097,6 +1113,7 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                 article_number=supplier_reference,
                 customer_material_number=customer_reference,
                 supplier_material_number=supplier_reference, description=desc or None,
+                ean=barcode_word.text if barcode_word is not None else None,
                 product_family=product_family,
                 quantity=qty, ordered_quantity=qty, unit_price=price, net_unit_price=price,
                 uom=" ".join(unit_words) or None,
@@ -1443,6 +1460,15 @@ def _enhance_requested_delivery_date_v5169(po, pages, config: dict):
         r"(?<!\d)(?:[0-3]?\d[ /.-]+(?:0?\d|1[0-2])[ /.-]+(?:\d{2}|\d{4})|"
         r"(?:19|20)\d{2}[/.-](?:0?\d|1[0-2])[/.-][0-3]?\d)(?!\d)"
     )
+
+    def is_product_row(row) -> bool:
+        """A delivery instruction above a table must not date the first item."""
+        text = _fold(row.text)
+        return bool(
+            re.search(r"\b[a-z]{0,8}\d{5,}[a-z0-9._/-]*\b", text)
+            and re.search(r"(?<!\d)\d+[,.]\d{2,6}(?!\d)", text)
+        )
+
     candidates = []
     for page in pages or []:
         rows = all_rows([page], y_factor=0.50)
@@ -1450,6 +1476,8 @@ def _enhance_requested_delivery_date_v5169(po, pages, config: dict):
             folded = _fold(row.text)
             label = explicit_label.search(folded)
             if not label:
+                continue
+            if is_product_row(row):
                 continue
             # A bare delivery-date column belongs to the individual line items.
             # Order metadata labels may share a row with "Commande", but not with
@@ -1467,6 +1495,8 @@ def _enhance_requested_delivery_date_v5169(po, pages, config: dict):
             for following in rows[index + 1:index + 3]:
                 if _row_center_safe(following) - _row_center_safe(row) > page.height * 0.045:
                     break
+                if is_product_row(following):
+                    continue
                 probes.append((following, _fold(following.text)))
             for evidence_row, suffix in probes:
                 match = date_token.search(suffix)
@@ -3255,6 +3285,121 @@ def _repair_purchase_order_party_roles_v5170(po, pages, config: dict):
     po.supplier = new_supplier
     po = _sanitize_party_addresses_v48(po, config)
     return po, 1
+
+
+def _repair_issuer_masthead_and_vendor_code_v5201(po, pages, config: dict):
+    """Use a left issuer masthead and an explicit vendor-code column.
+
+    A full-width text row may contain both the issuer logo and the order title.
+    Parsing that row as one string can lose the issuer and promote its postal
+    line to the buyer name. A neighboring PAGE column can likewise be mistaken
+    for the supplier code. Both corrections require their own spatial anchors.
+    """
+    import re
+    from po_ocr.extract import all_rows
+
+    if not pages or not config.get("layout", {}).get(
+        "issuer_masthead_vendor_code_v5201", True
+    ):
+        return po, 0
+    page = pages[0]
+    rows = all_rows([page], y_factor=0.50)
+    if not any(
+        re.search(r"\bcommande\s+n\b|\bbon\s+de\s+commande\b", _fold(row.text))
+        and _row_center_safe(row) < page.height * 0.20
+        for row in rows
+    ):
+        return po, 0
+
+    repairs = 0
+    current_buyer = " ".join(str(po.buyer.name or "").split())
+    if _company_name_quality_v48(current_buyer) < 0.40:
+        masthead = None
+        for row in rows:
+            if _row_center_safe(row) > page.height * 0.16:
+                break
+            left = [word for word in row.words
+                    if (word.bbox[0] + word.bbox[2]) / 2 < page.width * 0.44]
+            candidate = " ".join(word.text for word in left).strip()
+            folded = _fold(candidate)
+            if (
+                not candidate or len(candidate) > 70
+                or re.search(r"\b(?:commande|date|page|fournisseur|supplier|"
+                             r"siege|social|capital|telephone|tel|fax|siret)\b", folded)
+                or re.search(r"\d{5}|\b(?:rue|avenue|route|boulevard)\b", folded)
+                or _company_name_quality_v48(candidate) < 0.65
+            ):
+                continue
+            masthead = (candidate, row)
+            break
+        if masthead:
+            po.buyer.name = masthead[0]
+            po.buyer.legal_name = masthead[0]
+            repairs += 1
+            street = None
+            postal = None
+            for row in rows:
+                cy = _row_center_safe(row)
+                if cy <= _row_center_safe(masthead[1]) or cy > page.height * 0.28:
+                    continue
+                left = " ".join(word.text for word in row.words
+                                if (word.bbox[0] + word.bbox[2]) / 2 < page.width * 0.44)
+                if not left:
+                    continue
+                street_match = re.search(
+                    r"(?:\bsiege\s+social\s*:\s*)?"
+                    r"(\d+[A-Za-z]?\s+(?:rue|avenue|route|boulevard|chemin)\b[^,;]*)",
+                    _fold(left), re.I,
+                )
+                if street_match and street is None:
+                    street = street_match.group(1).strip()
+                postal_match = re.fullmatch(
+                    r"\s*(\d{5})\s+([A-Za-z][A-Za-z .'-]{1,50})\s*", left
+                )
+                if postal_match and postal is None:
+                    postal = (postal_match.group(1), postal_match.group(2).strip())
+            current_street = _fold(po.buyer.address.line1)
+            if street and (
+                not current_street
+                or not re.search(
+                    r"\b(?:rue|avenue|route|boulevard|chemin)\b",
+                    current_street,
+                )
+            ):
+                po.buyer.address.line1 = street
+            if postal:
+                if not po.buyer.address.postal_code:
+                    po.buyer.address.postal_code = postal[0]
+                if not po.buyer.address.city:
+                    po.buyer.address.city = postal[1]
+                if street and not re.search(
+                    r"\b\d{5}\s+[A-Za-z]", str(po.buyer.address.line2 or "")
+                ):
+                    po.buyer.address.line2 = f"{postal[0]} {postal[1]}"
+
+    if _fold(po.supplier.code) in {"", "page", "date", "fournisseur", "supplier"}:
+        for index, row in enumerate(rows):
+            if _row_center_safe(row) > page.height * 0.24:
+                break
+            header = next((word for word in row.words
+                           if _fold(word.text) in {"fournisseur", "supplier", "vendor"}), None)
+            if header is None:
+                continue
+            anchor = (header.bbox[0] + header.bbox[2]) / 2
+            for following in rows[index + 1:index + 3]:
+                if _row_center_safe(following) - _row_center_safe(row) > page.height * 0.045:
+                    break
+                codes = [word.text for word in following.words
+                         if abs((word.bbox[0] + word.bbox[2]) / 2 - anchor)
+                         < page.width * 0.08
+                         and re.fullmatch(r"[A-Za-z]{2,8}\d{2,12}", word.text)]
+                if len(codes) == 1:
+                    po.supplier.code = codes[0]
+                    repairs += 1
+                    break
+            if _fold(po.supplier.code) not in {"", "page", "date", "fournisseur", "supplier"}:
+                break
+    return po, repairs
 
 
 def _repair_supplier_purchase_order_addressee_v5173(po, pages, config: dict):
@@ -6499,6 +6644,76 @@ def _enhance_strict_totals_v47(po, pages, config: dict):
     return po
 
 
+def _reconcile_printed_net_with_lines_and_tax_v5201(po, pages, config: dict):
+    """Repair a malformed HT token only when three independent totals agree.
+
+    A split native amount may be joined to the preceding tax/quantity code by a
+    generic table reader. Require complete line arithmetic, the printed HT
+    amount itself, and TTC minus TVA to agree before replacing any total.
+    """
+    from po_ocr.extract import all_rows
+    from po_ocr.normalize import parse_number
+    import re
+
+    if not config.get("layout", {}).get("printed_net_arithmetic_reconciliation_v5201", True):
+        return po, 0
+    if not po.lines or po.additional_charges:
+        return po, 0
+    totals = po.totals
+    if any(getattr(totals, field, None) not in (None, 0) for field in (
+        "total_freight", "total_shipping", "total_surcharge", "total_discount",
+        "rounding", "total_admin_fees", "total_packaging", "total_other_fees",
+    )):
+        return po, 0
+    gross = totals.total_gross or totals.grand_total or totals.amount_due
+    tax = totals.total_vat or totals.total_tax
+    if gross is None or tax is None:
+        return po, 0
+    expected = round(float(gross) - float(tax), 2)
+    if expected <= 0:
+        return po, 0
+    tolerance = max(0.04, abs(expected) * 0.0001)
+    if any(line.line_total is None for line in po.lines):
+        return po, 0
+    for line in po.lines:
+        if line.quantity is None or line.unit_price is None:
+            return po, 0
+        product = float(line.quantity) * float(line.unit_price)
+        if abs(product - float(line.line_total)) > max(0.04, abs(product) * 0.0001):
+            return po, 0
+    if abs(sum(float(line.line_total) for line in po.lines) - expected) > tolerance:
+        return po, 0
+    printed = False
+    for page in pages or []:
+        for row in all_rows([page], y_factor=0.50):
+            folded = _fold(row.text)
+            if not re.search(
+                r"\b(?:sous\s+total|total\s+(?:brut\s+)?h\.?t\.?|"
+                r"bases?\s+h\.?t\.?|net\s+h\.?t\.?)\b", folded
+            ):
+                continue
+            if any(
+                re.search(r"[,.]\d{2}\b", word.text)
+                and (value := parse_number(word.text)) is not None
+                and abs(float(value) - expected) <= tolerance
+                for word in row.words
+            ):
+                printed = True
+                break
+        if printed:
+            break
+    if not printed:
+        return po, 0
+    old_values = (totals.subtotal, totals.total_net, totals.total_before_tax)
+    totals.subtotal = expected
+    totals.total_net = expected
+    totals.total_before_tax = expected
+    return po, int(any(
+        value is None or abs(float(value) - expected) > tolerance
+        for value in old_values
+    ))
+
+
 def _sanitize_double_counted_shipping_v47(po, config: dict):
     """Drop separate freight/shipping totals when product-line sum already equals net.
 
@@ -7728,10 +7943,16 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     po,parser_diag["issuer_legal_footer_name_repairs"]=(
         _repair_issuer_name_from_legal_footer_v5177(po,pages,config)
     )
+    po, parser_diag["issuer_masthead_vendor_code_repairs"] = (
+        _repair_issuer_masthead_and_vendor_code_v5201(po, pages, config)
+    )
     po = _sanitize_summary_totals_v46(po, pages, config, default_currency=default_currency)
     po = _enhance_strict_totals_v47(po, pages, config)
     po = _summary_table_totals_v48(po, tables, config, default_currency=default_currency)
     po = _strict_text_totals_v48(po, pages, config, default_currency=default_currency)
+    po, parser_diag["printed_net_arithmetic_reconciliations"] = (
+        _reconcile_printed_net_with_lines_and_tax_v5201(po, pages, config)
+    )
     po, parser_diag["tax_identifier_total_repairs"] = (
         _sanitize_tax_identifier_totals_v5174(po, config)
     )

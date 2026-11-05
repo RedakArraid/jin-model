@@ -10,7 +10,7 @@ from po_ocr.extract import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGE = PageResult.model_validate(json.loads((ROOT / 'tests/fixtures/cf000337886_page.json').read_text(encoding='utf-8')))
+PAGE = PageResult.model_validate(json.loads((ROOT.parent / 'model/tests/fixtures/cf000337886_page.json').read_text(encoding='utf-8')))
 
 
 def test_cf000337886_spatial_header_and_parties():

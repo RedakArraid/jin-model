@@ -6,7 +6,7 @@ import re
 import fitz
 
 from .models import WordToken
-from .ocr import words_to_text
+from .ocr import group_words_into_rows, words_to_text
 from .normalize import ascii_fold
 
 
@@ -36,6 +36,80 @@ def _deduplicate_native_words(words: list[WordToken]) -> list[WordToken]:
         seen.add(key)
         unique.append(word)
     return unique
+
+
+_NATIVE_AMOUNT_FRAGMENT = re.compile(r"\d[\d.,'\u00a0\u202f]*\Z")
+
+
+def _stitch_overlapping_native_amounts(words: list[WordToken]) -> list[WordToken]:
+    """Rebuild one amount from tightly overlapping PDF text fragments.
+
+    Some print engines emit ``1\u202f16`` and ``162,26`` in intersecting boxes for
+    the *single visible* amount ``1 162,26``. Other engines emit ``5``, ``2`` and
+    ``227,28`` with the middle digit repeated by the last fragment. Only merge
+    a same-baseline cluster that contains a decimal amount and an actual bbox
+    overlap with a matching textual suffix/prefix. Adjacent independent numbers
+    and numeric identifiers are deliberately left unchanged.
+    """
+    removed: set[int] = set()
+    replacements: dict[int, WordToken] = {}
+    for row in group_words_into_rows(words, y_factor=0.30):
+        cluster: list[WordToken] = []
+
+        def flush() -> None:
+            if len(cluster) < 2 or not any("," in w.text or "." in w.text for w in cluster):
+                return
+            joined = ""
+            saw_overlapping_digits = False
+            previous = None
+            for word in cluster:
+                value = re.sub(r"[\s\u00a0\u202f]", "", word.text)
+                if previous is None:
+                    joined = value
+                else:
+                    bbox_overlap = previous.bbox[2] - word.bbox[0]
+                    overlap = next((length for length in range(
+                        min(len(joined), len(value)), 0, -1
+                    ) if joined.endswith(value[:length])), 0)
+                    if bbox_overlap > 0.75 and overlap:
+                        joined += value[overlap:]
+                        saw_overlapping_digits = True
+                    else:
+                        joined += value
+                previous = word
+            if not saw_overlapping_digits or not re.fullmatch(r"\d+[,.]\d{2,6}", joined):
+                return
+            first = cluster[0]
+            first_index = id(first)
+            replacements[first_index] = first.model_copy(update={
+                "text": joined,
+                "bbox": (
+                    min(w.bbox[0] for w in cluster),
+                    min(w.bbox[1] for w in cluster),
+                    max(w.bbox[2] for w in cluster),
+                    max(w.bbox[3] for w in cluster),
+                ),
+                "confidence": min(w.confidence for w in cluster) * 0.98,
+            })
+            removed.update(id(w) for w in cluster[1:])
+
+        for word in row:
+            numeric = bool(_NATIVE_AMOUNT_FRAGMENT.fullmatch(word.text))
+            if not numeric:
+                flush()
+                cluster = []
+                continue
+            if cluster:
+                previous = cluster[-1]
+                same_baseline = abs(
+                    (word.bbox[1] + word.bbox[3]) - (previous.bbox[1] + previous.bbox[3])
+                ) <= min(word.bbox[3] - word.bbox[1], previous.bbox[3] - previous.bbox[1]) * 0.30
+                if not same_baseline or word.bbox[0] - previous.bbox[2] > 0.75:
+                    flush()
+                    cluster = []
+            cluster.append(word)
+        flush()
+    return [replacements.get(id(word), word) for word in words if id(word) not in removed]
 
 
 def _needs_hybrid_ocr(page: fitz.Page, words: list[WordToken], cfg: dict) -> bool:
@@ -98,6 +172,7 @@ def extract_native_page(page: fitz.Page, page_number: int, cfg: dict | None = No
         if text:
             words.append(WordToken(text=text, page=page_number, bbox=(float(x0), float(y0), float(x1), float(y1)), confidence=1.0, source="native_pdf"))
     words = _deduplicate_native_words(words)
+    words = _stitch_overlapping_native_amounts(words)
     cfg = cfg or {}
     if _needs_hybrid_ocr(page, words, cfg):
         try:

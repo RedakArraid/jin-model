@@ -18,7 +18,12 @@ from po_ocr.models import (
     Totals,
 )
 from po_ocr.config import load_config
-from po_ocr.pdf_native import _needs_hybrid_ocr, _supplement_native_words, extract_native_page
+from po_ocr.pdf_native import (
+    _needs_hybrid_ocr,
+    _stitch_overlapping_native_amounts,
+    _supplement_native_words,
+    extract_native_page,
+)
 from po_ocr.extract import (
     all_rows, extract_lines, extract_lines_from_pages, extract_parties,
     extract_multiline_lines_from_pages, extract_totals,
@@ -53,6 +58,8 @@ from uda.business import (
     _repair_supplier_purchase_order_addressee_v5173,
     _repair_scanned_supplier_order_header_roles_v5176,
     _repair_issuer_name_from_legal_footer_v5177,
+    _repair_issuer_masthead_and_vendor_code_v5201,
+    _reconcile_printed_net_with_lines_and_tax_v5201,
     _reconcile_explicit_eco_tax_total_v5176,
     _rexellike_product_fee_table,
     _separate_promotional_continuation_notes_v5171,
@@ -82,6 +89,155 @@ def _page(rows, number=1):
     return PageResult(page=number, width=600, height=842, source_type="native_pdf",
                       text="\n".join(" ".join(t for t, _, _ in cells) for _, cells in rows),
                       words=words, confidence=1.0)
+
+
+def test_native_pdf_stitches_overlapping_amount_fragments_without_joining_columns():
+    def word(text, x0, x1, y=300):
+        return WordToken(text=text, page=1, bbox=(x0, y, x1, y + 8),
+                         confidence=1.0, source="native_pdf")
+
+    words = [
+        word("2", 402.75, 407.25),  # quantity, not part of the unit price
+        word("1\u202f16", 414.0, 422.96), word("162,26", 420.10, 444.75),
+        word("2\u202f32", 513.0, 521.96), word("324,52", 519.10, 543.75),
+        word("4", 552.75, 557.25),  # VAT code, not part of the line amount
+        word("5", 512.25, 516.75, 330), word("2", 516.75, 521.25, 330),
+        word("227,28", 519.0, 543.75, 330),
+    ]
+
+    result = _stitch_overlapping_native_amounts(words)
+
+    assert [w.text for w in result] == [
+        "2", "1162,26", "2324,52", "4", "5227,28",
+    ]
+    assert result[1].bbox[0] == 414.0
+    assert result[1].bbox[2] == 444.75
+    assert all(w.confidence <= 1.0 for w in result)
+
+
+def test_delivery_as_soon_as_possible_does_not_read_date_from_next_product_row():
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    page = _page([
+        (290, [("MERCI", 100, 130), ("DE", 133, 145), ("LIVRER", 148, 185),
+               ("LE", 188, 200), ("MATERIEL", 203, 250), ("AU", 253, 265),
+               ("PLUS", 268, 290), ("TOT", 293, 310)]),
+        (315, [("BOS7733704058", 25, 95), ("4069143449653", 98, 160),
+               ("PAC", 166, 185), ("2", 400, 407), ("1", 414, 419),
+               ("16", 419, 426), ("162,26", 425, 450),
+               ("2324,52", 520, 550)]),
+    ])
+
+    _enhance_requested_delivery_date_v5169(po, [page], load_config(None))
+
+    assert po.purchase_order.expected_delivery_date.value is None
+    assert po.logistics.requested_delivery_date is None
+
+
+def test_geometry_table_keeps_nearby_quantity_and_price_columns_separate():
+    page = _page([
+        (260, [("REFERENCE", 35, 95), ("DESIGNATION", 200, 270),
+               ("QTE", 389, 405), ("PX", 414, 422), ("UNITAIRE", 430, 458),
+               ("MNT", 507, 519), ("HT", 521, 534), ("TVA", 548, 558)]),
+        (315, [("BOS7733704058", 25, 95),
+               ("4069143449653", 101, 162), ("PAC", 170, 188),
+               ("Monosplit", 190, 245), ("2", 402.75, 407.25),
+               ("1162,26", 414, 444.75), ("2324,52", 513, 543.75),
+               ("4", 552.75, 557.25)]),
+        (337, [("BOS7733703575", 25, 95), ("Gainable", 170, 220),
+               ("2", 402.75, 407.25), ("656,66", 414, 444.75),
+               ("1313,32", 513, 543.75), ("4", 552.75, 557.25)]),
+        (358, [("SOUS", 170, 195), ("TOTAL", 198, 235),
+               ("4", 402.75, 407.25), ("3637,84", 513, 543.75)]),
+    ])
+
+    lines, charges = _extract_geometry_table_items_v46([page], load_config(None))
+
+    assert len(lines) == 2
+    assert [line.material_number for line in lines] == [
+        "BOS7733704058", "BOS7733703575",
+    ]
+    assert [(line.quantity, line.unit_price, line.line_total) for line in lines] == [
+        (2, 1162.26, 2324.52), (2, 656.66, 1313.32),
+    ]
+    assert lines[0].ean == "4069143449653"
+    assert lines[0].description == "PAC Monosplit"
+    assert not charges
+
+
+def test_printed_ht_is_reconciled_only_with_lines_and_tax_agreement():
+    page = _page([
+        (358, [("SOUS", 170, 195), ("TOTAL", 198, 235),
+               ("4", 402, 407), ("3637,84", 513, 544)]),
+        (716, [("TOTAL", 420, 450), ("BRUT", 454, 480),
+               ("H.T", 482, 500), ("3637,84", 513, 544)]),
+    ])
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    po.lines = [
+        LineItem(material_number="BOS7733704058", quantity=2, unit_price=1162.26,
+                 line_total=2324.52),
+        LineItem(material_number="BOS7733703575", quantity=2, unit_price=656.66,
+                 line_total=1313.32),
+    ]
+    po.totals = Totals(subtotal=43637.84, total_vat=727.57, total_gross=4365.41)
+
+    _, repaired = _reconcile_printed_net_with_lines_and_tax_v5201(
+        po, [page], load_config(None)
+    )
+
+    assert repaired == 1
+    assert (po.totals.subtotal, po.totals.total_net, po.totals.total_before_tax) == (
+        3637.84, 3637.84, 3637.84,
+    )
+    po.totals.subtotal = 43637.84
+    po.totals.total_gross = 5000
+    _, repaired = _reconcile_printed_net_with_lines_and_tax_v5201(
+        po, [page], load_config(None)
+    )
+    assert repaired == 0
+    assert po.totals.subtotal == 43637.84
+
+
+def test_top_left_issuer_and_explicit_vendor_column_fix_party_roles():
+    page = _page([
+        (35, [("PRODIS", 24, 80), ("Commande", 360, 430),
+              ("N°", 433, 447), ("CF2640019", 450, 530)]),
+        (65, [("Siège", 24, 45), ("Social", 48, 75), (":", 76, 79),
+              ("28", 82, 91), ("RUE", 94, 110), ("SEPAT", 113, 145),
+              ("DATE", 350, 382), ("FOURNISSEUR", 397, 465),
+              ("PAGE", 500, 532)]),
+        (85, [("82370", 24, 48), ("CAMPSAS", 51, 100),
+              ("03/11/2026", 350, 392), ("BOS000", 414, 457),
+              ("Page", 500, 527), ("1/1", 530, 548)]),
+    ])
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    po.buyer.name = "82370 CAMPSAS"
+    po.buyer.address.line1 = "Télécopie : 05.63.68.27.93"
+    po.buyer.address.line2 = "Capital : 200 000 €"
+    po.supplier.code = "PAGE"
+
+    _, repaired = _repair_issuer_masthead_and_vendor_code_v5201(
+        po, [page], load_config(None)
+    )
+
+    assert repaired == 2
+    assert po.buyer.name == "PRODIS"
+    assert po.buyer.address.postal_code == "82370"
+    assert po.buyer.address.city == "CAMPSAS"
+    assert po.buyer.address.line1 == "28 rue sepat"
+    assert po.buyer.address.line2 == "82370 CAMPSAS"
+    assert po.supplier.code == "BOS000"
 
 
 def test_dual_reference_receipt_date_table_recovers_lines_dates_and_descriptions():
