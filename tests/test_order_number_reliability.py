@@ -94,6 +94,37 @@ class OrderNumberReliabilityTests(unittest.TestCase):
             ["CF000575234"],
         )
 
+    def test_monetary_geometry_candidate_does_not_create_order_number_conflict(self):
+        payload = order("26319 / CPM", "COMMANDE FOURNISSEUR : 26 319 / CPM")
+        payload["purchase_order"]["number"]["evidence"]["extraction_method"] = (
+            "repeated_explicit_order_suffix_v61"
+        )
+        result = check_order_number(payload, {
+            "anchored_field_candidates": {"order_number": [
+                {
+                    "value": "079,10",
+                    "page": 1,
+                    "bbox": [450, 300, 510, 315],
+                    "source": "geometry_explicit_order_metadata_v3",
+                },
+            ]},
+        })
+
+        self.assertNotIn("ORDER_NUMBER_CANDIDATES_DISAGREE", result["issues"])
+        self.assertEqual(result["corroborating_candidates"], [])
+
+    def test_common_monetary_formats_are_not_order_number_candidates(self):
+        for amount in ("1 079,10", "1.079,10", "1079,10 EUR", "1079.10"):
+            with self.subTest(amount=amount):
+                result = check_order_number(order(), {
+                    "anchored_fields": {"order_number": {
+                        "value": amount,
+                        "page": 1,
+                        "source": "geometry_explicit_order_metadata_v3",
+                    }},
+                })
+                self.assertNotIn("ORDER_NUMBER_CANDIDATES_DISAGREE", result["issues"])
+
     def test_customer_reference_and_quote_are_not_po_candidates(self):
         payload = order()
         payload["purchase_order"].update(customer_reference={"value": "CLIENT-123"}, quote_number={"value": "DEV-42"})

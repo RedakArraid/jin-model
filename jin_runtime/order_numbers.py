@@ -91,10 +91,24 @@ def _recover_exact_geometry_location(
 
 
 def _plausible_corroborating_candidate(value: Any) -> bool:
-    """Reject dates and prose before comparing independent PO candidates."""
+    """Reject amounts, dates and prose before comparing independent PO candidates.
+
+    Geometry extractors can occasionally read the fractional tail of a price
+    (for example ``079,10`` from ``1 079,10``) next to a loose ``N°`` label.
+    Such a monetary value is not independent evidence for a purchase-order
+    identifier and must never create a source-conflict review.
+    """
     text = " ".join(str(value or "").split()).strip()
     identifier = normalize_identifier(text)
     if len(identifier) < 5 or sum(char.isdigit() for char in identifier) < 2:
+        return False
+    # French/European amounts: 079,10, 1 079,10, 1.079,10, 1079,10 EUR.
+    # Also cover dot-decimal output when the extractor normalized the comma.
+    monetary = re.sub(r"\s*(?:€|EUR|EURO(?:S)?)\s*$", "", text, flags=re.I)
+    if re.fullmatch(
+        r"[+-]?(?:\d{1,3}(?:[ .\u00a0\u202f]\d{3})+|\d+)[,.]\d{2}",
+        monetary,
+    ):
         return False
     if re.fullmatch(
         r"(?:\d{1,2}[/.-]){2}\d{2,4}|\d{4}[-/]\d{1,2}[-/]\d{1,2}",
