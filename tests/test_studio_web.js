@@ -159,7 +159,7 @@ test('JIN Studio asks the server for geometric frames on model reread', () => {
   assert.match(js, /\/preannotation`/);
   assert.match(js, /firstFramedFieldIndex/);
   assert.match(js, /proposal\.framedFieldCount/);
-  assert.match(html, /studio\.js\?v=29/);
+  assert.match(html, /studio\.js\?v=\d+(?:\.\d+)*/);
 });
 
 test('JIN Studio launches and follows isolated training runs', () => {

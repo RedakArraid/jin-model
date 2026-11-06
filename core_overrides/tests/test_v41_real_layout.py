@@ -1,6 +1,13 @@
 import json
 from pathlib import Path
 
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+FIXTURE = ROOT.parent / 'model/tests/fixtures/cf000337886_page.json'
+if not FIXTURE.is_file():
+    pytest.skip('Private core layout fixture is not installed under model/', allow_module_level=True)
+
 from po_ocr.models import PageResult
 from po_ocr.extract import (
     all_rows, extract_header, extract_spatial_header_fields, extract_parties,
@@ -9,8 +16,7 @@ from po_ocr.extract import (
     extract_document_notes,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
-PAGE = PageResult.model_validate(json.loads((ROOT.parent / 'model/tests/fixtures/cf000337886_page.json').read_text(encoding='utf-8')))
+PAGE = PageResult.model_validate(json.loads(FIXTURE.read_text(encoding='utf-8')))
 
 
 def test_cf000337886_spatial_header_and_parties():

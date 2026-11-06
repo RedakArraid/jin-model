@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from scripts.benchmark_cpu import (
-    compare_expected, network_disabled, run_benchmark, select_documents,
+    benchmark_failed, compare_expected, network_disabled, run_benchmark, select_documents,
     summarize_document,
 )
 
@@ -87,6 +87,61 @@ class BenchmarkCpuTests(unittest.TestCase):
         self.assertFalse(compare_expected(sample_payload(), {"order_number": "WRONG"})[0]["match"])
         with self.assertRaises(ValueError):
             compare_expected(sample_payload(), {"private_address": "not-supported"})
+
+    def test_reviewed_line_expectations_detect_wrong_reference_quantity_and_amount(self):
+        payload = sample_payload()
+        po = payload["business_extractions"]["purchase_order"]
+        po["lines"] = [
+            {"material_number": "TST001", "description": "Test unit A", "quantity": 2,
+             "unit_price": 1162.26, "line_total": 2324.52},
+            {"material_number": "TST002", "description": "Test unit B", "quantity": 2,
+             "net_unit_price": 656.66, "line_total": 1313.32},
+        ]
+        po["totals"].update(total_net=3637.84, total_vat=727.57, total_gross=4365.41)
+        expected = {
+            "order_date": "2026-09-30", "total_net": "3\u202f637,84",
+            "total_vat": "727,57", "total_gross": "4365.41",
+            "line_items": [
+                {"material_number": "TST001", "description": "test  unit a",
+                 "quantity": 2, "unit_price": "1162,26", "line_total": "2324,52"},
+                {"material_number": "TST002", "quantity": 2,
+                 "unit_price": 656.66, "line_total": 1313.32},
+            ],
+        }
+        checks = compare_expected(payload, expected)
+        self.assertTrue(all(check["match"] for check in checks))
+
+        expected["line_items"][0]["material_number"] = ".TST001"
+        expected["line_items"][1]["quantity"] = 3
+        expected["line_items"][1]["line_total"] = "1313,33"
+        mismatches = [check["field"] for check in compare_expected(payload, expected)
+                      if not check["match"]]
+        self.assertEqual(mismatches, [
+            "line_items[0].material_number", "line_items[1].quantity",
+            "line_items[1].line_total",
+        ])
+
+    def test_line_expectations_reject_invalid_shapes_and_check_ordered_length(self):
+        payload = sample_payload()
+        checks = compare_expected(payload, {"line_items": [{"quantity": 2}]})
+        self.assertEqual(checks[0], {
+            "field": "line_items.length", "expected": 1, "actual": 2, "match": False,
+        })
+        for value in ({"line_items": {}}, {"line_items": [{"raw_text": "private"}]},
+                      {"line_items": [{"quantity": [2]}]}, {"line_items": [{}]}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                compare_expected(payload, value)
+
+    def test_missing_reviewed_expectation_fails_the_benchmark(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "selected.pdf").write_bytes(b"%PDF-selected")
+            report = run_benchmark(folder, lambda path: sample_payload(), expected={
+                "not-selected.pdf": {"order_number": "TEST-123"},
+            })
+        self.assertEqual(report["summary"]["regression"]["expected_files_not_evaluated"],
+                         ["not-selected.pdf"])
+        self.assertTrue(benchmark_failed(report))
 
     def test_address_checks_match_exact_role_not_location_under_another_role(self):
         payload = sample_payload()

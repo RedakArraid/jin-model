@@ -8,6 +8,8 @@ Example: python scripts/benchmark_cpu.py ARCHIVES_CDES_ESKER_PDF_002001-005000 \
 preserves that order for replay; otherwise unique PDFs are shuffled with seed 42.
 --expected accepts {"file.pdf": {"document_type": "purchase_order", ...}}.
 Only supplied fields are compared, as regression checks, not holdout accuracy.
+line_items compares each explicitly supplied field at its printed line index;
+line order and punctuation in material references are preserved.
 Address checks use address_components: {ship_to: {postal_code: "01704", ...}};
 contacts use contacts: {buyer: {name: "...", email: "...", phone: "..."}}.
 Roles must match exactly. Text comparisons ignore case and repeated whitespace;
@@ -25,6 +27,7 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import statistics
 import sys
 import time
@@ -32,7 +35,15 @@ from typing import Any, Callable
 from unittest.mock import patch
 
 
-EXPECTED_FIELDS = {"document_type", "order_number", "line_count", "total_net", "address_components", "contacts"}
+EXPECTED_FIELDS = {
+    "document_type", "order_number", "order_date", "line_count", "line_items",
+    "total_net", "total_vat", "total_gross", "address_components", "contacts",
+}
+LINE_EXPECTED_FIELDS = {
+    "material_number", "description", "quantity", "unit_price", "line_total",
+    "requested_delivery_date",
+}
+NUMERIC_EXPECTED_FIELDS = {"total_net", "total_vat", "total_gross", "quantity", "unit_price", "line_total"}
 ADDRESS_COMPONENT_FIELDS = {
     "building", "building_number", "residence", "entrance", "floor", "unit",
     "house_number", "house_number_suffix", "street_type", "street_name", "street",
@@ -271,6 +282,15 @@ def summarize_document(payload: dict[str, Any]) -> dict[str, Any]:
 def validate_expected(expected: dict[str, Any]) -> None:
     if not isinstance(expected, dict) or set(expected) - EXPECTED_FIELDS:
         raise ValueError("Unsupported expected field in regression data")
+    if "line_items" in expected:
+        items = expected["line_items"]
+        if not isinstance(items, list):
+            raise ValueError("line_items must be an ordered list of expected line fields")
+        for item in items:
+            if (not isinstance(item, dict) or not item
+                    or set(item) - LINE_EXPECTED_FIELDS
+                    or any(isinstance(value, (dict, list)) for value in item.values())):
+                raise ValueError("Each expected line must contain supported scalar fields")
     for group, allowed in (("address_components", ADDRESS_COMPONENT_FIELDS), ("contacts", CONTACT_FIELDS)):
         if group not in expected:
             continue
@@ -327,10 +347,31 @@ def compare_expected(payload: dict[str, Any], expected: dict[str, Any]) -> list[
     actual = {
         "document_type": summarize_document(payload)["document_type"],
         "order_number": _value(header.get("number") or header.get("order_number")),
-        "line_count": len(lines), "total_net": _value((po.get("totals") or {}).get("total_net")),
+        "order_date": _value(header.get("order_date")),
+        "line_count": len(lines),
+        "total_net": _value((po.get("totals") or {}).get("total_net")),
+        "total_vat": _value((po.get("totals") or {}).get("total_vat")),
+        "total_gross": _value((po.get("totals") or {}).get("total_gross")),
     }
     checks = []
     for field, wanted in expected.items():
+        if field == "line_items":
+            checks.append({
+                "field": "line_items.length", "expected": len(wanted),
+                "actual": len(lines), "match": len(wanted) == len(lines),
+            })
+            for index, expected_line in enumerate(wanted):
+                actual_line = lines[index] if index < len(lines) else {}
+                for key, target in expected_line.items():
+                    found = _value(actual_line.get(key))
+                    if key == "unit_price" and found is None:
+                        found = _value(actual_line.get("net_unit_price"))
+                    checks.append({
+                        "field": f"line_items[{index}].{key}",
+                        "expected": target, "actual": found,
+                        "match": _expected_scalar_matches(key, target, found),
+                    })
+            continue
         if field in {"address_components", "contacts"}:
             for role, components in wanted.items():
                 # No role aliasing and no shared_with_roles expansion: otherwise
@@ -356,23 +397,27 @@ def compare_expected(payload: dict[str, Any], expected: dict[str, Any]) -> list[
                     ))
             continue
         found = actual[field]
-        if field == "total_net" and wanted is not None and found is not None:
-            try:
-                match = Decimal(str(wanted).replace(" ", "").replace(",", ".")) == Decimal(str(found).replace(" ", "").replace(",", "."))
-            except InvalidOperation:
-                match = False
-        elif field == "document_type" and isinstance(wanted, str) and isinstance(found, str):
-            match = wanted.casefold() == found.casefold()
-        elif field == "order_number" and isinstance(wanted, str) and isinstance(found, str):
-            from jin_runtime.order_numbers import normalize_identifier
-            match = normalize_identifier(wanted) == normalize_identifier(found)
-        else:
-            match = wanted == found
+        match = _expected_scalar_matches(field, wanted, found)
         check = {"field": field, "expected": wanted, "actual": found, "match": match}
         if field == "order_number":
             check["comparison"] = "case_and_whitespace_only_preserve_zeroes_and_punctuation"
         checks.append(check)
     return checks
+
+
+def _expected_scalar_matches(field: str, wanted: Any, found: Any) -> bool:
+    if field in NUMERIC_EXPECTED_FIELDS and wanted is not None and found is not None:
+        try:
+            normalized = lambda value: re.sub(r"\s+", "", str(value)).replace(",", ".")
+            return Decimal(normalized(wanted)) == Decimal(normalized(found))
+        except InvalidOperation:
+            return False
+    if field in {"document_type", "description"} and isinstance(wanted, str) and isinstance(found, str):
+        return " ".join(wanted.split()).casefold() == " ".join(found.split()).casefold()
+    if field in {"order_number", "material_number"} and isinstance(wanted, str) and isinstance(found, str):
+        from jin_runtime.order_numbers import normalize_identifier
+        return normalize_identifier(wanted) == normalize_identifier(found)
+    return wanted == found
 
 
 def run_benchmark(
@@ -431,9 +476,19 @@ def run_benchmark(
     return {
         "schema_version": "cpu-coverage-benchmark-v1", "created_at": datetime.now(timezone.utc).isoformat(),
         "qualification": "Coverage, completeness and alerts are not factual extraction accuracy. No accuracy is reported without independently reviewed ground truth.",
-        "privacy": "By default no extracted addresses, party names, contact details or document text are stored. Optional regression checks expose only explicitly requested scalar fields or address/contact components.",
+        "privacy": "By default no extracted addresses, party names, contact details or document text are stored. Optional regression checks expose only explicitly requested fields, including line descriptions if supplied.",
         "selection": selection, "summary": summary, "documents": results,
     }
+
+
+def benchmark_failed(report: dict[str, Any]) -> bool:
+    summary = report["summary"]
+    regression = summary["regression"]
+    return bool(
+        not summary["processed"] or summary["errors"]
+        or regression["mismatched_fields"]
+        or regression["expected_files_not_evaluated"]
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -462,8 +517,7 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(report["summary"], ensure_ascii=False, indent=2), flush=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return int(bool(not report["summary"]["processed"] or report["summary"]["errors"]
-                    or report["summary"]["regression"]["mismatched_fields"]))
+    return int(benchmark_failed(report))
 
 
 if __name__ == "__main__":

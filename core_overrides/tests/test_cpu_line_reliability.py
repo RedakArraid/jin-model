@@ -115,6 +115,38 @@ def test_native_pdf_stitches_overlapping_amount_fragments_without_joining_column
     assert all(w.confidence <= 1.0 for w in result)
 
 
+def test_generated_pdf_reconciles_overprinted_order_amounts_against_gold():
+    """Portable PDF-level regression; no customer document is committed."""
+    document = fitz.open()
+    try:
+        pdf_page = document.new_page(width=595, height=842)
+        cells = [
+            (25, 260, "REFERENCE"), (170, 260, "DESIGNATION"),
+            (389, 260, "QTE"), (414, 260, "PX"), (430, 260, "UNITAIRE"),
+            (507, 260, "MNT"), (521, 260, "HT"), (548, 260, "TVA"),
+            (25, 315, "TST7733704058"), (170, 315, "UNITE TEST A"),
+            (403, 315, "2"), (414, 315, "116"), (420, 315, "162,26"),
+            (513, 315, "232"), (520, 315, "324,52"), (553, 315, "4"),
+            (25, 337, "TST7733703575"), (170, 337, "UNITE TEST B"),
+            (403, 337, "2"), (414, 337, "656,66"),
+            (513, 337, "1313,32"), (553, 337, "4"),
+        ]
+        for x, y, value in cells:
+            pdf_page.insert_text((x, y), value, fontsize=8)
+        text, words, confidence = extract_native_page(pdf_page, 1)
+        page = PageResult(page=1, width=595, height=842, source_type="native_pdf",
+                          text=text, words=words, confidence=confidence)
+        lines, charges = _extract_geometry_table_items_v46([page], load_config(None))
+        assert [(line.material_number, line.quantity, line.unit_price,
+                 line.line_total) for line in lines] == [
+            ("TST7733704058", 2, 1162.26, 2324.52),
+            ("TST7733703575", 2, 656.66, 1313.32),
+        ]
+        assert not charges
+    finally:
+        document.close()
+
+
 def test_delivery_as_soon_as_possible_does_not_read_date_from_next_product_row():
     po = PurchaseOrderResult(document=DocumentMeta(
         id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",

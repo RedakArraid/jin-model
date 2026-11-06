@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install runtime dependencies
-        run: pip install -r runtime-requirements.txt
+        run: pip install -r runtime-requirements.txt "pytest>=8,<10"
       - name: Compile Python sources
         run: python -m compileall -q jin_runtime training scripts core_overrides benchmarks
       - name: Validate model tooling
@@ -27,10 +27,10 @@ jobs:
           python scripts/build_ban_index.py --help
       - name: Validate open-weight benchmark registry
         run: python -m benchmarks.open_weight_comparison.runner --list-models
-      - name: Run statistical learning tests
-        run: python -m unittest discover -s tests -v
-      - name: Test local viewer display, coordinates and price precision
-        run: node --test tests/test_web_addresses.js tests/test_web_bbox.js tests/test_web_prices.js
+      - name: Run all tracked runtime tests
+        run: python -m pytest tests -q
+      - name: Run all tracked browser tests
+        run: node --test tests/test_*.js
       - name: Validate shell scripts
         run: sh -n prepare-model.sh scripts/materialize-lfs-corpus.sh scripts/install-models.sh scripts/run-standalone.sh scripts/run-open-weight-cpu-benchmark.sh scripts/run-open-weight-smoke.sh scripts/setup-open-weight-benchmark-env.sh scripts/download-qwen-benchmark-models.sh scripts/run-uploaded-jin-qwen-benchmark.sh
       - name: Validate benchmark Makefile targets

@@ -393,9 +393,9 @@ que le benchmark de ressources utilise le module standard Unix `resource`.
 Après installation des dépendances runtime :
 
 ```bash
-pip install -r runtime-requirements.txt
-python -m unittest discover -s tests -v
-node --test tests/test_web_addresses.js tests/test_web_bbox.js tests/test_web_prices.js
+pip install -r runtime-requirements.txt "pytest>=8,<10"
+PYTHONPATH=tests/support:core_overrides:. python -m pytest tests -q
+node --test tests/test_*.js
 ```
 
 Après construction du mode complet, la régression du cœur superposé se lance
@@ -403,12 +403,25 @@ dans l'image finale. `pytest` est installé uniquement comme outil de test dans
 le conteneur en cours :
 
 ```bash
-docker compose exec -T api pip install --no-cache-dir pytest
-docker compose exec -T api python -m pytest -q /app/tests
+docker build --target test -t jin-model-test .
+docker run --rm --init jin-model-test
 ```
 
-La CI compile aussi les sources Python, valide les scripts shell et exécute les
-tests du runtime et de l'interface.
+Cette image de test exécute aussi `core_overrides/tests`. Elle exige le cœur
+local 5.1.0 préparé sous `model/`; ce moteur et ses PDF privés sont absents du
+dépôt Git. Le test `test_v41_real_layout.py` s'ignore explicitement si sa
+fixture privée est absente, au lieu d'échouer dès la collecte. Le test PDF
+synthétique versionné couvre la lecture des montants imprimés en fragments.
+La CI du dépôt exécute tous les tests suivis du runtime et de l'interface,
+mais ne prétend pas valider le cœur absent du dépôt.
+
+Pour une régression locale sur des PDF revus, `scripts/benchmark_cpu.py`
+accepte `--expected` avec des valeurs par document, dont `order_date`,
+`line_items` (liste ordonnée avec référence, quantité, prix et montant),
+`total_net`, `total_vat` et `total_gross`. Utiliser `--file-list` pour rejouer
+exactement les PDF attendus. Une attente non évaluée fait échouer le benchmark.
+Ne pas versionner les PDF clients ni les valeurs privées sans gouvernance
+appropriée; les données synthétiques ne prouvent pas la précision métier.
 
 ## Données
 
