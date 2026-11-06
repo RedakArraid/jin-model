@@ -5122,6 +5122,69 @@ def _enhance_strict_order_number_v47(po, pages, config: dict):
                 if len(numeric_group)>=2 and sum(len(word.text.strip()) for word in numeric_group)>=5:
                     add(" ".join(word.text.strip() for word in numeric_group),9.2,rr,"date_numero_spaced_value",numeric_group)
             ordered_near=sorted(near,key=lambda word:word.bbox[0])
+            # Prolians identifiers use four meaningful groups, for example
+            # ``PR N 1A4 97994`` below ``COMMANDE N°``. Looking at each word
+            # in isolation used to select only ``1A4`` and silently truncate
+            # the purchase-order reference sent to SAP. Rebuild the complete
+            # source-backed identifier before considering shorter fallbacks.
+            for start in range(max(0,len(ordered_near)-3)):
+                composite_words=ordered_near[start:start+4]
+                if any(
+                    right.bbox[0]-left.bbox[2] > pg.width*0.035
+                    for left,right in zip(composite_words,composite_words[1:])
+                ):
+                    continue
+                tokens=[word.text.strip(" .:#()[]") for word in composite_words]
+                if (
+                    re.fullmatch(r"[A-Za-z]{2}",tokens[0])
+                    and re.fullmatch(r"[A-Za-z0-9]",tokens[1])
+                    and re.fullmatch(r"[A-Za-z0-9]{2,6}",tokens[2])
+                    and re.fullmatch(r"\d{4,8}",tokens[3])
+                ):
+                    add(
+                        " ".join(tokens),
+                        10.2,
+                        rr,
+                        "below_numero_label_grouped_erp_value",
+                        composite_words,
+                    )
+
+            # Also retain a generic adjacent series/suffix candidate for
+            # issuers whose identifier has no two-letter routing prefix.
+            for start, first in enumerate(ordered_near):
+                first_text=first.text.strip(" .:#()[]")
+                if (
+                    _is_invalid_po_number_v47(first_text)
+                    or parse_date(first_text)
+                    or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{1,31}",first_text)
+                ):
+                    continue
+                identifier_group=[first]
+                previous=first
+                for word in ordered_near[start+1:]:
+                    token=word.text.strip(" .:#()[]")
+                    if word.bbox[0]-previous.bbox[2] > pg.width*0.035:
+                        break
+                    if (
+                        _is_invalid_po_number_v47(token)
+                        or parse_date(token)
+                        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{1,31}",token)
+                    ):
+                        break
+                    identifier_group.append(word)
+                    previous=word
+                if len(identifier_group)>=2:
+                    combined=" ".join(
+                        word.text.strip(" .:#()[]") for word in identifier_group
+                    )
+                    if sum(ch.isdigit() for ch in combined)>=5:
+                        add(
+                            combined,
+                            9.4,
+                            rr,
+                            "below_numero_label_composite_value",
+                            identifier_group,
+                        )
             for start in range(len(ordered_near)):
                 groups=[]; previous=None
                 for word in ordered_near[start:]:

@@ -2235,6 +2235,22 @@ def test_spaced_number_below_numero_header_keeps_all_digit_groups():
     assert po.purchase_order.number.value == "20 736"
 
 
+def test_prolians_numero_header_keeps_complete_grouped_identifier():
+    page = _page([
+        (196, [("COMMANDE", 23, 75), ("N°", 77, 87)]),
+        (216, [("PR", 22, 47), ("N", 45, 63), ("1A4", 61, 95),
+               ("97994", 92, 139)]),
+    ])
+    po = SimpleNamespace(purchase_order=PurchaseOrderHeader())
+
+    _enhance_strict_order_number_v47(po, [page], {})
+
+    field = po.purchase_order.number
+    assert field.value == "PR N 1A4 97994"
+    assert field.evidence.source_text == "PR N 1A4 97994"
+    assert field.evidence.extraction_method == "below_numero_label_grouped_erp_value"
+
+
 def test_recipient_and_supplier_headings_recover_bosc_order_number():
     page = _page([
         (80, [("Adresse", 10, 55), ("destinataire", 60, 130),
