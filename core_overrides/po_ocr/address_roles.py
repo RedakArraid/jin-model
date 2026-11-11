@@ -204,7 +204,8 @@ def _looks_metadata_line(text: str) -> bool:
     low=_fold(text)
     return bool(re.match(
         r"^(?:tel|telephone|fax|e[_ -]?mail|email|mail|contact|correspondant|a l'attention|attention|"
-        r"infos?|consigne|code d'ouverture|horaires?|reception|en express|merci de)\b",
+        r"infos?|consigne|code d'ouverture|horaires?|reception|en express|merci de|"
+        r"livraison uniquement|point de terminaison|entre\s+\d{1,2}\s*h\s+et\s+\d{1,2}\s*h)\b",
         low,
     ))
 

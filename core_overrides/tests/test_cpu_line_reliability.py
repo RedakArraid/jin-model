@@ -20,6 +20,7 @@ from po_ocr.models import (
 from po_ocr.config import load_config
 from po_ocr.pdf_native import (
     _needs_hybrid_ocr,
+    _native_text_is_private_use_garbled,
     _stitch_overlapping_native_amounts,
     _supplement_native_words,
     extract_native_page,
@@ -42,6 +43,12 @@ from uda.business import (
     _enhance_strict_order_number_v47,
     _extract_amount_only_geometry_v47,
     _extract_geometry_table_items_v46,
+    _explicit_reference_vertical_items_v5202,
+    _explicit_reference_layout_rows_v5202,
+    _piece_suffix_material_rows_v5202,
+    _material_quantity_unit_text_rows_v5202,
+    _dual_reference_discount_rows_v5202,
+    _explicit_charge_kind_v62,
     _line_hypothesis_total_fit_v66,
     _material_anchored_split_table_items_v61,
     _material_anchored_numeric_row_items_v61,
@@ -53,6 +60,11 @@ from uda.business import (
     _repair_dimension_ocr_v5166,
     _repair_native_long_decimal_line_prices_v5170,
     _repair_order_date_delivery_collision_v5170,
+    _repair_supplier_from_explicit_header_v5202,
+    _clear_account_label_mistaken_for_buyer_v5202,
+    _clear_date_label_mistaken_for_buyer_v5202,
+    _repair_buyer_from_matching_registration_footer_v5202,
+    _recover_split_header_order_date_v5202,
     _repair_order_number_evidence_bbox_v5172,
     _repair_purchase_order_party_roles_v5170,
     _repair_supplier_purchase_order_addressee_v5173,
@@ -446,6 +458,217 @@ def test_long_native_decimal_price_does_not_replace_a_distinct_printed_amount():
     assert line.unit_price == 620.0
     assert line.line_total == 4950.0
     assert line.line_net_amount == 4950.0
+
+
+def test_long_native_decimal_price_after_quantity_is_not_mistaken_for_thousands():
+    line = LineItem(
+        material_number="4062321826437", quantity=2,
+        unit_price=2385500.0, net_unit_price=2385500.0,
+        line_total=4771000.0, line_net_amount=4771000.0,
+        raw_text="4062321826437 CLIMATE 7000 2 238,5500",
+        warnings=["Line total calculated from printed quantity and unit price"],
+    )
+
+    assert _repair_native_long_decimal_line_prices_v5170([line], {}) == 1
+    assert line.net_unit_price == 238.55
+    assert line.line_total == 477.10
+
+
+def test_vertical_reference_text_recovers_bracketed_products_across_pages():
+    first = _page([], number=1)
+    first.text = (
+        "DESCRIPTION\nQTÉ\nPRIX UNITAIRE\nMONTANT\n"
+        "[7733701939]\nPAC CLIMATE 5000\nEco-contribution\n"
+        "1.75, TVA 20%\n10/11/2026\n5,00\nUnité(s)\n392,870\n1 964,35 €\n"
+    )
+    second = _page([], number=2)
+    second.text = (
+        "[7733703609]\nFaçade cassette\nEco-contribution\n"
+        "4,00\nUnité(s)\n80,370\n321,48 €\n"
+        "[7733701938]\nGroupe extérieur\nEco-contribution\n"
+        "1,00\nUnité(s)\n1 427,120\n1 427,12 €\n"
+    )
+
+    lines = _explicit_reference_vertical_items_v5202([first, second], {})
+
+    assert [line.material_number for line in lines] == ["7733701939", "7733703609", "7733701938"]
+    assert [line.page for line in lines] == [1, 2, 2]
+    assert [line.line_total for line in lines] == [1964.35, 321.48, 1427.12]
+    assert all("Eco" not in line.description for line in lines)
+
+
+def test_vertical_reference_text_accepts_layout_row_with_values_after_bracket():
+    first = _page([])
+    first.text = (
+        "DESCRIPTION QTÉ PRIX UNITAIRE MONTANT\n"
+        "[7733701939] Eco- 10/11/2026 5,00 392,870 1 964,35 €\n"
+        "PAC Air/Air Climate 5000 contribution 19:16:28 Unité(s)\n"
+        "CL5000iM4CC21E 1.75, TVA\n20%\n"
+    )
+    second = _page([], number=2)
+    second.text = (
+        "[7733703609] Eco- 10/11/2026 4,00 80,370 321,48 €\n"
+        "Façade cassette contribution 19:16:28 Unité(s)\n20%\n"
+        "[7733701938] Eco- 10/11/2026 1,00 1 427,120 1 427,12 €\n"
+        "Groupe extérieur contribution 19:16:28 Unité(s)\n20%\n"
+    )
+
+    lines = _explicit_reference_vertical_items_v5202([first, second], {})
+
+    assert [line.material_number for line in lines] == ["7733701939", "7733703609", "7733701938"]
+    assert [line.quantity for line in lines] == [5, 4, 1]
+    assert [line.line_total for line in lines] == [1964.35, 321.48, 1427.12]
+
+
+def test_vertical_reference_text_handles_inline_reference_and_single_price_quantity():
+    inline = _page([], number=1)
+    inline.text = (
+        "Désignation\nQt\nP.U. H.T.\nMontant H.T.\n"
+        "UNITE INT MINI VRF - REF 7733702278\n4,00\n282,29\n20\n1 129,16 €\n"
+    )
+    single = _page([], number=1)
+    single.text = (
+        "Ref fsseur\nDésignation\nTarif unitaire HT\nQuantité\n"
+        "87168395930\nBOITE CONTROLE BOSCH\n363,2\n1\n"
+    )
+
+    first = _explicit_reference_vertical_items_v5202([inline], {})
+    second = _explicit_reference_vertical_items_v5202([single], {})
+
+    assert [(line.material_number, line.quantity, line.line_total) for line in first] == [
+        ("7733702278", 4, 1129.16)
+    ]
+    assert [(line.material_number, line.quantity, line.line_total) for line in second] == [
+        ("87168395930", 1, 363.2)
+    ]
+
+
+def test_piece_suffix_material_row_keeps_product_when_quantity_and_price_have_p_suffix():
+    page = _page([
+        (90, [("REF", 350, 370), ("FOURNISSEUR", 375, 440),
+              ("DESIGNATION", 60, 140), ("QUANTITE", 455, 490),
+              ("PRIX", 495, 520)]),
+        (380, [("1924465", 20, 55), ("PAC", 60, 80),
+               ("COMPRESS", 90, 150), ("8738213465", 357, 402),
+               ("1.00p.", 465, 490), ("3059.76p.", 495, 535),
+               ("3059.76", 542, 575)]),
+    ])
+
+    lines = _piece_suffix_material_rows_v5202([page], {})
+
+    assert len(lines) == 1
+    assert lines[0].material_number == "8738213465"
+    assert lines[0].quantity == 1
+    assert lines[0].line_total == 3059.76
+
+
+def test_vertical_reference_text_uses_discount_column_after_printed_amount():
+    page = _page([])
+    page.text = (
+        "Référence\nDésignation\nPrix U.\nQuantité\nMontant\nRemise\n"
+        "7716705084\nChaudière gaz\n1,00\n2 143,00\n1 076,86\n49,75\n"
+        "7716780460\nDosseret standard\n1,00\n127,00\n63,82\n49,75\n"
+        "Total H.T.\n1 140,68\n"
+    )
+
+    lines = _explicit_reference_vertical_items_v5202([page], {})
+
+    assert [line.material_number for line in lines] == ["7716705084", "7716780460"]
+    assert [line.quantity for line in lines] == [1, 1]
+    assert [line.line_total for line in lines] == [1076.86, 63.82]
+    assert [line.discount_percent for line in lines] == [49.75, 49.75]
+
+
+def test_layout_rows_recover_multi_page_bracketed_and_inline_reference_products():
+    first = _page([])
+    first.text = (
+        "DESCRIPTION QTÉ PRIX UNITAIRE MONTANT\n"
+        "[7733701939] Eco- 10/11/2026 5,00 392,870 1 964,35 €\n"
+        "PAC Climate 5000 contribution 19:16:28 Unité(s)\n20%\n"
+    )
+    second = _page([], number=2)
+    second.text = (
+        "[7733703609] Eco- 10/11/2026 4,00 80,370 321,48 €\n"
+        "Façade cassette contribution 19:16:28 Unité(s)\n20%\n"
+        "[7733701938] Eco- 10/11/2026 1,00 1 427,120 1 427,12 €\n"
+        "Groupe extérieur contribution 19:16:28 Unité(s)\n20%\n"
+    )
+    inline = _page([])
+    inline.text = (
+        "Désignation Qt P.U. H.T. Montant H.T.\n"
+        "UNITE INT MINI VRF - REF 7733702278 4,00 282,29 20 1 129,16 €\n"
+    )
+
+    bracketed = _explicit_reference_layout_rows_v5202([first, second], {})
+    labelled = _explicit_reference_layout_rows_v5202([inline], {})
+
+    assert [line.material_number for line in bracketed] == ["7733701939", "7733703609", "7733701938"]
+    assert [line.line_total for line in bracketed] == [1964.35, 321.48, 1427.12]
+    assert [(line.material_number, line.line_total) for line in labelled] == [("7733702278", 1129.16)]
+
+
+def test_layout_rows_recover_discounted_and_single_price_quantity_products():
+    discounted = _page([])
+    discounted.text = (
+        "Référence Désignation Prix U. Quantité Montant Remise\n"
+        "7716705084 Chaudière gaz VMC murale - acléis BAS NOx NGLM23-\n"
+        "8XN5, 2 143,00 49,75 1,00 1 076,86\n"
+    )
+    single = _page([])
+    single.text = (
+        "Ref fsseur Désignation Tarif unitaire HT Quantité\n"
+        "52-253893 (vide) T36861 87168395930 BOITE CONTROLE BOSCH 363,2 1\n"
+    )
+
+    d = _explicit_reference_layout_rows_v5202([discounted], {})
+    s = _explicit_reference_layout_rows_v5202([single], {})
+
+    assert [(line.material_number, line.quantity, line.line_total, line.discount_percent) for line in d] == [
+        ("7716705084", 1, 1076.86, 49.75)
+    ]
+    assert [(line.material_number, line.quantity, line.line_total) for line in s] == [
+        ("87168395930", 1, 363.2)
+    ]
+
+
+def test_dual_reference_rows_apply_sequential_discounts_and_keep_eco_fees_separate():
+    page = _page([])
+    page.text = (
+        "N/ Référ. Designation V/ Référence Qte. Com. P.U.HT Remise\n"
+        "FVF010117 7733701933 Unite Exterieur 7733701933 1,00UN 1,00 1.609,00 52,5+4\n"
+        "XXF008624 7733703987 Module WIFI Easy 10,00UN 10,00 16,20 0\n"
+        "ecotaxe014 Eco-contribution 10,00UN 10,00 0,14 0\n"
+    )
+
+    lines, charges = _dual_reference_discount_rows_v5202([page], {})
+
+    assert [line.material_number for line in lines] == ["7733701933", "7733703987"]
+    assert lines[0].discount_percent == 54.4
+    assert lines[0].line_total == 733.70
+    assert lines[1].quantity == 10 and lines[1].line_total == 162
+    assert len(charges) == 1 and charges[0].amount == 1.40
+
+
+def test_split_order_date_and_printed_montant_hors_taxes_are_extracted():
+    page = _page([
+        (120, [("Date", 297, 320), ("de", 325, 335), ("la", 340, 346),
+               ("commande", 350, 390), (":", 394, 398)]),
+        (135, [("RESPONSABLE", 10, 90), ("09/11/2026", 297, 350)]),
+        (650, [("Montant", 70, 120), ("hors", 125, 150), ("taxes", 155, 185),
+               ("7", 480, 486), ("367,94", 490, 530), ("€", 535, 545)]),
+    ])
+    po = SimpleNamespace(purchase_order=PurchaseOrderHeader(), totals=Totals())
+
+    _, recovered = _recover_split_header_order_date_v5202(po, [page], {})
+    _strict_text_totals_v48(po, [page], {})
+
+    assert recovered == 1
+    assert po.purchase_order.order_date.value == "2026-11-09"
+    assert po.totals.total_before_tax == 7367.94
+
+
+def test_misspelled_eco_participation_is_a_charge_not_a_product():
+    assert _explicit_charge_kind_v62("ECO PARTICPATION 1,00 28,72") == "environmental_fee"
 
 
 def test_explicit_header_date_repairs_delivery_date_collision():
@@ -1476,6 +1699,24 @@ def test_explicit_ht_plus_eco_taxes_reconciles_only_matching_sum():
     _, changed = _reconcile_explicit_eco_tax_total_v5176(po, [page], {})
     assert changed == 1
     assert (po.totals.subtotal, po.totals.total_net) == (1000.0, 1009.86)
+
+
+def test_explicit_vat_base_includes_separately_printed_eco_contribution():
+    page = _page([(700, [("TVA", 20, 40), ("20%", 45, 70),
+                         ("sur", 75, 92), ("7", 510, 520),
+                         ("420,26", 525, 570), ("1 484,05", 575, 625)])])
+    po = SimpleNamespace(
+        lines=[LineItem(line_total=7367.94)],
+        additional_charges=[AdditionalCharge(
+            charge_type="environmental_fee", amount=52.32)],
+        totals=Totals(subtotal=7367.94, total_net=7367.94,
+                      total_before_tax=7367.94),
+    )
+    _, changed = _reconcile_explicit_eco_tax_total_v5176(po, [page], {})
+    assert changed == 1
+    assert po.totals.subtotal == 7367.94
+    assert po.totals.total_net == 7420.26
+    assert po.totals.total_before_tax == 7420.26
 
 
 def test_amount_only_table_stops_at_delivery_block_and_keeps_derogation_separate():
@@ -2954,3 +3195,138 @@ def test_mixed_total_header_does_not_overwrite_net_with_ttc_and_keeps_explicit_e
     assert po.totals.grand_total==15588
     assert po.totals.currency=="EUR"
     assert po.purchase_order.currency.value=="EUR"
+
+
+def test_explicit_supplier_block_replaces_heading_and_removes_duplicate_address_line():
+    page = SimpleNamespace(text=(
+        "IZI by EDF\nINFOS FOURNISSEUR\n"
+        "COMMANDE Bosch pièces de rechange\n"
+        "Standard 124-126, rue de stalingrad\n93711 Drancy cedex\n"
+    ))
+    po = SimpleNamespace(supplier=Party(
+        name="INFOS FOURNISSEUR", legal_name="INFOS FOURNISSEUR",
+        address=Address(line1="Bosch pièces de rechange",
+                        line2="124-126, rue de stalingrad", line3="93711 Drancy cedex"),
+    ))
+    po, repaired = _repair_supplier_from_explicit_header_v5202(po, [page], {})
+    assert repaired == 1
+    assert po.supplier.name == "Bosch pièces de rechange"
+    assert po.supplier.address.line1 == "124-126, rue de stalingrad"
+
+
+def test_dated_supplier_header_replaces_amount_row_not_real_company():
+    page = SimpleNamespace(text=(
+        "ORVIF Récap. commandes fournisseurs\n"
+        "N° 10/92 983 DU 17/07/2026 MWO E.L.M. LEBLANC BOSCH LIVRAISON LE : 16/11/2026\n"
+    ))
+    po = SimpleNamespace(supplier=Party(
+        name="36,00 PCE 18,00 PCE 875,00 31 500,00",
+        address=Address(line1="12,00 PCE 0,00 PCE 780,00 9 360,00"),
+    ))
+    po, repaired = _repair_supplier_from_explicit_header_v5202(po, [page], {})
+    assert repaired == 1
+    assert po.supplier.name == "E.L.M. LEBLANC BOSCH"
+    assert po.supplier.address.line1 is None
+    assert _repair_supplier_from_explicit_header_v5202(po, [page], {})[1] == 0
+
+
+def test_labelled_supplier_gln_outranks_order_number_mistaken_for_company():
+    page = SimpleNamespace(text=(
+        "COMMANDE N°019-7190-051126\n"
+        "Fournisseur - 54209794400681 LEBLANC-- 123 125 RUE DIDEROT 93700 DRANCY\n"
+    ))
+    po = SimpleNamespace(supplier=Party(name="N°019-7190-051126"))
+    po, changed = _repair_supplier_from_explicit_header_v5202(po, [page], {})
+    assert changed == 1
+    assert po.supplier.name == "LEBLANC"
+
+
+def test_account_number_is_not_buyer_name_or_postal_code():
+    po = SimpleNamespace(buyer=Party(
+        name="N° Compte : 15013322", legal_name="N° Compte : 15013322",
+        address=Address(line1="N° de Commande FBD30443",
+                        line2="ADRESSE DE LIVRAISON", postal_code="30443"),
+        vat_number="FR84352078596",
+    ))
+    po, changed = _clear_account_label_mistaken_for_buyer_v5202(po)
+    assert changed == 1
+    assert po.buyer.name is None and po.buyer.address.postal_code is None
+    assert po.buyer.vat_number == "FR84352078596"
+
+
+def test_date_row_followed_by_supplier_is_not_buyer_name():
+    po = SimpleNamespace(buyer=Party(
+        name="Date : 05/11/26 ELM LEBLANC SAS",
+        legal_name="Date : 05/11/26 ELM LEBLANC SAS",
+        vat_number="FR84352078596",
+    ))
+    po, changed = _clear_date_label_mistaken_for_buyer_v5202(po)
+    assert changed == 1
+    assert po.buyer.name is None and po.buyer.legal_name is None
+    assert po.buyer.vat_number == "FR84352078596"
+
+
+def test_buyer_legal_footer_requires_matching_siret_and_distinct_supplier():
+    page = SimpleNamespace(text=(
+        "BON DE COMMANDE\nAdresse du site SEQENS Solidarit\u00e9s\n"
+        "CLIMANET SERVICES - 14 Bis Terrasse de Bellini 92800 Puteaux\n"
+        "SAS au capital de 800 000 - Siret 802 747 691 00060\n"
+    ))
+    po = SimpleNamespace(
+        buyer=Party(name="SEQENS Solidarit\u00e9s",
+                    company_registration_number="80274769100060",
+                    address=Address(line1="PORT DE JAVEL HAUT", postal_code="75015", city="PARIS")),
+        supplier=Party(name="ELM LEBLANC SAS"),
+    )
+    po, changed = _repair_buyer_from_matching_registration_footer_v5202(po, [page])
+    assert changed == 1
+    assert po.buyer.name == "CLIMANET SERVICES"
+    assert po.buyer.address.line1 == "14 Bis Terrasse de Bellini"
+    assert po.buyer.address.postal_code == "92800"
+    po.buyer.company_registration_number = "12345678900011"
+    po, changed = _repair_buyer_from_matching_registration_footer_v5202(po, [page])
+    assert changed == 0
+
+
+def test_legal_footer_issuer_with_explicit_site_and_delivery_blocks():
+    pages = [SimpleNamespace(text=(
+        "BON DE COMMANDE\nAdresse du site SEQENS\nAdresse de livraison PARIS\n"
+    )), SimpleNamespace(text=(
+        "CLIMANET SERVICES - 14 Bis Terrasse de Bellini 92800 Puteaux\n"
+        "Contact s.hocquet@climanet.com\n"
+        "SAS au capital - Siret 802 747 691 00060\n"
+    ))]
+    po = SimpleNamespace(
+        buyer=Party(name="SEQENS", address=Address(postal_code="75015", city="PARIS"),
+                    email="kaiser@bosch.com", phone="03 60 19 95 32"),
+        supplier=Party(name="ELM LEBLANC SAS", phone="03 60 19 95 32"),
+    )
+    po, changed = _repair_buyer_from_matching_registration_footer_v5202(po, pages)
+    assert changed == 1 and po.buyer.name == "CLIMANET SERVICES"
+    assert po.buyer.email == "s.hocquet@climanet.com"
+    assert po.buyer.phone is None
+
+
+def test_private_use_garbled_native_text_uses_ocr_only_for_dense_unreadable_pages():
+    garbled = [WordToken(text="\uf021\uf022\uf023\uf024" * 30, page=1,
+                         bbox=(0, 0, 10, 10), source="native_pdf")]
+    normal = [WordToken(text="COMMANDE FOURNISSEUR 7716780401" * 5, page=1,
+                        bbox=(0, 0, 10, 10), source="native_pdf")]
+    assert _native_text_is_private_use_garbled(garbled)
+    assert not _native_text_is_private_use_garbled(normal)
+    assert not _native_text_is_private_use_garbled([])
+
+
+def test_ocr_material_rows_with_catalogue_price_keep_net_price_and_exclude_port():
+    page = SimpleNamespace(page=1, text=(
+        "Réf Numéro client 15005148\n"
+        "7716780401 DOSSERET IDOS GA7 187,00 1,000 PC 93,97 93,97\n"
+        "7716780263 SONDE TEMPERATURE EXT TR E PR MEGALIS CONDENS 24,00 1,000 PC 12,06 12,06\n"
+        "PORT PORT BOSCH 35,00 1,000 TRI 35,00 35,00\n"
+    ))
+    lines = _material_quantity_unit_text_rows_v5202([page], {})
+    assert len(lines) == 2
+    assert [line.article_number for line in lines] == ["7716780401", "7716780263"]
+    assert [line.unit_price for line in lines] == [93.97, 12.06]
+    assert lines[0].description == "DOSSERET IDOS GA7"
+    assert _explicit_charge_kind_v62("PORT PORT BOSCH 35,00 1,000 TRI 35,00 35,00") == "shipping"

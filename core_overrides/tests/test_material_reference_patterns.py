@@ -354,6 +354,17 @@ def test_leading_grouped_reference_is_recovered_from_a_commercial_description():
     assert "material_reference_recovered_from_description" in line.warnings
 
 
+def test_bracketed_material_replaces_alphabetic_eco_column_capture():
+    line = _line("Eco-", description="[7733701939] PAC Air/Air Climate 5000")
+
+    recovered = recover_material_references_from_descriptions([line], {})
+
+    assert recovered == 1
+    assert line.material_number == "7733701939"
+    assert line.article_number == "7733701939"
+    assert line.description == "PAC Air/Air Climate 5000"
+
+
 def test_description_recovery_requires_a_strong_commercial_row_and_profile_match():
     incomplete = _line(
         None,

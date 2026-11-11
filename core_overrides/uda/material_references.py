@@ -619,10 +619,20 @@ def recover_material_references_from_descriptions(
     ))
     recovered = 0
     for line in lines or []:
-        if any(
+        existing = [
             normalize_reference(getattr(line, field, None))
             for field, _weight in REFERENCE_FIELDS
-        ):
+        ]
+        existing = [value for value in existing if value]
+        # A tax/fee column may be mistaken for the reference column while the
+        # real material is printed in brackets at the start of DESCRIPTION.
+        # Replace only an empty or alphabetic-only capture; never overwrite a
+        # plausible alphanumeric article from another column.
+        replace_alpha_capture = bool(existing) and all(
+            not any(character.isdigit() for character in value)
+            for value in existing
+        )
+        if existing and not replace_alpha_capture:
             continue
         if getattr(line, "quantity", None) is None or not any(
             getattr(line, field, None) is not None
@@ -630,9 +640,16 @@ def recover_material_references_from_descriptions(
         ):
             continue
         scored = []
-        for source, candidate in _leading_reference_candidates(
-            getattr(line, "description", None) or getattr(line, "raw_text", None)
-        ):
+        description = str(getattr(line, "description", None) or "")
+        bracketed = re.match(r"^\s*\[(\d{10,11})\]", description)
+        source_candidates = (
+            [(bracketed.group(1), bracketed.group(1))] if bracketed else []
+        )
+        if not replace_alpha_capture:
+            source_candidates.extend(_leading_reference_candidates(
+                description or getattr(line, "raw_text", None)
+            ))
+        for source, candidate in source_candidates:
             match = score_material_reference(candidate, profile, min_score=threshold)
             if match.supported:
                 scored.append(
@@ -645,6 +662,8 @@ def recover_material_references_from_descriptions(
         line.article_number = source
         line.supplier_material_number = canonical
         line.material_reference_source_prefix = None
+        if replace_alpha_capture:
+            line.description = re.sub(r"^\s*\[\d{10,11}\]\s*", "", description)
         if "material_reference_recovered_from_description" not in line.warnings:
             line.warnings.append("material_reference_recovered_from_description")
         recovered += 1

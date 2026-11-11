@@ -130,6 +130,15 @@ def _needs_hybrid_ocr(page: fitz.Page, words: list[WordToken], cfg: dict) -> boo
                for info in page.get_image_info())
 
 
+def _native_text_is_private_use_garbled(words: list[WordToken]) -> bool:
+    """Detect PDFs whose custom font maps visible letters to private-use codepoints."""
+    characters = "".join(word.text for word in words)
+    if len(characters) < 100:
+        return False
+    private_use = sum(0xE000 <= ord(char) <= 0xF8FF for char in characters)
+    return private_use / len(characters) >= 0.35
+
+
 def _supplement_native_words(page: fitz.Page, page_number: int,
                              native_words: list[WordToken], cfg: dict) -> list[WordToken]:
     from PIL import Image, ImageDraw
@@ -174,7 +183,14 @@ def extract_native_page(page: fitz.Page, page_number: int, cfg: dict | None = No
     words = _deduplicate_native_words(words)
     words = _stitch_overlapping_native_amounts(words)
     cfg = cfg or {}
-    if _needs_hybrid_ocr(page, words, cfg):
+    if _native_text_is_private_use_garbled(words) and cfg.get("garbled_native_ocr_enabled", True):
+        try:
+            recovered = _supplement_native_words(page, page_number, [], cfg)
+            if len(recovered) >= 10:
+                words = recovered
+        except (RuntimeError, OSError) as exc:
+            _LOGGER.warning("Full OCR of garbled native page %s failed: %s", page_number, exc)
+    elif _needs_hybrid_ocr(page, words, cfg):
         try:
             words = _supplement_native_words(page, page_number, words, cfg)
         except (RuntimeError, OSError) as exc:

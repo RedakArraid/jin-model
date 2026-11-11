@@ -3,7 +3,10 @@
 from types import SimpleNamespace
 
 from po_ocr.address_intelligence import parse_address
-from po_ocr.address_roles import build_business_addresses, formatted_address, recover_explicit_role_blocks
+from po_ocr.address_roles import (
+    _choose_party_and_address, _looks_metadata_line,
+    build_business_addresses, formatted_address, recover_explicit_role_blocks,
+)
 from po_ocr.models import Address, Contact, PageResult, Party, WordToken
 
 
@@ -205,3 +208,13 @@ def test_inline_free_form_billing_instruction_splits_company_and_street():
     assert address.postal_code == "34000"
     assert address.city == "Montpellier"
     assert address.po_box is None
+
+
+def test_delivery_time_instruction_is_not_a_postal_address_line():
+    lines = ["FGP", "80 RUE BARBERIS", "06300 NICE",
+             "LIVRAISON UNIQUEMENT LE MATIN", "POINT DE TERMINAISON",
+             "ENTRE 7H ET 11H"]
+    assert _looks_metadata_line("LIVRAISON UNIQUEMENT LE MATIN")
+    party, _, address_lines = _choose_party_and_address(lines)
+    assert party == "FGP"
+    assert address_lines == ["80 RUE BARBERIS", "06300 NICE"]

@@ -102,6 +102,18 @@ def _bad_party_name(value: str | None) -> bool:
     low = _fold(raw)
     if not low:
         return True
+    if low in {"infos fournisseur", "nom adresse", "nom et adresse", "fournisseur"}:
+        return True
+    if re.match(r"^(?:n[°o.]?\s*)?(?:compte\s*(?:client)?|numero\s+de\s+compte)\s*[:#-]?\s*\d+", low):
+        return True
+    if re.match(r"^n[°o.]?\s*\d", low):
+        return True
+    if re.match(r"^date\s*[:#-]?\s*\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", low):
+        return True
+    if re.match(r"^num\S{0,3}ro\s+", low) and re.search(r"\d", low):
+        return True
+    if len(re.findall(r"\b(?:pce|piece|pcs)\b", low)) >= 2 and len(re.findall(r"\d+[,.]\d{2}", low)) >= 2:
+        return True
     bad = ("n° commande", "no commande", "date n°", "code article", "total h.t", "conditions generales",
            "code fournisseur", "facture a", "facture à", "adresse de livraison", "produit fini", "mode livraison")
     if len(low) > 100 or any(x in low for x in bad) or "@" in raw:
@@ -772,6 +784,8 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
         raw=" ".join(numeric_token(w.text) or w.text for w in ws).strip()
         return parse_number(raw)
 
+    previous_anchors = None
+    previous_page_number = None
     for pg in pages:
         rows=all_rows([pg], y_factor=0.50)
         header_idx=None; anchors={}
@@ -836,7 +850,25 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
             ):
                 header_idx=idx; break
         if header_idx is None:
-            continue
+            # Continuation pages often start directly with the first product
+            # and repeat no column headings.  Reuse the preceding page's
+            # anchors only when bracketed material references independently
+            # establish that the same commercial table continues.
+            continuation_refs = sum(bool(re.search(
+                r"\[\d{10,11}\]", row.text
+            )) for row in rows[:40])
+            if (
+                previous_anchors is None
+                or previous_page_number != pg.page - 1
+                or continuation_refs < 2
+            ):
+                previous_anchors = None
+                continue
+            anchors = dict(previous_anchors)
+            header_idx = -1
+        else:
+            previous_anchors = dict(anchors)
+        previous_page_number = pg.page
 
         # Boundaries are midway between numeric anchors. Left columns remain flexible.
         qx,px=anchors["quantity"],anchors["price"]
@@ -1824,6 +1856,493 @@ def _two_row_erp_table_items(pages, default_currency="EUR"):
             ))
             pending=None
     return _dedupe_line_items(items)
+
+
+def _dual_reference_discount_rows_v5202(pages, config: dict, default_currency="EUR"):
+    """Read rows with customer code, repeated supplier ref and stacked discounts."""
+    import re
+    from po_ocr.models import AdditionalCharge, Evidence, LineItem
+
+    cfg = config.get("layout", {}) if isinstance(config, dict) else {}
+    if not cfg.get("dual_reference_discount_rows_v5202", True):
+        return [], []
+    money = r"(?:\d{1,3}(?:[. ]\d{3})+|\d+),\d{2}"
+    row_pattern = re.compile(
+        rf"^(?P<customer>[A-Z][A-Z0-9]{{4,15}})\s+(?P<ref>\d{{10,11}})\s+"
+        rf"(?P<description>.+?)(?:\s+(?P=ref))?\s+(?P<qty>{money})\s*UN\s+"
+        rf"(?P<delivered>{money})\s+(?P<price>{money})\s+"
+        rf"(?P<discount>\d{{1,2}}(?:,\d+)?(?:\+\d{{1,2}}(?:,\d+)?)?)\s*$",
+        re.I,
+    )
+    charge_pattern = re.compile(
+        rf"^(?P<code>ecotaxe\d+)\s+Eco[- ]contribution\s+"
+        rf"(?P<qty>{money})\s*UN\s+(?P<delivered>{money})\s+"
+        rf"(?P<price>{money})\s+0\s*$",
+        re.I,
+    )
+    lines, charges = [], []
+    for page in pages:
+        text = str(page.text or "")
+        header = _fold(text)[:3000]
+        if not ("v/ reference" in header and "qte" in header
+                and "p.u.ht" in header and "remise" in header):
+            continue
+        last_line = None
+        for source_row in text.splitlines():
+            raw = " ".join(source_row.split())
+            found = row_pattern.match(raw)
+            if found:
+                quantity = _parse_native_decimal(found.group("qty"))
+                gross_price = _parse_native_decimal(found.group("price"))
+                if quantity is None or gross_price is None or quantity <= 0:
+                    continue
+                discounts = [_parse_native_decimal(part) for part in found.group("discount").split("+")]
+                if any(part is None or part < 0 or part >= 100 for part in discounts):
+                    continue
+                factor = 1.0
+                for part in discounts:
+                    factor *= 1 - part / 100
+                net_price = round(gross_price * factor, 6)
+                amount = round(quantity * net_price, 2)
+                line = LineItem(
+                    line_number=str(len(lines) + 1),
+                    customer_material_number=found.group("customer"),
+                    material_number=found.group("ref"), article_number=found.group("ref"),
+                    supplier_material_number=found.group("ref"),
+                    description=found.group("description"),
+                    quantity=quantity, ordered_quantity=quantity,
+                    delivered_quantity=_parse_native_decimal(found.group("delivered")),
+                    uom="UN", unit_price=gross_price, gross_unit_price=gross_price,
+                    net_unit_price=net_price,
+                    discount_percent=round(100 * (1 - factor), 6),
+                    line_total=amount, line_net_amount=amount,
+                    currency=default_currency, page=page.page,
+                    confidence=min(0.96, float(page.confidence or 0.0) * 0.93),
+                    raw_text=raw,
+                    evidence=Evidence(page=page.page, source_text=raw,
+                                      extraction_method="dual_reference_discount_row_v5202"),
+                    warnings=["sequential_discount_derived_from_printed_rates"]
+                    if len(discounts) > 1 else [],
+                )
+                lines.append(line)
+                last_line = line
+                continue
+            fee = charge_pattern.match(raw)
+            if fee and last_line is not None:
+                quantity = _parse_native_decimal(fee.group("qty"))
+                price = _parse_native_decimal(fee.group("price"))
+                if None in (quantity, price):
+                    continue
+                charges.append(AdditionalCharge(
+                    charge_type="environmental_fee", code=fee.group("code"),
+                    description="Eco-contribution", quantity=quantity,
+                    unit_price=price, amount=round(quantity * price, 2),
+                    parent_line_number=last_line.line_number,
+                    parent_material_number=last_line.material_number,
+                    supplier_reference=last_line.supplier_material_number,
+                    currency=default_currency, page=page.page,
+                    confidence=min(0.95, float(page.confidence or 0.0) * 0.92),
+                    evidence=Evidence(page=page.page, source_text=raw,
+                                      extraction_method="dual_reference_discount_fee_v5202"),
+                ))
+    return lines, charges
+
+
+def _explicit_reference_layout_rows_v5202(pages, config: dict, default_currency="EUR"):
+    """Recover complete product rows from JIN's normalized visual text order."""
+    import re
+    from po_ocr.models import Evidence, LineItem
+
+    cfg = config.get("layout", {}) if isinstance(config, dict) else {}
+    if not cfg.get("explicit_reference_layout_rows_v5202", True):
+        return []
+    money = r"(?:\d{1,3}(?: \d{3})+|\d+),\d{1,4}"
+    product = re.compile(r"^\[(?:ELM)?(?P<ref>\d{10,11})\]\s+(?P<body>.+)$", re.I)
+    eco_row = re.compile(r"^\[ECO\s+PART\]|^ECO\s+PART", re.I)
+    bracket_price = re.compile(
+        rf"(?P<qty>{money})\s+(?P<price>{money})\s+(?P<vat>{money})\s+"
+        rf"(?P<gross>{money})\s+(?P<amount>{money})\s*$"
+    )
+    bracket_date = re.compile(
+        rf"\b\d{{2}}/\d{{2}}/\d{{4}}\s+(?P<qty>{money})\s+"
+        rf"(?P<price>{money})\s+(?P<amount>{money})\s*€\s*$"
+    )
+    labelled = re.compile(
+        rf"^(?P<description>.+?)\s*[-–]?\s*REF\s*:?(?P<ref>\d{{10,11}})\s+"
+        rf"(?P<qty>{money})\s+(?P<price>{money})\s+\d{{1,2}}\s+"
+        rf"(?P<amount>{money})\s*€\s*$",
+        re.I,
+    )
+    single = re.compile(
+        rf"\b(?P<ref>\d{{10,11}})\s+(?P<description>.+?)\s+"
+        rf"(?P<price>{money})\s+(?P<qty>\d{{1,4}})\s*$"
+    )
+    discount = re.compile(
+        rf"(?P<price>{money})\s+(?P<discount>{money})\s+"
+        rf"(?P<qty>{money})\s+(?P<amount>{money})\s*$"
+    )
+    items = []
+    previous_table_page = None
+    for page in pages:
+        rows = [" ".join(line.split()) for line in str(page.text or "").splitlines() if line.strip()]
+        header = _fold(" ".join(rows[:80]))
+        has_table = bool(
+            re.search(r"\b(?:quantite|qte|qt|qty)\b", header)
+            and re.search(r"\b(?:prix|montant|tarif|p\s*\.?\s*u)\b", header)
+        )
+        bracket_count = sum(bool(product.match(row)) for row in rows)
+        if not has_table and not (previous_table_page == page.page - 1 and bracket_count >= 2):
+            continue
+        previous_table_page = page.page
+        for index, row in enumerate(rows):
+            ref = description = None
+            quantity = price = amount = discount_percent = None
+            raw = row
+            bracket = product.match(row)
+            inline = labelled.match(row)
+            if bracket:
+                ref = bracket.group("ref")
+                body = bracket.group("body")
+                amounts = bracket_price.search(body) or bracket_date.search(body)
+                if not amounts:
+                    continue
+                quantity = _parse_native_decimal(amounts.group("qty"))
+                price = _parse_native_decimal(amounts.group("price"))
+                amount = _parse_native_decimal(amounts.group("amount"))
+                if bracket_price.search(body):
+                    description = body[:amounts.start()].strip()
+                else:
+                    description = ""
+                # The visible designation may wrap below the numeric row.
+                next_rows = []
+                for continuation in rows[index + 1:index + 6]:
+                    if (product.match(continuation) or eco_row.match(continuation)
+                            or re.search(r"(?i)^(?:total|montant|info@|n°tva|page\b|\d+%)", continuation)):
+                        break
+                    cleaned = re.split(r"(?i)\bcontribution\b|\b\d+[.,]\d+\s*,\s*TVA\b", continuation)[0].strip()
+                    if cleaned:
+                        next_rows.append(cleaned)
+                description = " ".join([description, *next_rows]).strip()
+            elif inline:
+                ref = inline.group("ref")
+                description = inline.group("description").strip(" -–")
+                quantity = _parse_native_decimal(inline.group("qty"))
+                price = _parse_native_decimal(inline.group("price"))
+                amount = _parse_native_decimal(inline.group("amount"))
+            elif "ref fsseur" in header and "tarif unitaire" in header:
+                found = single.search(row)
+                if found:
+                    ref = found.group("ref")
+                    description = found.group("description")
+                    price = _parse_native_decimal(found.group("price"))
+                    quantity = _parse_native_decimal(found.group("qty"))
+                    amount = quantity * price if None not in (quantity, price) else None
+            if ref is None and "remise" in header:
+                first = re.match(r"^(?P<ref>\d{10,11})\s+(?P<description>.+)$", row)
+                if first and index + 1 < len(rows):
+                    remainder = rows[index + 1]
+                    found = discount.search(remainder)
+                    if found:
+                        ref = first.group("ref")
+                        description = " ".join([first.group("description"), remainder[:found.start()]]).strip()
+                        quantity = _parse_native_decimal(found.group("qty"))
+                        price = _parse_native_decimal(found.group("price"))
+                        amount = _parse_native_decimal(found.group("amount"))
+                        discount_percent = _parse_native_decimal(found.group("discount"))
+                        raw = row + " | " + remainder
+            if None in (ref, quantity, price, amount) or not description:
+                continue
+            if quantity <= 0 or price <= 0 or amount < 0 or _fee_kind(description):
+                continue
+            expected = quantity * price * (
+                1 - discount_percent / 100 if discount_percent is not None else 1
+            )
+            if abs(expected - amount) > max(0.04, amount * 0.006):
+                continue
+            items.append(LineItem(
+                line_number=str(len(items) + 1), material_number=ref,
+                article_number=ref, description=description,
+                quantity=quantity, ordered_quantity=quantity,
+                unit_price=price, gross_unit_price=price if discount_percent is not None else None,
+                net_unit_price=(amount / quantity if discount_percent is not None else price),
+                discount_percent=discount_percent,
+                line_total=amount, line_net_amount=amount,
+                currency=default_currency, page=page.page,
+                confidence=min(0.96, float(page.confidence or 0.0) * 0.94),
+                raw_text=raw,
+                evidence=Evidence(page=page.page, source_text=raw,
+                                  extraction_method="explicit_reference_layout_row_v5202"),
+                warnings=["line_amount_calculated_from_printed_quantity_and_price"]
+                if "ref fsseur" in header and "tarif unitaire" in header else [],
+            ))
+    return items
+
+
+def _piece_suffix_material_rows_v5202(pages, config: dict, default_currency="EUR"):
+    """Read material rows whose quantity and price cells carry a ``p.`` suffix."""
+    import re
+    from po_ocr.extract import all_rows
+    from po_ocr.models import Evidence, LineItem
+
+    cfg = config.get("layout", {}) if isinstance(config, dict) else {}
+    if not cfg.get("piece_suffix_material_rows_v5202", True):
+        return []
+    items = []
+    for page in pages:
+        header = _fold(page.text or "")[:3500]
+        if not (re.search(r"\bref\b", header) and "fournisseur" in header
+                and "quantite" in header
+                and "prix" in header and "designation" in header):
+            continue
+        for row in all_rows([page], y_factor=0.50):
+            words = sorted(row.words, key=lambda word: word.bbox[0])
+            references = [word for word in words if re.fullmatch(r"\d{10,11}", word.text.strip())]
+            suffixed = [word for word in words if re.fullmatch(r"\d[\d.,]*p\.", word.text.strip(), re.I)]
+            if len(references) != 1 or len(suffixed) < 2:
+                continue
+            reference = references[0]
+            amounts = [word for word in words if word.bbox[0] > suffixed[-1].bbox[2]
+                       and re.fullmatch(r"\d[\d.,]*", word.text.strip())]
+            if not amounts:
+                continue
+            quantity = _parse_native_decimal(suffixed[0].text[:-2])
+            price = _parse_native_decimal(suffixed[1].text[:-2])
+            amount = _parse_native_decimal(amounts[-1].text)
+            if None in (quantity, price, amount) or quantity <= 0 or price <= 0:
+                continue
+            if abs(quantity * price - amount) > max(0.04, amount * 0.006):
+                continue
+            description = " ".join(
+                word.text for word in words
+                if word.bbox[0] < reference.bbox[0]
+                and not re.fullmatch(r"\d{5,9}", word.text.strip())
+            ).strip()
+            if not description or _fee_kind(description):
+                continue
+            items.append(LineItem(
+                line_number=str(len(items) + 1), material_number=reference.text,
+                article_number=reference.text, description=description,
+                quantity=quantity, ordered_quantity=quantity,
+                unit_price=price, net_unit_price=price,
+                line_total=amount, line_net_amount=amount,
+                currency=default_currency, page=page.page,
+                bbox=row.bbox, raw_text=row.text,
+                confidence=min(0.96, float(row.confidence or 0.0) * 0.95),
+                evidence=Evidence(page=page.page, bbox=row.bbox,
+                                  source_text=row.text,
+                                  extraction_method="piece_suffix_material_row_v5202"),
+            ))
+    return items
+
+
+def _material_quantity_unit_text_rows_v5202(pages, config: dict, default_currency="EUR"):
+    """Read OCR rows with material, optional catalogue price, quantity/unit, net price and amount."""
+    from po_ocr.models import Evidence, LineItem
+
+    if not config.get("layout", {}).get("material_quantity_unit_text_rows_v5202", True):
+        return []
+    suffix = re.compile(
+        r"\s+(?P<quantity>\d+(?:[,.]\d{1,3})?)\s+"
+        r"(?P<unit>PC|PCE|PIECE|PCS|UNITES?)\s+"
+        r"(?P<price>\d[\d .]*[,.]\d{2,3})\s+"
+        r"(?P<amount>\d[\d .]*[,.]\d{2})\s*(?:€|EUR)?$", re.I
+    )
+    items = []
+    for page in pages:
+        rows = str(page.text or "").splitlines()
+        if not (any(re.search(r"\b(?:ref|code\s+article)\b", _fold(row)) for row in rows)
+                and any(re.search(r"(?m)^\s*\d{10,11}\s+", row) for row in rows)):
+            continue
+        for raw_row in rows:
+            row = " ".join(raw_row.split())
+            anchor = re.match(r"^(?P<reference>\d{10,11})\s+(?P<rest>.+)$", row)
+            if not anchor:
+                continue
+            match = suffix.search(anchor.group("rest"))
+            if not match:
+                continue
+            description = anchor.group("rest")[:match.start()].strip()
+            description = re.sub(r"\s+\d+[,.]\d{2}$", "", description).strip()
+            quantity = _parse_native_decimal(match.group("quantity"))
+            price = _parse_native_decimal(match.group("price"))
+            amount = _parse_native_decimal(match.group("amount"))
+            if not description or None in (quantity, price, amount) or quantity <= 0 or price < 0:
+                continue
+            if abs(quantity * price - amount) > max(0.04, amount * 0.005):
+                continue
+            reference = anchor.group("reference")
+            items.append(LineItem(
+                line_number=str(len(items) + 1), material_number=reference,
+                article_number=reference, description=description,
+                quantity=quantity, ordered_quantity=quantity,
+                unit=match.group("unit").upper(), unit_price=price,
+                net_unit_price=price, line_total=amount, line_net_amount=amount,
+                currency=default_currency, page=page.page, raw_text=row,
+                confidence=0.85,
+                evidence=Evidence(page=page.page, source_text=row,
+                                  extraction_method="material_quantity_unit_text_row_v5202"),
+            ))
+    return items
+
+
+def _explicit_reference_vertical_items_v5202(pages, config: dict, default_currency="EUR"):
+    """Recover vertically serialized PDF table cells with explicit material IDs.
+
+    Native PDF text can list each cell on a separate line although the visible
+    page is a table.  Keep this hypothesis deliberately narrow: a bracketed,
+    labelled, or standalone 10/11-digit reference and source-backed arithmetic
+    are required.  This is not a fallback for arbitrary prose numbers.
+    """
+    import re
+    from po_ocr.models import Evidence, LineItem
+
+    cfg = config.get("layout", {}) if isinstance(config, dict) else {}
+    if not cfg.get("explicit_reference_vertical_recovery_v5202", True):
+        return []
+    anchor = re.compile(
+        r"(?im)^(?:\[(?:ELM)?(?P<bracket>\d{10,11})\]\s*(?P<bracket_desc>[^\n]*)"
+        r"|(?P<labelled>[^\n]+?)\s*[-–]?\s*REF\s*:?\s*(?P<inline>\d{10,11})\s*"
+        r"|(?P<standalone>\d{10,11})\s*)$"
+    )
+    numeric = re.compile(r"^\s*(\d+(?:[ .]\d{3})*(?:,\d{1,4})?)\s*(?:€|EUR)?\s*$", re.I)
+    items = []
+    preceding_table_page = None
+    for page in pages:
+        source = str(page.text or "")
+        folded = _fold(source)
+        has_header = bool(
+            re.search(r"\b(?:quantite|qte|qt|qty)\b", folded)
+            and re.search(r"\b(?:prix|montant|p\s*\.?\s*u|tarif)\b", folded)
+        )
+        matches = list(anchor.finditer(source))
+        if not matches:
+            continue
+        continuation = bool(
+            preceding_table_page == page.page - 1
+            and sum(bool(found.group("bracket")) for found in matches) >= 2
+        )
+        if not (has_header or continuation):
+            continue
+        if has_header or continuation:
+            preceding_table_page = page.page
+        for index, match in enumerate(matches):
+            ref = match.group("bracket") or match.group("inline") or match.group("standalone")
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(source)
+            segment = source[match.end():end]
+            # A new page can contain a legal footer after the final product.
+            segment = re.split(
+                r"(?im)^\s*(?:total\s+(?:h\.?t\.?|t\.?t\.?c\.?|eur)|"
+                r"montant\s+(?:hors\s+taxes|total)|base\s+h\.?t\.?)\b",
+                segment, maxsplit=1,
+            )[0]
+            # A separate eco-participation row belongs to the preceding
+            # product as a charge, never as its printed line amount.  The
+            # split does not match an "Eco-\ncontribution" tax *column*.
+            segment = re.split(
+                r"(?im)^\s*(?:\[ECO\s+PART\].*|ECO\s+PART\w*)\s*$",
+                segment, maxsplit=1,
+            )[0]
+            cells = [line.strip() for line in segment.splitlines() if line.strip()]
+            values = [(i, _parse_native_decimal(found.group(1)), found.group(1))
+                      for i, cell in enumerate(cells)
+                      if (found := numeric.fullmatch(cell))]
+            values = [(i, value, raw) for i, value, raw in values if value is not None]
+            quantity = price = amount = discount_percent = None
+            inline_values = re.search(
+                r"(?<!\d)(\d{1,5},\d{1,3})\s+"
+                r"((?:\d{1,3}(?: \d{3})+|\d+),\d{2,4})\s+"
+                r"((?:\d{1,3}(?: \d{3})+|\d+),\d{2})\s*€",
+                match.group("bracket_desc") or "",
+            )
+            if inline_values:
+                quantity, price, amount = (
+                    _parse_native_decimal(value) for value in inline_values.groups()
+                )
+                if None in (quantity, price, amount) or abs(quantity * price - amount) > max(0.04, amount * 0.006):
+                    continue
+            elif len(values) < 2:
+                continue
+            # Most vertical tables print quantity, unit price, optional VAT /
+            # gross price, then net amount.  Require the final value to
+            # reconcile exactly rather than guessing which intermediate number
+            # is a discount or tax rate.
+            if inline_values:
+                pass
+            elif len(values) >= 3:
+                last_amount = values[-1][1]
+                options = []
+                for qi in range(min(3, len(values) - 2)):
+                    q = values[qi][1]
+                    if q <= 0 or q > 100000:
+                        continue
+                    for pi in range(qi + 1, len(values) - 1):
+                        p = values[pi][1]
+                        if p <= 0:
+                            continue
+                        tolerance = max(0.04, abs(last_amount) * 0.006)
+                        if abs(q * p - last_amount) <= tolerance:
+                            options.append((qi, pi, q, p))
+                if options:
+                    qi, pi, quantity, price = min(options, key=lambda x: (x[0], x[1]))
+                    amount = last_amount
+                elif (
+                    len(values) == 4
+                    and re.search(r"\bremise\b", folded)
+                    and 0 < values[0][1] <= 100000
+                    and values[1][1] > 0
+                    and 0 <= values[3][1] < 100
+                ):
+                    proposed = values[0][1] * values[1][1] * (1 - values[3][1] / 100)
+                    printed = values[2][1]
+                    if abs(proposed - printed) <= max(0.04, printed * 0.006):
+                        quantity, price, amount = values[0][1], values[1][1], printed
+                        discount_percent = values[3][1]
+            elif len(values) == 2 and match.group("standalone"):
+                first, second = values[0][1], values[1][1]
+                if first > 1 and 0 < second <= 1000 and float(second).is_integer():
+                    price, quantity = first, second
+                elif 0 < first <= 1000 and float(first).is_integer() and second > 0:
+                    quantity, price = first, second
+                if quantity is not None:
+                    amount = quantity * price
+            if quantity is None:
+                continue
+            first_numeric = values[0][0] if values else len(cells)
+            description_parts = []
+            if match.group("bracket_desc") and not inline_values:
+                description_parts.append(match.group("bracket_desc").strip())
+            if match.group("labelled"):
+                description_parts.append(match.group("labelled").strip(" -–"))
+            for cell in cells[:first_numeric]:
+                if inline_values:
+                    if re.match(r"(?i)^(?:\d+%|info@|n°tva|page\b|helium\s+materiaux)", cell):
+                        break
+                    cell = re.split(r"(?i)\bcontribution\b|\b\d+[.,]\d+\s*,\s*TVA\b", cell)[0].strip()
+                    if not cell:
+                        continue
+                if re.match(r"(?i)^(?:eco[- ]?|contribution|taxe|date\b)", cell):
+                    break
+                description_parts.append(cell)
+            description = " ".join(description_parts).strip() or None
+            if not description or _fee_kind(description):
+                continue
+            raw = source[match.start():min(end, match.start() + 700)].strip()
+            items.append(LineItem(
+                line_number=str(len(items) + 1),
+                material_number=ref, article_number=ref,
+                description=description, quantity=quantity,
+                ordered_quantity=quantity, unit_price=price,
+                gross_unit_price=price if discount_percent is not None else None,
+                net_unit_price=(amount / quantity if discount_percent is not None else price),
+                discount_percent=discount_percent, line_total=amount,
+                line_net_amount=amount, currency=default_currency,
+                page=page.page, confidence=min(0.96, float(page.confidence or 0.0) * 0.94),
+                raw_text=raw,
+                evidence=Evidence(page=page.page, source_text=raw,
+                                  extraction_method="explicit_reference_vertical_v5202"),
+                warnings=[] if inline_values or len(values) >= 3 else ["line_amount_calculated_from_printed_quantity_and_price"],
+            ))
+    return items
 
 
 def _semantic_text_table_items_v68(pages, config: dict, default_currency="EUR"):
@@ -3024,18 +3543,27 @@ def _repair_native_long_decimal_line_prices_v5170(lines, config: dict | None = N
 
         selected = None
         for match in long_decimal.finditer(raw_text):
-            token = match.group(0).strip()
-            generic_value = parse_number(token)
-            native_value = _parse_native_decimal(token)
-            if not same_number(current_price, generic_value):
-                continue
-            if native_value is None or same_number(native_value, generic_value):
-                continue
-            ratio = abs(float(generic_value)) / max(abs(float(native_value)), 0.000001)
-            if ratio < 1000:
-                continue
-            selected = (token, float(generic_value), float(native_value))
-            break
+            full_token = match.group(0).strip()
+            # A preceding quantity can look exactly like a thousands group in
+            # flattened PDF text: ``2 238,5500``.  The parser may have used only
+            # ``238,5500`` for the price, so try that source-backed suffix too.
+            candidates = [full_token]
+            if " " in full_token:
+                candidates.append(full_token.rsplit(" ", 1)[-1])
+            for token in candidates:
+                generic_value = parse_number(token)
+                native_value = _parse_native_decimal(token)
+                if not same_number(current_price, generic_value):
+                    continue
+                if native_value is None or same_number(native_value, generic_value):
+                    continue
+                ratio = abs(float(generic_value)) / max(abs(float(native_value)), 0.000001)
+                if ratio < 1000:
+                    continue
+                selected = (token, float(generic_value), float(native_value))
+                break
+            if selected:
+                break
         if not selected:
             continue
 
@@ -3088,6 +3616,41 @@ def _repair_native_long_decimal_line_prices_v5170(lines, config: dict | None = N
             line.warnings.append(warning)
         repaired += 1
     return repaired
+
+
+def _recover_split_header_order_date_v5202(po, pages, config: dict):
+    """Read an order-date value printed below a multi-column header label."""
+    import re
+    from po_ocr.normalize import parse_date
+
+    if not config.get("layout", {}).get("split_header_order_date_v5202", True):
+        return po, 0
+    if po.purchase_order.order_date.value:
+        return po, 0
+    pattern = re.compile(
+        r"(?i)\bdate\s+de\s+(?:la\s+)?commande\s*:\s*[^\n]*\n"
+        r"[^\n]{0,120}?\b(?P<date>[0-3]?\d[/.-](?:0?\d|1[0-2])[/.-](?:19|20)?\d{2})\b"
+    )
+    candidates = []
+    for page in pages[:1]:
+        match = pattern.search(str(page.text or ""))
+        if not match:
+            continue
+        raw = match.group("date")
+        normalized = parse_date(raw)
+        if not normalized:
+            continue
+        words = [word for word in page.words if word.text.strip(" :") == raw]
+        if len(words) == 1:
+            candidates.append((raw, page.page, words[0].bbox))
+    if len(candidates) != 1:
+        return po, 0
+    raw, page_number, bbox = candidates[0]
+    po.purchase_order.order_date = _make_spatial_field(
+        raw, page_number, bbox, kind="date", confidence=0.985,
+        method="split_header_order_date_v5202",
+    )
+    return po, 1
 
 
 def _repair_order_date_delivery_collision_v5170(po, pages, config: dict):
@@ -3158,6 +3721,142 @@ def _repair_order_date_delivery_collision_v5170(po, pages, config: dict):
     po.purchase_order.order_date.warnings.append(
         "delivery_date_collision_repaired_v5170"
     )
+    return po, 1
+
+
+def _repair_supplier_from_explicit_header_v5202(po, pages, config: dict):
+    """Replace a section heading or table amount mistaken for a supplier name.
+
+    Only an adjacent, explicitly labelled supplier block or a dated supplier
+    heading may supply the replacement. An unsupported heading is left for
+    review instead of being treated as a company name.
+    """
+    if not pages or not _bad_party_name(getattr(po.supplier, "name", None)):
+        return po, 0
+    text = str(pages[0].text or "")
+    candidate = None
+    labelled = re.search(
+        r"(?im)^\s*fournisseur\s*[-:]\s*\d{13,14}\s+(.+?)\s+(?=\d{1,4}\s+(?:rue|avenue|av\.?|route|chemin|boulevard)\b)",
+        text,
+    )
+    if labelled:
+        candidate = labelled.group(1).strip(" -:;|\t")
+        candidate = re.sub(r"\s+\d{1,5}$", "", candidate).strip(" -:;|\t")
+    block = re.search(
+        r"(?im)^\s*(?:infos?\s+fournisseur|supplier\s+information)\s*\n\s*commande\s+([^\n]{3,80})",
+        text,
+    )
+    if not candidate and block:
+        candidate = block.group(1).strip(" -:;|\t")
+    if not candidate:
+        heading = re.search(
+            r"(?im)^\s*[^\n]{0,60}?\bdu\s+\d{1,2}/\d{1,2}/\d{4}\s+(.+?)\s+livraison\s+le\s*:",
+            text,
+        )
+        if heading:
+            candidate = heading.group(1).strip(" -:;|\t")
+            # A short system code precedes some supplier names; remove it only
+            # when the next token is visibly an initialled company name.
+            candidate = re.sub(
+                r"^[A-Z0-9]{2,5}\s+(?=[A-Z](?:\.[A-Z])+\.)", "", candidate
+            )
+    if not candidate or _bad_party_name(candidate) or _company_name_quality_v48(candidate) < 0.55:
+        return po, 0
+    old_line1 = str(po.supplier.address.line1 or "").strip()
+    po.supplier.name = candidate
+    po.supplier.legal_name = candidate
+    if _fold(old_line1) == _fold(candidate):
+        po.supplier.address.line1 = po.supplier.address.line2
+        po.supplier.address.line2 = po.supplier.address.line3
+        po.supplier.address.line3 = None
+    elif _bad_party_name(old_line1):
+        po.supplier.address.line1 = None
+        po.supplier.address.line2 = None
+        po.supplier.address.line3 = None
+    return po, 1
+
+
+def _clear_date_label_mistaken_for_buyer_v5202(po):
+    """A date row is document metadata, even when followed by the supplier name."""
+    name = _fold(getattr(po.buyer, "name", None))
+    if not re.match(r"^date\s*[:#-]?\s*\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", name):
+        return po, 0
+    po.buyer.name = None
+    po.buyer.legal_name = None
+    return po, 1
+
+
+def _repair_buyer_from_matching_registration_footer_v5202(po, pages):
+    """Use a legal issuer footer with matching SIRET or explicit PO/site layout."""
+    registration = re.sub(r"\D", "", str(po.buyer.company_registration_number or ""))
+    if not pages or len(registration) not in (0, 14):
+        return po, 0
+    first_page = _fold(pages[0].text)
+    structural_issuer = bool(
+        "bon de commande" in first_page
+        and "adresse du site" in first_page
+        and "adresse de livraison" in first_page
+    )
+    vat_siren = re.sub(r"\D", "", str(po.buyer.vat_number or ""))[-9:]
+    for page in reversed(pages):
+        lines = [line.strip() for line in str(page.text or "").splitlines() if line.strip()]
+        for index, line in enumerate(lines):
+            match = re.search(r"(?i)\bsiret\s*[:#-]?\s*((?:\d[\s.]*){14})", line)
+            if not match:
+                continue
+            footer_siret = re.sub(r"\D", "", match.group(1))
+            if registration and footer_siret != registration:
+                continue
+            if not registration and not (structural_issuer or vat_siren == footer_siret[:9]):
+                continue
+            for candidate_line in reversed(lines[max(0, index - 6):index]):
+                candidate = re.match(
+                    r"^([A-Z][A-Z0-9 &.'()/]{3,50}?)\s+-\s+(.+?)\s+(\d{5})\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ -]{1,50})$",
+                    candidate_line,
+                )
+                if not candidate:
+                    continue
+                company, street, postal_code, city = (part.strip() for part in candidate.groups())
+                if (_bad_party_name(company) or _fold(company) == _fold(po.supplier.name)
+                        or _company_name_quality_v48(company) < 0.62):
+                    continue
+                po.buyer.name = company
+                po.buyer.legal_name = company
+                po.buyer.address.line1 = street
+                po.buyer.address.line2 = None
+                po.buyer.address.line3 = None
+                po.buyer.address.postal_code = postal_code
+                po.buyer.address.city = city
+                company_stem = re.sub(r"[^a-z0-9]", "", _fold(company).split()[0])
+                footer_emails = re.findall(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+)", page.text)
+                owned_domains = [domain for domain in footer_emails
+                                 if company_stem and company_stem in _fold(domain).replace(" ", "")]
+                if owned_domains:
+                    email = next((value for value in re.findall(
+                        r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+", page.text
+                    ) if value.split("@", 1)[1] in owned_domains), None)
+                    if email:
+                        po.buyer.email = email
+                        po.buyer.contact.email = email
+                if po.buyer.phone and po.buyer.phone == po.supplier.phone:
+                    po.buyer.phone = None
+                    po.buyer.contact.phone = None
+                return po, 1
+    return po, 0
+
+
+def _clear_account_label_mistaken_for_buyer_v5202(po):
+    """An account number is not a company name or postal address."""
+    name = _fold(getattr(po.buyer, "name", None))
+    if not re.match(r"^(?:n[°o.]?\s*)?compte\s*(?:client)?\s*[:#-]?\s*\d+", name):
+        return po, 0
+    po.buyer.name = None
+    po.buyer.legal_name = None
+    address = po.buyer.address
+    if any(re.search(r"\b(?:commande|adresse\s+de\s+livraison)\b", _fold(value))
+           for value in (address.line1, address.line2, address.line3) if value):
+        for field in ("line1", "line2", "line3", "postal_code", "city"):
+            setattr(address, field, None)
     return po, 1
 
 
@@ -3741,12 +4440,13 @@ def _explicit_charge_kind_v62(text: str | None) -> str | None:
         return None
     if (
         re.search(r"(?<![a-z0-9])(?:deee|d3ee|weee)(?=$|[\s_./:+-]|\d)", low)
-        or re.search(r"\beco[- ]?(?:participation|contribution|mobilier)\b", low)
+        or re.search(r"\beco[- ]?(?:partici?pation|contribution|mobilier)\b", low)
     ):
         return "environmental_fee"
     if (
         re.search(r"\b(?:frais|forfait|participation|cout|montant)\s+(?:de\s+|du\s+)?(?:port|transport|livraison|expedition)\b", low)
         or re.search(r"\bport\s+(?:standard|express|ht|facture|forfait|fournisseur)\b", low)
+        or re.match(r"^port\s+port\b", low)
         or re.search(r"\b(?:shipping|freight)(?:\s+(?:charge|cost|fee))?\b", low)
         or re.fullmatch(r"(?:port|transport|livraison|expedition)(?:\s+ht)?", low)
         or re.search(r"\bportstd\b", low)
@@ -4907,6 +5607,55 @@ def _enhance_strict_order_number_v47(po, pages, config: dict):
             if match:
                 number_word=next((word for word in row.words if match.group(1) in word.text),None)
                 add(match.group(1),10.4,row,"explicit_attached_numero_below_order_title",[number_word] if number_word else row.words)
+                break
+
+    # In forms with a generic "Référence" header, that label names the order
+    # only when it is in the transaction header beside a long numeric value.
+    # The product table's own Référence column lies below this zone and is
+    # intentionally excluded.  Keep the exact printed leading zeroes.
+    if has_order_title or re.search(r"\bcommande\s+fournisseur\b", page_folded):
+        for row in rows:
+            if _row_center_safe(row) > pg.height * 0.26:
+                break
+            words = sorted(row.words, key=lambda word: word.bbox[0])
+            labels = [word for word in words if _fold(word.text).strip(" .:#") in {"reference", "ref", "référence"}]
+            for label in labels:
+                if re.search(r"\b(?:offre|devis|client|fournisseur|article)\b", _fold(row.text)):
+                    continue
+                values = [word for word in words if
+                          word.bbox[0] >= label.bbox[2]
+                          and word.bbox[0] - label.bbox[2] < pg.width * 0.18
+                          and re.fullmatch(r"\d{6,12}", word.text.strip())]
+                if values:
+                    nearest = min(values, key=lambda word: word.bbox[0])
+                    add(nearest.text, 11.0, row, "header_reference_order_number", [nearest])
+
+    # The reference can be printed across two visual cells after an explicit
+    # order-number marker (``N° 10/92 983``); a tiny nearby page number must
+    # never outrank that complete source-backed identifier.
+    for row in rows:
+        if _row_center_safe(row) > pg.height * 0.26:
+            break
+        match = re.search(r"\bN\s*[°ºo]?\s*[:.]?\s*(\d{1,4}/\d{1,4}\s+\d{2,6})\b", row.text, re.I)
+        if match:
+            selected = [word for word in row.words if word.text.strip() in match.group(1).split()]
+            add(match.group(1), 11.3, row, "explicit_spaced_order_number", selected or row.words)
+
+    # A separately typeset "Notre Bon de Commande" value may appear in the
+    # adjacent column on the same baseline.  Limit this recovery to the header
+    # and a short prefix+digit pair, so product descriptions are not promoted.
+    for row in rows:
+        if _row_center_safe(row) > pg.height * 0.30:
+            break
+        if not re.search(r"\bnotre\s+bon\s+de\s+commande\b", _fold(row.text)):
+            continue
+        ordered = sorted(row.words, key=lambda word: word.bbox[0])
+        for first, second in zip(ordered, ordered[1:]):
+            if (re.fullmatch(r"[A-Z]{1,3}", first.text.strip(), re.I)
+                    and re.fullmatch(r"\d{3,10}", second.text.strip())
+                    and 0 <= second.bbox[0] - first.bbox[2] < pg.width * 0.035):
+                add(f"{first.text.strip()} {second.text.strip()}", 11.4, row,
+                    "explicit_adjacent_order_number", [first, second])
                 break
 
     # A series/number beside the order date can be unlabeled in ERP headers.
@@ -6328,7 +7077,10 @@ def _reconcile_explicit_eco_tax_total_v5176(po, pages, config: dict):
         return po, 0
     for page in pages or []:
         for row in all_rows([page], y_factor=0.50):
-            if not re.search(r"\bht\s*(?:\+\s*)?eco[- ]?taxes\b", _fold(row.text)):
+            folded_row = _fold(row.text)
+            explicit_combined_ht = bool(re.search(r"\bht\s*(?:\+\s*)?eco[- ]?taxes\b", folded_row))
+            explicit_vat_base = bool(re.search(r"\btva\s+\d+(?:[.,]\d+)?\s*%\s+sur\b", folded_row))
+            if not explicit_combined_ht and not explicit_vat_base:
                 continue
             amounts = re.findall(
                 r"(?<!\d)(?:\d{1,3}(?:[ \u00a0]\d{3})+|\d+)[,.]\d{2}(?!\d)",
@@ -6336,7 +7088,7 @@ def _reconcile_explicit_eco_tax_total_v5176(po, pages, config: dict):
             )
             if not amounts:
                 continue
-            printed = _parse_native_decimal(amounts[-1])
+            printed = _parse_native_decimal(amounts[0] if explicit_vat_base else amounts[-1])
             if printed is None or abs(float(printed) - document_sum) > 0.03:
                 continue
             if any(
@@ -7268,7 +8020,7 @@ def _strict_text_totals_v48(po, pages, config: dict, default_currency: str="EUR"
                             po.totals.currency=po.totals.currency or default_currency
                             break
             if "net a payer" in low or "amount due" in low or re.search(r"\btotal\s+t\.?t\.?c\.?\b",low): kind="grand"
-            elif re.search(r"\b(?:montant\s+ht\s+net|total\s+ht|total\s+net\s+ht|montant\s+ht)\b",low): kind="net"
+            elif re.search(r"\b(?:montant\s+hors\s+taxes|montant\s+ht\s+net|total\s+ht|total\s+net\s+ht|montant\s+ht)\b",low): kind="net"
             elif re.search(r"\btva\s*\d*(?:[.,]\d+)?\s*%?\b",low) and not re.search(r"\btva\s*(?:intra|ic\b)|\b(?:numero|n[°ºo])\s*tva",low): kind="vat"
             if not kind: continue
             nums=[]
@@ -7738,6 +8490,7 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     po = _enhance_order_header_from_page_layout(po, pages, config)
     po = _enhance_inline_transaction_header_v46(po, pages, config)
     po = _enhance_strict_order_number_v47(po, pages, config)
+    po, _ = _recover_split_header_order_date_v5202(po, pages, config)
     table_lines, table_charges = _native_table_line_items_and_charges(tables, default_currency=default_currency)
     geometry_lines, geometry_charges = _extract_geometry_table_items_v46(pages, config, default_currency=default_currency)
     receipt_date_lines = _dual_reference_receipt_date_items_v5169(
@@ -7748,6 +8501,21 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     price_then_quantity_lines = _price_then_quantity_table_items(pages, default_currency)
     two_row_erp_lines = _two_row_erp_table_items(pages, default_currency)
     semantic_text_lines, semantic_text_charges = _semantic_text_table_items_v68(
+        pages, config, default_currency
+    )
+    vertical_reference_lines = _explicit_reference_vertical_items_v5202(
+        pages, config, default_currency
+    )
+    layout_reference_lines = _explicit_reference_layout_rows_v5202(
+        pages, config, default_currency
+    )
+    dual_discount_lines, dual_discount_charges = _dual_reference_discount_rows_v5202(
+        pages, config, default_currency
+    )
+    piece_suffix_lines = _piece_suffix_material_rows_v5202(
+        pages, config, default_currency
+    )
+    material_quantity_unit_lines = _material_quantity_unit_text_rows_v5202(
         pages, config, default_currency
     )
     material_split_lines, material_split_charges = _material_anchored_split_table_items_v61(
@@ -7857,6 +8625,26 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
             "candidate_lines":len(semantic_text_lines),
             "current_supported_lines":current_pattern_support,
         }
+    if vertical_reference_lines and (
+        not current_pattern_support or len(vertical_reference_lines) >= current_pattern_support
+    ):
+        hypotheses.append(("explicit_reference_vertical", vertical_reference_lines, [], 0.18))
+    if layout_reference_lines and (
+        not current_pattern_support or len(layout_reference_lines) >= current_pattern_support
+    ):
+        hypotheses.append(("explicit_reference_layout", layout_reference_lines, [], 0.18))
+    if dual_discount_lines and (
+        not current_pattern_support or len(dual_discount_lines) >= current_pattern_support
+    ):
+        hypotheses.append(("dual_reference_discount", dual_discount_lines, dual_discount_charges, 0.22))
+    if piece_suffix_lines and (
+        not current_pattern_support or len(piece_suffix_lines) >= current_pattern_support
+    ):
+        hypotheses.append(("piece_suffix_material_rows", piece_suffix_lines, [], 0.18))
+    if material_quantity_unit_lines and (
+        not current_pattern_support or len(material_quantity_unit_lines) >= current_pattern_support
+    ):
+        hypotheses.append(("material_quantity_unit_text_rows", material_quantity_unit_lines, [], 0.18))
     if material_split_lines: hypotheses.append(("material_anchored_split",material_split_lines,material_split_charges,0.24))
     if material_numeric_lines and (
         not current_pattern_support or len(material_numeric_lines) >= current_pattern_support
@@ -8009,6 +8797,9 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     po, parser_diag["issuer_masthead_vendor_code_repairs"] = (
         _repair_issuer_masthead_and_vendor_code_v5201(po, pages, config)
     )
+    po, parser_diag["explicit_supplier_header_repairs"] = (
+        _repair_supplier_from_explicit_header_v5202(po, pages, config)
+    )
     po = _sanitize_summary_totals_v46(po, pages, config, default_currency=default_currency)
     po = _enhance_strict_totals_v47(po, pages, config)
     po = _summary_table_totals_v48(po, tables, config, default_currency=default_currency)
@@ -8029,6 +8820,17 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     po = _sanitize_internal_reference_v47(po)
     po.supplier.code = _normalize_labeled_party_code_v5166(po.supplier.code)
     po = _sanitize_party_addresses_v48(po, config)
+    po, parser_diag["account_label_buyer_repairs"] = (
+        _clear_account_label_mistaken_for_buyer_v5202(po)
+    )
+    po, parser_diag["date_label_buyer_repairs"] = (
+        _clear_date_label_mistaken_for_buyer_v5202(po)
+    )
+    po, parser_diag["registration_footer_buyer_repairs"] = (
+        _repair_buyer_from_matching_registration_footer_v5202(
+            po, config.get("_document_pages") or pages
+        )
+    )
     # Refresh normalized address-role records after structural party corrections.
     po.business_addresses = build_business_addresses(po, pages, config)
     # Re-run validation/confidence after structural corrections.
