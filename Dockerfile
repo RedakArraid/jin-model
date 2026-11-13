@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir -r /tmp/jin-core-requirements.txt \
 FROM dependencies AS runtime
 COPY model/ /app/
 COPY core_overrides/ /app/
+RUN python -c "from uda.learned import load_router, structural_shape; assert structural_shape('A12') == 'A9'"
 COPY jin_runtime/ /app/jin_runtime/
 # The runtime image also owns Studio's batch preannotation workflow. Keeping
 # these narrowly scoped modules beside the API guarantees that PDF OCR uses
