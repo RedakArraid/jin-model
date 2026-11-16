@@ -143,7 +143,7 @@ def addresses(rows):
             if not col:continue
             ns=[_norm(t['text']) for t in col];txt=' '.join(t['text'] for t in col)
             if ns and ns[0] in ZONE_PREFIXES:zone=txt
-            if any(n in BUILDING_WORDS for n in ns):building=txt
+            if ns and ns[0] in BUILDING_WORDS:building=txt
             for k,n in enumerate(ns[:-1]):
                 if n in {'BP','CS','TSA'} and re.fullmatch(r'\d{3,6}',col[k+1]['text'].strip()):extras.append((n.lower(),f"{col[k]['text']} {col[k+1]['text']}"))
         c={'house_number':s['house']['text'] if s['house'] else None,'house_number_suffix':s['suffix']['text'] if s['suffix'] else None,'street_type':s['street_type']['text'],'street_name':' '.join(t['text'] for t in s['name']),'industrial_zone':zone,'building':building,'postal_code':loc['postal']['text'] if loc else None,'city':' '.join(t['text'] for t in loc['city']) if loc else None,'cedex':bool(loc and loc['cedex'])}
@@ -1528,7 +1528,10 @@ def _addresses_v3(rows):
                 address_complement_origin = (
                     candidate_row["cy"], column[0]["bbox"][0]
                 )
-            if any(norm in BUILDING_WORDS for norm in norms):
+            # A company ending in "DU BATIMENT" is not an extra building.
+            # Counting it as one makes reconciliation replace a complete core
+            # address with an apparently richer, but duplicated, suggestion.
+            if norms and norms[0] in BUILDING_WORDS:
                 building = text
                 building_origin = (candidate_row["cy"], column[0]["bbox"][0])
             for index, norm in enumerate(norms[:-1]):
@@ -1731,7 +1734,7 @@ def _addresses_v3(rows):
                     industrial_zone = site_tail
                 elif site_tail and any(norm in BUSINESS_PARK_PREFIXES for norm in column_norms):
                     business_park = site_tail
-                elif any(norm in BUILDING_WORDS for norm in column_norms):
+                elif column_norms and column_norms[0] in BUILDING_WORDS:
                     building = column_text
                 elif (
                     party_name is not None

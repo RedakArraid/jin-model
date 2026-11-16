@@ -11,6 +11,45 @@ from jin_runtime.weak_field_router import _extract_first_page_lines
 
 
 class GeometryFieldTests(unittest.TestCase):
+    @staticmethod
+    def building_named_customer_pdf(building=None):
+        with fitz.open() as doc:
+            page = doc.new_page(width=595, height=842)
+            content = ["Adresse de livraison :", "SOCIETE DU BATIMENT"]
+            if building:
+                content.append(building)
+            content.extend(["431 AV DE LA GARE", "13400 AUBAGNE"])
+            for index, value in enumerate(content):
+                page.insert_text((310, 220 + index * 15), value, fontsize=8)
+            return doc.tobytes()
+
+    def test_company_building_word_is_not_an_extra_postal_component(self):
+        lines, _ = _extract_first_page_lines(self.building_named_customer_pdf(), "fra+eng+deu")
+        suggestions = extract_geometry_suggestions(lines)
+        ships = [item for item in suggestions["address_candidates"] if item["role"] == "ship_to"]
+        self.assertTrue(ships)
+        self.assertFalse(any(item["components"].get("building") for item in ships))
+
+        from jin_runtime.weak_field_reconciliation import reconcile_weak_fields
+        core = {
+            "role": "ship_to", "party_name": "SOCIETE DU BATIMENT", "address_id": "original",
+            "address": {"house_number": "431", "street": "AVENUE DE LA GARE",
+                        "postal_code": "13400", "city": "AUBAGNE"},
+        }
+        payload = {"document": {"primary_document_type": "purchase_order"},
+                   "business_extractions": {"purchase_order": {"business_addresses": [core]}},
+                   "weak_field_suggestions": suggestions}
+        out = reconcile_weak_fields(payload)
+        self.assertFalse(out["weak_field_reconciliation"]["actions"])
+        self.assertEqual(out["business_extractions"]["purchase_order"]["business_addresses"], [core])
+
+    def test_real_building_prefix_is_still_extracted(self):
+        lines, _ = _extract_first_page_lines(self.building_named_customer_pdf("BATIMENT B"), "fra+eng+deu")
+        suggestions = extract_geometry_suggestions(lines)
+        ships = [item for item in suggestions["address_candidates"] if item["role"] == "ship_to"]
+        self.assertTrue(ships)
+        self.assertEqual(ships[0]["components"].get("building"), "BATIMENT B")
+
     def test_order_title_does_not_promote_fax_from_neighboring_column(self):
         def token(text, box):
             return {

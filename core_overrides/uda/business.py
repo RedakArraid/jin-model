@@ -821,6 +821,20 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                 if wl in {"unite", "uom", "unit"}: anchors["uom"]=center(w)
                 if wl in {"ua", "up"}: anchors[wl]=center(w)
                 if wl=="ref" and "interne" in low: anchors["internal_reference"]=center(w)
+            # ERP tables can wrap "Numero d'article" over two baselines while
+            # printing "Ref.fournisseur" as a single token. Bind the explicit
+            # supplier column before treating the leftmost code as a material.
+            supplier_ref = next((w for w in row.words if re.fullmatch(
+                r"ref(?:erence)?\.?\s*(?:fournisseur|supplier|vendor)", _fold(w.text)
+            )), None)
+            if supplier_ref is not None:
+                preceding = [w for rr in rows[max(0, idx-1):idx+2] for w in rr.words
+                             if abs(_row_center_safe(rr)-_row_center_safe(row)) <= 14
+                             and center(w) < supplier_ref.bbox[0]
+                             and re.search(r"\b(?:article|code|numero)\b", _fold(w.text))]
+                if preceding:
+                    anchors["reference"] = center(supplier_ref)
+                    anchors["secondary"] = statistics.median(center(w) for w in preceding)
             if "quantity" not in anchors and all(k in anchors for k in ("reference","description","price","amount")):
                 # OCR can lose a quantity label while repeated "2,000 PCE" cells
                 # remain readable. Require several aligned unit/quantity pairs.
@@ -906,11 +920,36 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
         ) else None
         previous_table_anchors = dict(anchors)
         previous_table_height = pg.height
+        # An enclosing table border is a stronger boundary than a percentage
+        # of the page. Do not read the separate legal/accounting box below it.
+        table_bottom = pg.height * 0.97
+        if header_idx >= 0:
+            header = rows[header_idx]
+            verticals = [line for line in pg.vector_lines
+                         if line.get("orientation") == "vertical"
+                         and line["y0"] <= header.bbox[1] + 3
+                         and line["y1"] > header.bbox[3] + 25
+                         and line["x0"] <= (ax or px) + pg.width * 0.15]
+            if verticals:
+                left_edge = min(line["x0"] for line in verticals)
+                right_edge = max(line["x0"] for line in verticals)
+                left_bottom = max(line["y1"] for line in verticals if abs(line["x0"]-left_edge) <= 2)
+                right_bottom = max(line["y1"] for line in verticals if abs(line["x0"]-right_edge) <= 2)
+                bottom = min(left_bottom, right_bottom)
+                # An internal divider can end at a merged cell halfway down
+                # the table. Only the matching outer edges close the table.
+                if abs(left_bottom-right_bottom) <= 2 and right_edge - left_edge >= pg.width * 0.4 and any(
+                    line.get("orientation") == "horizontal"
+                    and abs(line["y0"]-bottom) <= 2
+                    and line["x0"] <= left_edge + 2 and line["x1"] >= right_edge - 2
+                    for line in pg.vector_lines
+                ):
+                    table_bottom = min(table_bottom, bottom)
         for row in rows[header_idx+1:]:
             low=_fold(row.text)
             if any(term and term in low for term in stop_terms) or re.search(r"\btotal\s+h\.?\s*t\.?(?=\s|$)|\b(?:montant\s+ht|total\s+(?:ht|net|ttc))\s*[:=]",low):
                 break
-            if _row_center_safe(row)>pg.height*0.97:
+            if _row_center_safe(row)>table_bottom:
                 break
             left=[w for w in row.words if center(w)<q_left]
             qws=[w for w in row.words if q_left<=center(w)<qp]
@@ -1071,11 +1110,14 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                     token=word.text.strip()
                     if not (center(word)>center(code_word)+15 and center(word)<sec_desc_boundary):
                         continue
-                    if not (4<=len(token)<=max_mat):
+                    fee_code = bool(_fee_kind(low) and sec_x < ref_x
+                                    and any(ch.isdigit() for ch in code)
+                                    and re.fullmatch(r"[A-Za-z][A-Za-z0-9._/-]{1,29}", token))
+                    if not (4<=len(token)<=max_mat) and not fee_code:
                         continue
                     if not re.fullmatch(r"[A-Za-z0-9._/-]+",token):
                         continue
-                    if not any(ch.isdigit() for ch in token):
+                    if not any(ch.isdigit() for ch in token) and not fee_code:
                         continue
                     secondary_candidates.append(word)
                 if secondary_candidates:
@@ -1118,7 +1160,9 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                 parent=None if kind=="shipping" else current
                 charge_description=" ".join(w.text for w in left).strip()
                 charges.append(AdditionalCharge(
-                    charge_type=kind, code=code, description=charge_description or desc or code,
+                    charge_type=kind, code=secondary if secondary and sec_x is not None and sec_x<ref_x else code,
+                    description=(desc if secondary and sec_x is not None and sec_x<ref_x
+                                 and any(ch.isdigit() for ch in code) else charge_description) or code,
                     parent_line_number=parent.line_number if parent else None,
                     parent_material_number=parent.material_number if parent else None,
                     supplier_reference=parent.supplier_material_number if parent else None,
@@ -1127,6 +1171,8 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                     currency=default_currency, page=pg.page, confidence=conf,
                     evidence=Evidence(page=pg.page,bbox=row.bbox,source_text=row.text,extraction_method="geometry_table_recovery"),
                 ))
+                if kind == "shipping":
+                    current = None
                 continue
             if qty is None or price is None:
                 continue

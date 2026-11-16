@@ -200,7 +200,10 @@ def _looks_address_line(text: str) -> bool:
     low=_fold(text)
     if re.search(r"\b\d{5}\s+[a-z]", low): return True
     if re.search(r"^\s*\d{1,5}(?:\s*(?:-|&|/|bis|ter)\s*\d*)?\s+(?:rue|avenue|av\.?|boulevard|bd\.?|route|chemin|impasse|allee|allée|place|quai)\b", low): return True
-    if re.search(r"\b(?:rue|avenue|boulevard|route|chemin|impasse|allee|allée|zac|zae|zone|z\.?i\.?|tsa|b\.?p\.?|c\.?s\.?|cedex|batiment|bâtiment|immeuble|residence|résidence)\b", low): return True
+    if re.search(r"\b(?:rue|avenue|boulevard|route|chemin|impasse|allee|allée|zac|zae|zone|z\.?i\.?|tsa|b\.?p\.?|c\.?s\.?|cedex)\b", low): return True
+    # A building descriptor leads a postal line; the same word at the end of
+    # a company name (e.g. SOCIETE DU BATIMENT) is not a building component.
+    if re.match(r"^(?:batiment|immeuble|residence)\b", low): return True
     return False
 
 def _looks_metadata_line(text: str) -> bool:
@@ -238,7 +241,7 @@ def _choose_party_and_address(lines: list[str]):
     )
     if inline:
         clean = [
-            clean_text(inline.group("party")).strip(" :;-/"),
+            clean_text(inline.group("party")).strip(" :;-/–—"),
             inline.group("street"),
             *clean[1:],
         ]
@@ -338,8 +341,8 @@ def _block_contacts(lines: list[str]) -> tuple[dict[str, str], list[str]]:
         for index, match in enumerate(phones):
             prefix = _fold(line[:match.start()])
             key = "fax" if re.search(r"\bfax\s*[:/]?\s*$", prefix) else "phone"
-            if "tel / fax" in prefix and index == 1:
-                key = "fax"
+            if re.search(r"\btel(?:ephone)?\.?\s*/\s*fax\b", prefix):
+                key = "phone" if index == 0 else "fax"
             contacts.setdefault(key, match.group(0))
         if phones:
             name = line[:phones[0].start()].strip(" :;-/")
@@ -591,9 +594,130 @@ def recover_registration_party_blocks(result, pages: list[PageResult]):
     return result
 
 
+def recover_named_supplier_form(result, pages: list[PageResult]):
+    """Bind a purchase-order 'Nom' form to its repeated postal addressee.
+
+    A bare name is not a role anchor. Require both the supplier-order title and
+    the same name in a separate, complete postal block before changing roles.
+    In particular, the delivery block's telephone cannot fill the supplier form.
+    """
+    if not pages:
+        return result
+    page = pages[0]
+    rows = all_rows([page], y_factor=0.46)
+    titles = [row for row in rows if row.bbox[1] < page.height * 0.3
+              and re.search(r"\bcommande\s+fournisseur\b", _fold(row.text))]
+    if not titles:
+        return result
+    title = titles[0]
+    segments = [(text, bbox) for row in rows for text, bbox, _ in _split_visual_row(row, page)]
+    candidates = []
+    for row in rows:
+        if not title.bbox[3] < row.bbox[1] < page.height * 0.4:
+            continue
+        labels = [w for w in row.words if _label_word(w.text) == "nom"
+                  and w.bbox[0] < page.width * 0.5]
+        for label in labels:
+            values = [w for w in row.words if label.bbox[2] < w.bbox[0] < page.width * 0.5]
+            name = clean_text(" ".join(w.text for w in values)).strip(" :")
+            if len(name) < 4 or _looks_address_line(name):
+                continue
+            matches = [box for text, box in segments if _fold(text) == _fold(name)
+                       and box[0] > page.width * 0.5
+                       and title.bbox[3] < box[1] < page.height * 0.4]
+            for box in matches:
+                address_lines = []
+                last_y = box[3]
+                for text, bbox in sorted(segments, key=lambda item: (item[1][1], item[1][0])):
+                    if bbox[1] <= box[3] or abs(bbox[0] - box[0]) > page.width * 0.03:
+                        continue
+                    if bbox[1] - last_y > page.height * 0.035:
+                        break
+                    if _looks_metadata_line(text) or _is_role_stop_text(_fold(text)):
+                        break
+                    address_lines.append(text)
+                    last_y = bbox[3]
+                    if re.search(r"\b\d{5}\s+[A-Za-zÀ-ÿ]", text):
+                        break
+                candidate = Address(raw_lines=address_lines)
+                parsed, _, _ = parse_address(candidate)
+                if not (parsed.street and parsed.postal_code and parsed.city):
+                    continue
+                contact_lines = []
+                for following in rows:
+                    if not row.bbox[3] <= following.bbox[1] <= row.bbox[3] + page.height * 0.045:
+                        continue
+                    words = [w for w in following.words if w.bbox[0] < page.width * 0.5]
+                    text = " ".join(w.text for w in words)
+                    if re.match(r"^(?:tel|telephone|fax|e[- ]?mail)\b", _fold(text)):
+                        contact_lines.append(text)
+                contacts, _ = _block_contacts(contact_lines)
+                candidates.append((name, parsed, contacts))
+    if len(candidates) != 1:
+        return result
+    name, address, contacts = candidates[0]
+    supplier = result.supplier
+    supplier.name = supplier.legal_name = name
+    supplier.address = address
+    supplier.department = None
+    supplier.contact = Contact(**contacts)
+    supplier.phone, supplier.fax, supplier.email = (contacts.get(key) for key in ("phone", "fax", "email"))
+    # Do not retain a postcode misclassified as a supplier account code. A real
+    # explicitly labelled account code must survive, even if it looks postal.
+    postcodes = {m.group(1) for text, _ in segments
+                 for m in re.finditer(r"\b(\d{5})\s+[A-Za-zÀ-ÿ]", text)}
+    code_labelled = any(re.search(r"\b(?:code|compte|n[°o]?)\s+fournisseur\b", _fold(row.text))
+                        and supplier.code and supplier.code in row.text for row in rows)
+    if supplier.code in postcodes and not code_labelled:
+        supplier.code = None
+    # Masthead contacts precede the purchase-order title and cannot belong to
+    # the form below it. Correct shared Telephone / Fax labels there as well.
+    header_contacts, _ = _block_contacts([text for text, box in segments if box[3] < title.bbox[1]])
+    for key in ("phone", "fax", "email"):
+        value = header_contacts.get(key)
+        if value:
+            setattr(result.buyer, key, value)
+            setattr(result.buyer.contact, key, value)
+    if header_contacts.get("phone") == result.buyer.fax and not header_contacts.get("fax"):
+        result.buyer.fax = result.buyer.contact.fax = None
+    return result
+
+
+def recover_accounting_postal_notice(result, pages: list[PageResult]):
+    """A relocated accounting service is bill-to only with an invoice cue.
+
+    A legal registered-office footer or a generic change-of-address notice is
+    not enough. Preserve the source spelling and require a complete street.
+    """
+    candidates = []
+    for page in pages:
+        rows = all_rows([page], y_factor=0.46)
+        for row in rows:
+            if not re.search(r"\bservice\s+comptabilite\b", _fold(row.text)):
+                continue
+            nearby = " ".join(r.text for r in rows
+                              if row.bbox[1] <= r.bbox[1] <= row.bbox[3] + page.height * 0.04)
+            if not re.search(r"\bfactures?\b.*\b(?:adresse|adresser|envoye|envoyee|envoyer)\b", _fold(nearby)):
+                continue
+            value = row.text.rsplit(":", 1)[-1].strip()
+            name, department, address_lines = _choose_party_and_address([value])
+            if not name or not address_lines:
+                continue
+            candidate = Address(raw_lines=address_lines)
+            parsed, _, _ = parse_address(candidate)
+            if parsed.street and parsed.postal_code and parsed.city:
+                candidates.append((name, department, parsed))
+    if len(candidates) == 1:
+        name, department, address = candidates[0]
+        result.bill_to = Party(name=name, legal_name=name, department=department, address=address)
+    return result
+
+
 def build_business_addresses(result, pages: list[PageResult], config: dict | None = None) -> list[BusinessAddress]:
     result = recover_explicit_role_blocks(result, pages)
     result = recover_registration_party_blocks(result, pages)
+    result = recover_named_supplier_form(result, pages)
+    result = recover_accounting_postal_notice(result, pages)
     cfg = (config or {}).get("addresses", {}) if isinstance(config, dict) else {}
     min_conf = float(cfg.get("min_address_confidence", 0.60))
     role_order = cfg.get("role_priority") or [

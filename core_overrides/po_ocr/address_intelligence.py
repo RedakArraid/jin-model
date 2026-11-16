@@ -46,7 +46,7 @@ COUNTRIES = {
 }
 
 META_TOKEN_RE = re.compile(
-    r"\b(?:TEL|T[ÉE]L|TELEPHONE|PHONE|FAX|EMAIL|E-MAIL|MAIL|SIRET|SIREN|TVA|VAT|RCS|APE|IBAN|BIC)\b",
+    r"\b(?:TEL|T[ÉE]L|T[ÉE]L[ÉE]PHONE|PHONE|FAX|EMAIL|E-MAIL|MAIL|SIRET|SIREN|TVA|VAT|RCS|APE|IBAN|BIC)\b",
     re.I,
 )
 
@@ -152,6 +152,41 @@ def _street_regex() -> re.Pattern:
 
 
 STREET_RE = _street_regex()
+
+
+def _structured_postal_lines(lines: list[str]) -> list[str]:
+    """Separate a named zone from its street and rejoin unfinished street names.
+
+    Only a numbered thoroughfare following a delimiter can split a zone. A
+    wrapped continuation must follow a dangling preposition, not just any road.
+    Source lines and source evidence remain unchanged.
+    """
+    separated = []
+    for line in lines:
+        split = None
+        if ZONE_RE.match(line) or PARK_RE.match(line):
+            for delimiter in re.finditer(r"\s*[-–—,]\s+(?=\d)", line):
+                street = STREET_RE.match(line[delimiter.end():])
+                if street and street.group("num"):
+                    split = delimiter
+                    break
+        if split:
+            separated.extend([line[:split.start()].strip(), line[split.end():]])
+        else:
+            separated.append(line)
+    joined = []
+    for line in separated:
+        previous = STREET_RE.match(joined[-1]) if joined else None
+        if (previous and re.search(r"\b(?:DE|DU|DES|LA|LE|LES|D['’])\s*$", previous.group("name"), re.I)
+                and re.fullmatch(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ '’.-]{1,70}", line)
+                and _fold(line) not in COUNTRIES
+                and not META_TOKEN_RE.search(line) and not STREET_RE.match(line)
+                and not ZONE_RE.match(line) and not PARK_RE.match(line)):
+            joined[-1] += " " + line
+        else:
+            joined.append(line)
+    return joined
+
 POSTAL_ROLE_PREFIX_RE = re.compile(
     r"^(?:DESTINATAIRE|ADRESSE\s+(?:DE\s+)?(?:LIVRAISON|FACTURATION)|SHIP\s+TO|BILL\s+TO)\s*[:\-]?\s+",
     re.I,
@@ -213,7 +248,7 @@ def parse_address(addr: Address, *, infer_country: bool = True) -> tuple[Address
     source_lines = _source_lines(out)
     out.raw_lines = source_lines
     out.raw = out.raw or " | ".join(source_lines) if source_lines else out.raw
-    lines = _postal_source_lines(source_lines)
+    lines = _structured_postal_lines(_postal_source_lines(source_lines))
     if source_lines:
         out.address_complement = None
     warnings: list[str] = []

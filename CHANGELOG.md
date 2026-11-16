@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Distinguish wrapped customer-article headers from dotted supplier-reference
+  headers, keep freight codes as additional charges, and stop descriptions at
+  closed table borders instead of absorbing accounting footers.
+- Split industrial-zone / numbered-street combinations and rejoin wrapped
+  street names without altering source evidence. Bind supplier name forms to
+  independently matching postal addressees, preserve phone/fax ordering, and
+  recover accounting-service addresses only with explicit invoice context.
+  Company names containing a building-related word no longer count as extra
+  postal components in either the core or geometric extraction pass.
+
 - Recognize dotted unit-price headers (`P.U. HT`) and retain bottom-of-page
   products and wrapped descriptions across aligned continuation tables.
   Explicit assembly/product references in descriptions are resolved separately
