@@ -2,6 +2,11 @@
 
 ## Ce qui est protégé
 
+Pour transférer seulement les PDF et leurs annotations entre deux instances
+sans accès SSH/SCP, voir le [transfert par MCP](STUDIO_DOCUMENT_TRANSFER.md).
+Il ne remplace pas la sauvegarde complète décrite ici : modèles, BAN, comptes,
+masques et datasets restent hors de ce transfert documentaire.
+
 Une sauvegarde standard contient toutes les données JIN qui ne peuvent pas être
 reconstruites depuis Git ou depuis une source publique :
 

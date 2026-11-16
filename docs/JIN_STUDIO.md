@@ -163,6 +163,14 @@ créer un dataset et de mettre un entraînement en file. MCP expose les outils :
 - `list_datasets`, `create_versioned_dataset` ;
 - `list_training_runs`, `queue_candidate_training`.
 
+Le MCP permet également le [transfert des PDF et annotations existantes](STUDIO_DOCUMENT_TRANSFER.md)
+avec `export_document_bundle`, `read_document_pdf_chunk`, `begin_document_import`,
+`upload_document_pdf_chunk`, `get_document_import_status`, `finish_document_import`
+et `cancel_document_import`. Le PDF, l'extraction et toutes les révisions sont
+conservés, sans écrasement d'un document existant. Le transfert des validations
+humaines est explicitement autorisé sur la destination ; il ne déclenche pas
+d'entraînement. Un script de transfert entre deux instances est fourni.
+
 Un client MCP doit être configuré en transport **Streamable HTTP**, URL
 `https://<hôte>/mcp`, avec le même en-tête Bearer. Les brouillons distants sont
 autorisés. `validate_annotation` est désactivé par défaut, car une validation

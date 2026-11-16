@@ -250,6 +250,18 @@ class StudioStore:
                 CREATE INDEX IF NOT EXISTS idx_studio_annotations_document
                     ON studio_annotations(document_id, revision DESC);
 
+                CREATE TABLE IF NOT EXISTS studio_document_transfers (
+                    transfer_id TEXT PRIMARY KEY,
+                    bundle_sha256 TEXT NOT NULL,
+                    bundle_json TEXT NOT NULL,
+                    received_bytes INTEGER NOT NULL DEFAULT 0,
+                    state TEXT NOT NULL,
+                    trusted_validation INTEGER NOT NULL DEFAULT 0,
+                    expires_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_studio_transfers_bundle
+                    ON studio_document_transfers(bundle_sha256, state);
+
                 CREATE TABLE IF NOT EXISTS studio_annotation_masks (
                     mask_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL COLLATE NOCASE,
@@ -802,14 +814,17 @@ class StudioStore:
             "latestAnnotation": annotation,
         }
 
-    def list_documents(self, *, status: str = "", limit: int = 200) -> list[dict[str, Any]]:
+    def list_documents(
+        self, *, status: str = "", limit: int = 200, offset: int = 0
+    ) -> list[dict[str, Any]]:
         query = "SELECT * FROM studio_documents"
         params: list[Any] = []
         if status:
             query += " WHERE status=?"
             params.append(status.upper())
-        query += " ORDER BY updated_at DESC LIMIT ?"
+        query += " ORDER BY updated_at DESC, document_id LIMIT ? OFFSET ?"
         params.append(max(1, min(1000, int(limit))))
+        params.append(max(0, int(offset)))
         with self._connect() as connection:
             rows = connection.execute(query, params).fetchall()
             return [

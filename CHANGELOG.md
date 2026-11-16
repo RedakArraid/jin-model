@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added authenticated, resumable MCP transfers for Studio PDFs, extraction
+  results and complete annotation histories, preserving reviewed values,
+  evidence boxes, identities and timestamps. Imports verify SHA-256, refuse
+  overwrites and require explicit permission to retain human validations.
+- Added a dry-run-first cross-instance MCP transfer script, pagination and
+  migration documentation; document transfer never triggers model training.
+
 - Redesigned the Studio annotation workspace around three coordinated views:
   the document queue, the PDF evidence canvas and a business-structured field
   inspector. Added dedicated annotation/review modes, business filters, a

@@ -21,6 +21,7 @@ from jin_runtime import __version__
 from jin_runtime.studio_contract import FIELD_CATALOG
 from jin_runtime.studio_service_auth import configured_service_token
 from jin_runtime.studio_store import StudioStore
+from jin_runtime.studio_transfer import CHUNK_BYTES, StudioDocumentTransfer
 
 
 MCP_ACTOR = "service:jin-studio-mcp"
@@ -118,6 +119,7 @@ def _merged_fields(
 
 def create_mcp_server(store: StudioStore | None = None) -> MCPServer:
     repository = store or StudioStore()
+    transfers = StudioDocumentTransfer(repository)
     server = MCPServer(
         "jin-studio",
         title="JIN Studio",
@@ -159,9 +161,11 @@ def create_mcp_server(store: StudioStore | None = None) -> MCPServer:
         status: str = "",
         limit: int = 100,
         campaign_id: str = "",
+        offset: int = 0,
     ) -> dict[str, Any]:
         """List Studio documents, optionally filtered by state and campaign."""
-        documents = repository.list_documents(status=status, limit=limit)
+        documents = repository.list_documents(status=status, limit=limit, offset=offset)
+        scanned = len(documents)
         if campaign_id:
             documents = [
                 item
@@ -172,7 +176,11 @@ def create_mcp_server(store: StudioStore | None = None) -> MCPServer:
             {key: value for key, value in item.items() if key != "extraction"}
             for item in documents
         ]
-        return {"items": summaries, "count": len(summaries)}
+        return {
+            "items": summaries, "count": len(summaries),
+            "next_offset": max(0, offset) + scanned,
+            "has_more": scanned == max(1, min(1000, limit)),
+        }
 
     @server.tool()
     def get_document(document_id: str, include_extraction: bool = False) -> dict[str, Any]:
@@ -181,6 +189,59 @@ def create_mcp_server(store: StudioStore | None = None) -> MCPServer:
         if not include_extraction:
             document.pop("extraction", None)
         return document
+
+    @server.tool()
+    def export_document_bundle(document_id: str) -> dict[str, Any]:
+        """Export portable extraction and ALL annotation revisions; read PDF bytes with read_document_pdf_chunk.
+
+        Contains private customer data. Transfer only to a user-authorized destination.
+        No accounts, credentials, models, masks or training datasets are exported.
+        """
+        bundle = transfers.export(document_id)
+        _audit(repository, "document_transfer.export", "document", document_id,
+               {"bundle_sha256": bundle["bundle_sha256"]})
+        return bundle
+
+    @server.tool()
+    def read_document_pdf_chunk(
+        document_id: str, offset: int = 0, max_bytes: int = CHUNK_BYTES,
+    ) -> dict[str, Any]:
+        """Read up to 256 KiB of a Studio PDF as base64 with SHA-256 and next offset."""
+        return transfers.read_chunk(document_id, offset, max_bytes)
+
+    @server.tool()
+    def begin_document_import(
+        document_export: dict[str, Any], confirm_trusted_source: bool = False,
+    ) -> dict[str, Any]:
+        """Start/resume an import using export_document_bundle output. Never overwrites.
+
+        Preserving HUMAN_VALIDATED history requires JIN_STUDIO_MCP_ALLOW_VALIDATION=1
+        and confirm_trusted_source=true. This attests to the source, not a new human review.
+        Upload PDF chunks then explicitly finish; unfinished imports are not visible.
+        """
+        return transfers.begin(document_export, confirm_trusted_source=confirm_trusted_source)
+
+    @server.tool()
+    def upload_document_pdf_chunk(
+        transfer_id: str, offset: int, data_base64: str, sha256: str,
+    ) -> dict[str, Any]:
+        """Append a verified PDF chunk. Exact retries are safe; arbitrary paths are not accepted."""
+        return transfers.upload(transfer_id, offset, data_base64, sha256)
+
+    @server.tool()
+    def get_document_import_status(transfer_id: str) -> dict[str, Any]:
+        """Read state and committed byte offset to resume an interrupted import (expires after 24h)."""
+        return transfers.status(transfer_id)
+
+    @server.tool()
+    def finish_document_import(transfer_id: str, confirm_import: bool = False) -> dict[str, Any]:
+        """Verify full PDF SHA-256 and publish document plus unchanged annotation history atomically."""
+        return transfers.finish(transfer_id, confirm_import=confirm_import)
+
+    @server.tool()
+    def cancel_document_import(transfer_id: str) -> dict[str, Any]:
+        """Delete only the partial transfer file. Cannot delete completed imports or documents."""
+        return transfers.cancel(transfer_id)
 
     @server.tool()
     def list_annotation_masks(
