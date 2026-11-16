@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +12,7 @@ from pdf2image import convert_from_path
 from PIL import Image
 import pytesseract
 from pytesseract import Output
+from jin_runtime.training_paths import dataset_file
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -172,17 +175,17 @@ def main() -> int:
                 f"Manifest row for {document_id} needs a frozen train/validation/test split"
             )
         split_documents[split].append(document_id)
-        pdf_path = Path(str(row.get("pdf") or ""))
-        if not pdf_path.is_absolute():
-            pdf_path = (manifest_path.parent.parent / pdf_path).resolve() if str(pdf_path).startswith("corpus/") else (manifest_path.parent / pdf_path).resolve()
+        pdf_path = dataset_file(manifest_path, str(row.get("pdf") or ""))
         assert_materialized_pdf(pdf_path)
+        if row.get("pdf_sha256") and hashlib.sha256(pdf_path.read_bytes()).hexdigest() != row["pdf_sha256"]:
+            raise ValueError(f"PDF checksum mismatch for {document_id}")
 
         ann_raw = row.get("annotation")
         annotation_path = None
         if ann_raw:
-            annotation_path = Path(str(ann_raw))
-            if not annotation_path.is_absolute():
-                annotation_path = (manifest_path.parent.parent / annotation_path).resolve() if str(annotation_path).startswith("corpus/") else (manifest_path.parent / annotation_path).resolve()
+            annotation_path = dataset_file(manifest_path, str(ann_raw))
+            if not annotation_path.is_file():
+                raise FileNotFoundError(annotation_path)
 
         pages = convert_from_path(str(pdf_path), dpi=args.dpi)
         for page_idx, image in enumerate(pages, 1):
@@ -195,12 +198,12 @@ def main() -> int:
             record = {
                 "document_id": document_id,
                 "page": page_idx,
-                "image_path": str(image_path.resolve()),
+                "image_path": image_path.relative_to(output).as_posix(),
                 "words": words,
                 "boxes": boxes,
                 "labels": page_labels,
                 "regions": regions,
-                "source_pdf": str(pdf_path.resolve()),
+                "source_pdf": Path(os.path.relpath(pdf_path, output)).as_posix(),
             }
             splits[split].append(record)
 

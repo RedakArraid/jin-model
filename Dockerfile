@@ -1,3 +1,6 @@
+FROM scratch AS core_source
+COPY model/ /
+
 FROM python:3.12-slim AS dependencies
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,13 +15,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY model/requirements.txt /tmp/jin-core-requirements.txt
+COPY --from=core_source /requirements.txt /tmp/jin-core-requirements.txt
 COPY runtime-requirements.txt /tmp/jin-runtime-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/jin-core-requirements.txt \
     -r /tmp/jin-runtime-requirements.txt
 
 FROM dependencies AS runtime
-COPY model/ /app/
+COPY --from=core_source / /app/
 COPY core_overrides/ /app/
 RUN python -c "from uda.learned import load_router, structural_shape; assert structural_shape('A12') == 'A9'"
 COPY jin_runtime/ /app/jin_runtime/
@@ -55,3 +58,7 @@ CMD ["python", "-m", "pytest", "tests", "core_overrides/tests", "-q"]
 # Keep the default final image minimal even though the reusable test target is
 # declared above it.
 FROM runtime AS production
+ARG JIN_BUILD_REVISION=unknown
+LABEL org.opencontainers.image.revision=$JIN_BUILD_REVISION \
+      org.opencontainers.image.title="JIN Model complete runtime" \
+      com.jin.runtime.core-included="true"

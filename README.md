@@ -425,7 +425,14 @@ appropriée; les données synthétiques ne prouvent pas la précision métier.
 
 ## Données
 
-`model/`, `data/`, `feedback/`, `artifacts/` et les ZIP locaux sont ignorés par Git. Les PDF clients doivent être stockés via Git LFS et soumis à la gouvernance de données applicable.
+`model/`, `data/`, `feedback/`, `artifacts/` et les ZIP locaux sont ignorés par Git.
+Les PDF clients et annotations restent dans un stockage privé approuvé, hors
+Git. Les volumes peuvent être externalisés avec `JIN_DATA_ROOT`,
+`JIN_FEEDBACK_ROOT`, `JIN_CORE_ROOT` et `JIN_BACKUP_ROOT`. Le script
+`scripts/jin_release.py` exporte/contrôle une image runtime complète identifiée
+par son empreinte ; les sauvegardes incluent désormais la BAN et les réglages
+fonctionnels non secrets par défaut. Voir [la procédure de migration,
+sauvegarde et restauration](docs/BACKUP_AND_RESTORE.md).
 
 ## Extraction locale CPU et contrôle qualité
 

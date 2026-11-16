@@ -33,3 +33,5 @@ ENV JIN_STUDIO_DIR=/app/data/studio \
     TOKENIZERS_PARALLELISM=false
 
 CMD ["python", "-m", "jin_runtime.studio_training_worker"]
+ARG JIN_BUILD_REVISION=unknown
+LABEL org.opencontainers.image.revision=$JIN_BUILD_REVISION

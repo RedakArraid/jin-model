@@ -41,6 +41,7 @@ from jin_runtime.training_split import (
     SPLIT_POLICY_VERSION,
     assign_document_splits,
 )
+from jin_runtime.studio_paths import training_paths
 
 
 MAX_PDF_BYTES = 100 * 1024 * 1024
@@ -1153,8 +1154,8 @@ class StudioStore:
                 manifest_rows.append(
                     {
                         "document_id": document_id,
-                        "pdf": str(self._resolve_document_pdf_path(document)),
-                        "annotation": str(annotation_path),
+                        "pdf": Path(os.path.relpath(self._resolve_document_pdf_path(document), dataset_dir)).as_posix(),
+                        "annotation": annotation_path.relative_to(dataset_dir).as_posix(),
                         "pdf_sha256": document["pdf_sha256"],
                         "annotation_digest": annotation["annotation_digest"],
                         "split": split,
@@ -1183,7 +1184,7 @@ class StudioStore:
                 "labels": sorted(labels),
                 "labelCounts": dict(sorted(label_counts.items())),
                 "documentIds": unique_ids,
-                "manifestPath": str(manifest_path),
+                "manifestPath": manifest_path.relative_to(self.root).as_posix(),
                 "splitPolicy": SPLIT_POLICY_VERSION,
                 "splitCounts": split_counts,
                 "splitLabelCounts": {
@@ -1224,19 +1225,19 @@ class StudioStore:
                     clean_name,
                     version,
                     payload["status"],
-                    str(manifest_path),
+                    manifest_path.relative_to(self.root).as_posix(),
                     _json(payload),
                     payload["createdAt"],
                 ),
             )
-        return payload
+        return training_paths(payload, self.root, absolute=True)
 
     def list_datasets(self) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT payload_json FROM studio_datasets ORDER BY created_at DESC"
             ).fetchall()
-        return [_loads(row["payload_json"], {}) for row in rows]
+        return [training_paths(_loads(row["payload_json"], {}), self.root, absolute=True) for row in rows]
 
     def prepare_training_run(
         self,
@@ -1325,6 +1326,7 @@ class StudioStore:
                 "updatedAt": now,
                 "note": "Queued for the isolated JIN Studio training worker.",
             }
+            payload = training_paths(payload, self.root, absolute=False)
             connection.execute(
                 """INSERT INTO studio_training_runs
                    (run_id, dataset_id, status, model_family, base_model,
@@ -1341,14 +1343,14 @@ class StudioStore:
                     now,
                 ),
             )
-        return payload
+        return training_paths(payload, self.root, absolute=True)
 
     def list_training_runs(self) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT payload_json FROM studio_training_runs ORDER BY created_at DESC"
             ).fetchall()
-        return [_loads(row["payload_json"], {}) for row in rows]
+        return [training_paths(_loads(row["payload_json"], {}), self.root, absolute=True) for row in rows]
 
     def claim_training_run(self, worker_id: str) -> dict[str, Any] | None:
         normalized_worker = str(worker_id or "").strip()[:160]
@@ -1378,7 +1380,7 @@ class StudioStore:
                 (_json(payload), now, row["run_id"]),
             )
             connection.commit()
-            return payload
+            return training_paths(payload, self.root, absolute=True)
 
     def heartbeat_training_run(
         self,
@@ -1408,7 +1410,7 @@ class StudioStore:
                    SET payload_json=?, updated_at=? WHERE run_id=?""",
                 (_json(payload), now, run_id),
             )
-        return payload
+        return training_paths(payload, self.root, absolute=True)
 
     def recover_stale_training_runs(self, stale_seconds: int = 900) -> int:
         """Return abandoned runs to the queue after a worker stopped heartbeating."""
@@ -1478,12 +1480,13 @@ class StudioStore:
                 benchmark = result.get("benchmark")
                 if isinstance(benchmark, Mapping):
                     payload["benchmark"] = dict(benchmark)
+            payload = training_paths(payload, self.root, absolute=False)
             connection.execute(
                 """UPDATE studio_training_runs
                    SET status=?, payload_json=?, updated_at=? WHERE run_id=?""",
                 (payload["status"], _json(payload), now, run_id),
             )
-        return payload
+        return training_paths(payload, self.root, absolute=True)
 
 
 __all__ = [

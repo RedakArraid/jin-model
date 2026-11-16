@@ -1,4 +1,8 @@
 .git/
+.env
+.env.*
+!.env.example
+artifacts/
 .claude/
 ARCHIVES*/
 Commandes*/

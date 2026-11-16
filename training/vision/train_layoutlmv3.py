@@ -13,6 +13,7 @@ from torch.utils.data import Dataset
 from transformers import AutoModelForTokenClassification, AutoProcessor, Trainer, TrainingArguments
 
 from jin_runtime.training_evaluation import classification_metrics
+from jin_runtime.training_paths import materialize_page_paths
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -21,7 +22,7 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
         for line in handle:
             line = line.strip()
             if line:
-                rows.append(json.loads(line))
+                rows.append(materialize_page_paths(json.loads(line), path))
     return rows
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from jin_runtime.training_evaluation import (
     classification_metrics,
     region_value_metrics,
 )
+from jin_runtime.training_paths import materialize_page_paths
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -28,7 +30,7 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
         for line in handle:
             line = line.strip()
             if line:
-                rows.append(json.loads(line))
+                rows.append(materialize_page_paths(json.loads(line), path))
     return rows
 
 
@@ -179,7 +181,8 @@ def main() -> int:
     report = {
         "schemaVersion": "jin-candidate-benchmark-v1",
         "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "artifact": str(artifact.resolve()),
+        "artifact": Path(os.path.relpath(artifact, output.parent)).as_posix(),
+        "artifactPathBase": "report_directory",
         "holdout": {
             "documents": len(documents),
             "documentIds": documents,

@@ -1,10 +1,12 @@
 services:
   jin:
+    image: ${JIN_STANDALONE_IMAGE:-jin-model-standalone:latest}
     runtime: "${CONTAINER_RUNTIME:-runc}"
     build:
       context: .
       dockerfile: Dockerfile.standalone
       args:
+        JIN_BUILD_REVISION: ${JIN_BUILD_REVISION:-unknown}
         HTTP_PROXY: "${HTTP_PROXY:-}"
         HTTPS_PROXY: "${HTTPS_PROXY:-}"
         NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1}"
@@ -28,15 +30,25 @@ services:
       JIN_CORPUS_ROUTER_MODEL: /app/data/learning/corpus_text_router.joblib
       JIN_PDF_ROUTER_MODEL: /app/data/learning/jin-pdf-fusion-router-v3-cpu.joblib
       JIN_FIELD_ROUTER_MODEL: /app/data/learning/jin-field-weak-router-v2-cpu.joblib
-      JIN_FIELD_ROUTER_THRESHOLD: "0.80"
-      JIN_OCR_LANGS: fra+eng+deu
-      JIN_ROLE_OVERRIDE_THRESHOLD: "0.93"
-      JIN_COMPONENT_FILL_THRESHOLD: "0.88"
-      JIN_ALLOW_ROLE_OVERRIDE: "1"
-      JIN_FILL_MISSING_COMPONENTS: "1"
+      JIN_FIELD_ROUTER_THRESHOLD: "${JIN_FIELD_ROUTER_THRESHOLD:-0.80}"
+      JIN_OCR_LANGS: "${JIN_OCR_LANGS:-fra+eng+deu}"
+      JIN_ROLE_OVERRIDE_THRESHOLD: "${JIN_ROLE_OVERRIDE_THRESHOLD:-0.93}"
+      JIN_COMPONENT_FILL_THRESHOLD: "${JIN_COMPONENT_FILL_THRESHOLD:-0.88}"
+      JIN_MIN_ROLE_EXAMPLES: "${JIN_MIN_ROLE_EXAMPLES:-4}"
+      JIN_MIN_TOKEN_EXAMPLES: "${JIN_MIN_TOKEN_EXAMPLES:-30}"
+      JIN_ALLOW_ROLE_OVERRIDE: "${JIN_ALLOW_ROLE_OVERRIDE:-1}"
+      JIN_FILL_MISSING_COMPONENTS: "${JIN_FILL_MISSING_COMPONENTS:-1}"
     volumes:
-      - ./data:/app/data
-      - ./feedback:/app/feedback
+      - type: bind
+        source: ${JIN_DATA_ROOT:-./data}
+        target: /app/data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${JIN_FEEDBACK_ROOT:-./feedback}
+        target: /app/feedback
+        bind:
+          create_host_path: false
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
@@ -53,11 +65,13 @@ services:
       start_period: 20s
 
   trainer:
+    image: ${JIN_TRAINER_IMAGE:-jin-model-trainer:latest}
     profiles: ["training"]
     build:
       context: .
       dockerfile: Dockerfile.training
       args:
+        JIN_BUILD_REVISION: ${JIN_BUILD_REVISION:-unknown}
         JIN_BUILD_HTTP_PROXY: "${HTTP_PROXY:-}"
         JIN_BUILD_HTTPS_PROXY: "${HTTPS_PROXY:-}"
         JIN_BUILD_NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1}"
@@ -74,7 +88,11 @@ services:
       HF_HOME: /app/data/huggingface
       TOKENIZERS_PARALLELISM: "false"
     volumes:
-      - ./data:/app/data
+      - type: bind
+        source: ${JIN_DATA_ROOT:-./data}
+        target: /app/data
+        bind:
+          create_host_path: false
 
   backup:
     profiles: ["ops"]
@@ -84,6 +102,17 @@ services:
       dockerfile: Dockerfile.backup
     environment:
       JIN_BACKUP_GIT_REVISION: ${JIN_BACKUP_GIT_REVISION:-}
+      JIN_RUNTIME_IMAGE: ${JIN_RUNTIME_IMAGE:-jin-model-api:latest}
+      JIN_FEEDBACK_RETRAIN_ON_WRITE: "0"
+      JIN_STUDIO_MIN_TRAINING_DOCUMENTS: ${JIN_STUDIO_MIN_TRAINING_DOCUMENTS:-20}
+      JIN_FIELD_ROUTER_THRESHOLD: "${JIN_FIELD_ROUTER_THRESHOLD:-0.80}"
+      JIN_OCR_LANGS: "${JIN_OCR_LANGS:-fra+eng+deu}"
+      JIN_ROLE_OVERRIDE_THRESHOLD: "${JIN_ROLE_OVERRIDE_THRESHOLD:-0.93}"
+      JIN_COMPONENT_FILL_THRESHOLD: "${JIN_COMPONENT_FILL_THRESHOLD:-0.88}"
+      JIN_MIN_ROLE_EXAMPLES: "${JIN_MIN_ROLE_EXAMPLES:-4}"
+      JIN_MIN_TOKEN_EXAMPLES: "${JIN_MIN_TOKEN_EXAMPLES:-30}"
+      JIN_ALLOW_ROLE_OVERRIDE: "${JIN_ALLOW_ROLE_OVERRIDE:-1}"
+      JIN_FILL_MISSING_COMPONENTS: "${JIN_FILL_MISSING_COMPONENTS:-1}"
     command:
       - create
       - --project-root
@@ -99,8 +128,18 @@ services:
       - --reference-root
       - /app/data/reference
     volumes:
-      - ./data:/app/data:ro
-      - ./feedback:/app/feedback:ro
+      - type: bind
+        source: ${JIN_DATA_ROOT:-./data}
+        target: /app/data
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${JIN_FEEDBACK_ROOT:-./feedback}
+        target: /app/feedback
+        read_only: true
+        bind:
+          create_host_path: false
       - ${JIN_BACKUP_ROOT:-./backups}:/app/backups
     network_mode: none
     restart: "no"

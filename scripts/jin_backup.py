@@ -3,7 +3,7 @@
 
 The backup is deliberately independent from the Docker volumes.  It contains
 the irreplaceable Studio documents and database, human feedback and learned
-models.  The large BAN reference is reproducible and is therefore opt-in.
+models, the pinned reference data and non-secret functional settings.
 """
 from __future__ import annotations
 
@@ -26,6 +26,20 @@ from typing import Any, Iterable
 
 BACKUP_SCHEMA = "jin-model-backup/v1"
 RESTORE_CONFIRMATION = "RESTORE_EMPTY_TARGET"
+RUNTIME_SETTINGS_DEFAULTS = {
+    "JIN_OFFLINE": "1",
+    "JIN_FEEDBACK_RETRAIN_ON_WRITE": "0",
+    "JIN_FIELD_ROUTER_THRESHOLD": "0.80",
+    "JIN_OCR_LANGS": "fra+eng+deu",
+    "JIN_ROLE_OVERRIDE_THRESHOLD": "0.93",
+    "JIN_COMPONENT_FILL_THRESHOLD": "0.88",
+    "JIN_MIN_ROLE_EXAMPLES": "4",
+    "JIN_MIN_TOKEN_EXAMPLES": "30",
+    "JIN_ALLOW_ROLE_OVERRIDE": "1",
+    "JIN_FILL_MISSING_COMPONENTS": "1",
+    "JIN_STUDIO_MIN_TRAINING_DOCUMENTS": "20",
+    "JIN_RUNTIME_IMAGE": "jin-model-api:latest",
+}
 DEFAULT_EXCLUDED_STUDIO_FILES = frozenset(
     {
         "studio.sqlite3",
@@ -87,6 +101,7 @@ def _safe_archive_name(value: str) -> PurePosixPath:
         or normalized.startswith("/")
         or member.is_absolute()
         or ".." in member.parts
+        or any(":" in part for part in member.parts)
     ):
         raise BackupError(f"Unsafe archive member: {value!r}")
     return member
@@ -128,7 +143,11 @@ def _archive_directory(
     with tarfile.open(destination, "w:gz") as archive:
         for path in _iter_regular_files(source):
             relative = path.relative_to(source)
-            if relative.name in excluded_names:
+            if (
+                relative.name in excluded_names
+                or relative.name in {"service-token", "service-token.studio-managed"}
+                or any(part == ".git" or part == ".env" or part.startswith(".env.") for part in relative.parts)
+            ):
                 continue
             archive.add(path, arcname=relative.as_posix(), recursive=False)
             file_count += 1
@@ -204,10 +223,15 @@ def create_backup(
     feedback_root: Path,
     reference_root: Path,
     runtime_core_root: Path,
-    include_reference: bool = False,
+    include_reference: bool = True,
 ) -> Path:
     project_root = project_root.resolve()
     output_root = output_root.resolve()
+    if include_reference and not reference_root.is_dir():
+        raise BackupError("Reference directory is missing; supply it or explicitly use --exclude-reference")
+    for source in (studio_root, learning_root, feedback_root, reference_root, runtime_core_root):
+        if output_root == source.resolve() or source.resolve() in output_root.parents:
+            raise BackupError("Backup output must not be inside a source directory")
     output_root.mkdir(parents=True, exist_ok=True)
     _chmod_private(output_root, directory=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
@@ -228,6 +252,16 @@ def create_backup(
             artifacts.append(
                 _artifact(database_snapshot, kind="studio_database", details=database_details)
             )
+
+        # Strict allowlist: never copy .env, passwords, tokens, credentials,
+        # proxy URLs or host-specific mount paths into a portable backup.
+        settings = {key: os.getenv(key, default) for key, default in RUNTIME_SETTINGS_DEFAULTS.items()}
+        if any(not value or any(c in value for c in "\r\n$#'\" ") for value in settings.values()):
+            raise BackupError("Invalid functional setting; refusing unsafe dotenv serialization")
+        settings_path = staging / "runtime-settings.env"
+        settings_path.write_text("".join(f"{key}={value}\n" for key, value in sorted(settings.items())), encoding="utf-8")
+        _chmod_private(settings_path)
+        artifacts.append(_artifact(settings_path, kind="runtime_settings"))
 
         components = [
             (
@@ -287,7 +321,7 @@ def create_backup(
                 *(
                     []
                     if include_reference
-                    else ["BAN/reference data (reproducible; use --include-reference to include it)"]
+                    else ["BAN/reference data explicitly excluded; extraction parity is not guaranteed"]
                 ),
             ],
             "artifacts": artifacts,
@@ -394,7 +428,7 @@ def restore_backup(
     *,
     target_root: Path,
     confirmation: str,
-    restore_reference: bool = False,
+    restore_reference: bool | None = None,
 ) -> dict[str, Any]:
     if confirmation != RESTORE_CONFIRMATION:
         raise BackupError(
@@ -404,6 +438,8 @@ def restore_backup(
     target_root = target_root.resolve()
     manifest = verify_backup(backup_dir)
     artifacts = {item["kind"]: backup_dir / item["name"] for item in manifest["artifacts"]}
+    if restore_reference is None:
+        restore_reference = "reference_data" in artifacts
     targets: dict[str, Path] = {}
     if "studio_database" in artifacts or "studio_files" in artifacts:
         targets["studio"] = target_root / "data" / "studio"
@@ -413,6 +449,8 @@ def restore_backup(
         targets["feedback"] = target_root / "feedback"
     if "runtime_core" in artifacts:
         targets["runtime_core"] = target_root / "model"
+    if "runtime_settings" in artifacts:
+        targets["runtime_settings"] = target_root / "config"
     if restore_reference and "reference_data" not in artifacts:
         raise BackupError("This backup does not contain reference data")
     if restore_reference:
@@ -445,6 +483,9 @@ def restore_backup(
             _safe_extract(artifacts["runtime_core"], stage / "model")
         if restore_reference and "reference_data" in artifacts:
             _safe_extract(artifacts["reference_data"], stage / "data" / "reference")
+        if "runtime_settings" in artifacts:
+            (stage / "config").mkdir()
+            shutil.copy2(artifacts["runtime_settings"], stage / "config" / "runtime-settings.env")
 
         for key, destination in targets.items():
             source = {
@@ -453,6 +494,7 @@ def restore_backup(
                 "feedback": stage / "feedback",
                 "runtime_core": stage / "model",
                 "reference": stage / "data" / "reference",
+                "runtime_settings": stage / "config",
             }[key]
             if not source.exists():
                 continue
@@ -681,14 +723,18 @@ def azure_download(
 
 def _resolved_paths(args: argparse.Namespace) -> dict[str, Path]:
     project = Path(args.project_root).resolve()
+    def host_path(value: str | Path) -> Path:
+        path = Path(value)
+        return (project / path).resolve() if not path.is_absolute() else path.resolve()
+    data = host_path(os.getenv("JIN_DATA_ROOT") or "data")
     return {
         "project_root": project,
-        "output_root": Path(args.output_root).resolve(),
-        "studio_root": Path(args.studio_root or project / "data" / "studio").resolve(),
-        "learning_root": Path(args.learning_root or project / "data" / "learning").resolve(),
-        "feedback_root": Path(args.feedback_root or project / "feedback").resolve(),
-        "reference_root": Path(args.reference_root or project / "data" / "reference").resolve(),
-        "runtime_core_root": Path(args.runtime_core_root or project / "model").resolve(),
+        "output_root": host_path(args.output_root),
+        "studio_root": host_path(args.studio_root or data / "studio"),
+        "learning_root": host_path(args.learning_root or data / "learning"),
+        "feedback_root": host_path(args.feedback_root or os.getenv("JIN_FEEDBACK_ROOT") or "feedback"),
+        "reference_root": host_path(args.reference_root or data / "reference"),
+        "runtime_core_root": host_path(args.runtime_core_root or os.getenv("JIN_CORE_ROOT") or "model"),
     }
 
 
@@ -704,7 +750,9 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--feedback-root")
     create.add_argument("--reference-root")
     create.add_argument("--runtime-core-root")
-    create.add_argument("--include-reference", action="store_true")
+    reference = create.add_mutually_exclusive_group()
+    reference.add_argument("--include-reference", dest="include_reference", action="store_true", default=True)
+    reference.add_argument("--exclude-reference", dest="include_reference", action="store_false")
 
     verify = subparsers.add_parser("verify", help="verify hashes, archives and SQLite")
     verify.add_argument("backup_dir")
@@ -713,7 +761,9 @@ def _parser() -> argparse.ArgumentParser:
     restore.add_argument("backup_dir")
     restore.add_argument("--target-root", required=True)
     restore.add_argument("--confirm", required=True)
-    restore.add_argument("--restore-reference", action="store_true")
+    restore_ref = restore.add_mutually_exclusive_group()
+    restore_ref.add_argument("--restore-reference", dest="restore_reference", action="store_true", default=None)
+    restore_ref.add_argument("--skip-reference", dest="restore_reference", action="store_false")
 
     bundle = subparsers.add_parser("bundle", help="create one transport archive")
     bundle.add_argument("backup_dir")

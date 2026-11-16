@@ -927,7 +927,7 @@ def test_training_run_has_a_persistent_queue_lifecycle(tmp_path, monkeypatch):
         for line in Path(dataset["manifestPath"]).read_text(encoding="utf-8").splitlines()
     ]
     assert {row["split"] for row in manifest_rows} == {"train", "validation"}
-    exported = json.loads(Path(manifest_rows[0]["annotation"]).read_text(encoding="utf-8"))
+    exported = json.loads((Path(dataset["manifestPath"]).parent / manifest_rows[0]["annotation"]).read_text(encoding="utf-8"))
     region = exported["pages"][0]["regions"][0]
     assert region["baseline_present"] is True
     assert str(region["baseline_value"]).startswith("PO-")
