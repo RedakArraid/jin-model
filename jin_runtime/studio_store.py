@@ -865,14 +865,27 @@ class StudioStore:
             row = self._row(connection, document_id)
         return self._resolve_document_pdf_path(row)
 
-    def save_annotation(self, document_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def save_annotation(
+        self, document_id: str, payload: Mapping[str, Any], *, expected_digest: str | None = None,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
         with self._lock, self._connect() as connection:
+            # Reserve the write transaction before reading the revision. This
+            # also protects concurrent API / MCP / offline-review processes.
+            connection.execute("BEGIN IMMEDIATE")
             row = self._row(connection, document_id)
             latest = connection.execute(
-                "SELECT MAX(revision) revision FROM studio_annotations WHERE document_id=?",
+                "SELECT revision, digest FROM studio_annotations WHERE document_id=? "
+                "ORDER BY revision DESC LIMIT 1",
                 (document_id,),
             ).fetchone()
-            revision = int(latest["revision"] or 0) + 1
+            if expected_digest is not None and (
+                row["status"] != "DRAFT" or latest is None or latest["digest"] != expected_digest
+            ):
+                raise StudioConflictError("Annotation changed since review; reload before saving.")
+            if expected_revision is not None and (latest is None or latest["revision"] != expected_revision):
+                raise StudioConflictError("Annotation revision changed since review; reload before saving.")
+            revision = int(latest["revision"] if latest else 0) + 1
             annotation = normalize_studio_annotation(
                 payload,
                 document_id=document_id,

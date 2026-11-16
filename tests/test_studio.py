@@ -261,6 +261,30 @@ def test_training_safety_rejects_a_party_name_that_absorbs_its_street():
     assert any(item["code"] == "PARTY_NAME_CONTAINS_ADDRESS" for item in issues)
 
 
+def test_training_safety_accepts_city_repeated_in_a_distinct_party_name_region():
+    fields = [
+        {
+            "path": "order.parties.ship_to.name",
+            "label": "SHIP_TO_NAME",
+            "status": "CONFIRMED",
+            "extracted_value": "CCL CARCASSONNE 2",
+            "evidence": {"page": 1, "bbox": [76, 254, 258, 265]},
+        },
+        {
+            "path": "order.addresses.ship_to.selected.components.city",
+            "label": "SHIP_TO_CITY",
+            "status": "CONFIRMED",
+            "extracted_value": "CARCASSONNE",
+            "evidence": {"page": 1, "bbox": [133, 304, 263, 316]},
+        },
+    ]
+
+    assert not any(
+        item["code"] == "PARTY_NAME_CONTAINS_ADDRESS"
+        for item in training_annotation_issues(fields)
+    )
+
+
 def annotation(status: str = "DRAFT", reviewer: str = "") -> dict:
     return {
         "status": status,

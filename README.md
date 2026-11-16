@@ -499,6 +499,16 @@ exposé uniquement pour valider ou migrer des archives ; il n'est plus produit.
 
 Le bouton de téléchargement de l'interface exporte cette vue propre.
 
+Les valeurs métier de cette vue utilisent un seul espace horizontal entre les
+groupes : `dse  g idn  47` devient `dse g idn 47` (y compris les tabulations et
+espaces insécables). Les retours à la ligne des libellés postaux sont conservés.
+Les valeurs brutes et les preuves source restent disponibles sans cette
+normalisation, de même que le nom du fichier. Aucun espace n'est ajouté autour
+des séparateurs : dans un PDF natif, des fragments d'identifiant qui se touchent
+réellement sont réunis dès la lecture. Ainsi `5889382/ 8742` ne devient pas
+`5889382 / 8742`. Les espaces visibles ne sont pas supprimés et les coordonnées
+OCR seules ne justifient pas cette reconstruction native.
+
 Le contrat V3 possède un propriétaire unique pour chaque information :
 `order.parties.<role>` contient l'identité, les contacts et les immatriculations,
 tandis que `order.addresses.<role>.selected` contient uniquement l'adresse

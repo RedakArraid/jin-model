@@ -39,6 +39,65 @@ def _deduplicate_native_words(words: list[WordToken]) -> list[WordToken]:
 
 
 _NATIVE_AMOUNT_FRAGMENT = re.compile(r"\d[\d.,'\u00a0\u202f]*\Z")
+_NATIVE_IDENTIFIER_FRAGMENT = re.compile(r"[A-Za-z0-9./_-]+\Z")
+_IDENTIFIER_SEPARATORS = frozenset("./_-")
+
+
+def _stitch_touching_native_identifiers(words: list[WordToken]) -> list[WordToken]:
+    """Keep touching identifier separators attached to their native PDF text.
+
+    A font change can split ``5889382/ 8742`` into three PDF words even though
+    the slash starts exactly where the first number ends. Space-joining those
+    words invents a space. Repair token boundaries here, before all row/header
+    consumers, rather than stripping whitespace from an extracted PO number.
+
+    Only same-baseline native fragments with a separator at the boundary and
+    effectively zero horizontal gap are joined. Visible gaps, plain word/digit
+    groups, OCR boxes and substantial overlaps are deliberately left alone.
+    """
+    removed: set[int] = set()
+    replacements: dict[int, WordToken] = {}
+    for row in group_words_into_rows(words, y_factor=0.30):
+        cluster: list[WordToken] = []
+
+        def flush() -> None:
+            if len(cluster) < 2 or not any(char.isdigit() for w in cluster for char in w.text):
+                return
+            first = cluster[0]
+            replacements[id(first)] = first.model_copy(update={
+                "text": "".join(w.text for w in cluster),
+                "bbox": (
+                    min(w.bbox[0] for w in cluster), min(w.bbox[1] for w in cluster),
+                    max(w.bbox[2] for w in cluster), max(w.bbox[3] for w in cluster),
+                ),
+                "confidence": min(w.confidence for w in cluster),
+            })
+            removed.update(id(w) for w in cluster[1:])
+
+        for word in row:
+            if word.source != "native_pdf" or not _NATIVE_IDENTIFIER_FRAGMENT.fullmatch(word.text):
+                flush()
+                cluster = []
+                continue
+            if cluster:
+                previous = cluster[-1]
+                height = min(word.bbox[3] - word.bbox[1], previous.bbox[3] - previous.bbox[1])
+                same_baseline = height > 0 and abs(
+                    (word.bbox[1] + word.bbox[3]) - (previous.bbox[1] + previous.bbox[3])
+                ) <= height * 0.20
+                separator_boundary = (
+                    previous.text[-1] in _IDENTIFIER_SEPARATORS
+                    or word.text[0] in _IDENTIFIER_SEPARATORS
+                )
+                # Native coordinates are in PDF points; tolerate rounding only,
+                # not a font-dependent fraction that could erase a real space.
+                touching = abs(word.bbox[0] - previous.bbox[2]) <= 0.10
+                if not (same_baseline and separator_boundary and touching and word.page == previous.page):
+                    flush()
+                    cluster = []
+            cluster.append(word)
+        flush()
+    return [replacements.get(id(word), word) for word in words if id(word) not in removed]
 
 
 def _stitch_overlapping_native_amounts(words: list[WordToken]) -> list[WordToken]:
@@ -182,6 +241,7 @@ def extract_native_page(page: fitz.Page, page_number: int, cfg: dict | None = No
             words.append(WordToken(text=text, page=page_number, bbox=(float(x0), float(y0), float(x1), float(y1)), confidence=1.0, source="native_pdf"))
     words = _deduplicate_native_words(words)
     words = _stitch_overlapping_native_amounts(words)
+    words = _stitch_touching_native_identifiers(words)
     cfg = cfg or {}
     if _native_text_is_private_use_garbled(words) and cfg.get("garbled_native_ocr_enabled", True):
         try:

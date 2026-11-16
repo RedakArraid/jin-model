@@ -215,9 +215,10 @@ FIELD_CATALOG: tuple[dict[str, Any], ...] = (
         _field(
             f"{role}_{suffix}",
             f"{role_name} — {component}",
-            f"Encadrez uniquement {instruction}, pour {role_description}. Ne mélangez pas les blocs d'autres parties.",
+            f"Encadrez uniquement {instruction}, pour {role_description}. Ne mélangez pas les blocs d'autres parties."
+            + (" Si vous annotez la voie complète, n'ajoutez pas les champs numéro, type ou nom de voie pour cette même ligne." if suffix == "STREET" else ""),
             _ROLE_CORE_EXAMPLES.get(suffix, _ADDRESS_EXAMPLES.get(suffix, "Encadrez uniquement la valeur imprimée.")),
-            selectable=suffix != "STREET",
+            selectable=True,
             composite=suffix == "STREET",
             scope="business_party",
             role=role.lower(),
@@ -394,8 +395,8 @@ def training_annotation_issues(
                         "otherLabel": right_label,
                         "message": (
                             "La voie complète chevauche un composant atomique. "
-                            "Conservez les composants numéro/type/nom pour "
-                            "l'apprentissage."
+                            "Conservez soit la voie complète, soit les composants "
+                            "numéro/type/nom, mais pas les deux."
                         ),
                     }
                 )
@@ -414,6 +415,10 @@ def training_annotation_issues(
                     len(address_text) >= 4
                     and address_text != name_text
                     and address_text in name_text
+                    and _boxes_overlap(
+                        list(name_field[1]["evidence"]["bbox"]),
+                        list(address_field[1]["evidence"]["bbox"]),
+                    )
                 ):
                     issues.append(
                         {

@@ -359,6 +359,30 @@ def _compact(value: Any) -> Any:
     return value
 
 
+def _normalize_extracted_spacing(value: Any) -> Any:
+    """Publish single-spaced business values without rewriting source evidence.
+
+    This only folds horizontal whitespace that already exists; it never inserts
+    spaces around punctuation or removes meaningful single spaces in identifiers.
+    Line breaks remain structural (notably multiline postal labels). Raw/source
+    values and evidence, including multiline PDF text, stay verbatim.
+    """
+    if isinstance(value, str):
+        return re.sub(r"[^\S\r\n]+", " ", value).strip()
+    if isinstance(value, list):
+        return [_normalize_extracted_spacing(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: copy.deepcopy(child) if (
+                key == "evidence" or key.endswith("_evidence")
+                or key.startswith(("raw_", "source_"))
+                or key in {"id", "selected_address_id", "filename", "url", "uri"}
+            ) else _normalize_extracted_spacing(child)
+            for key, child in value.items()
+        }
+    return value
+
+
 def _value(field: Any) -> Any:
     return field.get("value") if isinstance(field, dict) else field
 
@@ -388,15 +412,17 @@ def _evidence(field: Any) -> dict[str, Any]:
 
 
 def _field(field: Any) -> dict[str, Any] | None:
-    value = _value(field)
+    original = _value(field)
+    value = _normalize_extracted_spacing(original)
     if value in (None, ""):
         return None
     if not isinstance(field, dict):
-        return {"value": value}
+        return _compact({"value": value, "raw_value": original if original != value else None})
+    raw = _first(field.get("raw_value"), original)
     return _compact({
         "value": value,
         "site": field.get("site"),
-        "raw_value": field.get("raw_value") if field.get("raw_value") != value else None,
+        "raw_value": raw if raw != value else None,
         "confidence": _first(field.get("final_confidence"), field.get("confidence")),
         "status": field.get("validation_status"),
         "warnings": field.get("warnings"),
@@ -2433,6 +2459,9 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
         },
         "reference_data": payload.get("reference_data"),
     }
+    clean["order"] = _normalize_extracted_spacing(clean["order"])
+    clean["document"]["references"] = _normalize_extracted_spacing(clean["document"]["references"])
+    clean["quality"]["order_number"] = _normalize_extracted_spacing(clean["quality"]["order_number"])
     compact = _compact(clean)
     compact.setdefault("quality", {})
     return compact
