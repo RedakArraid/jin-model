@@ -250,6 +250,19 @@ def _reconcile_registration_role(
             ),
         )
     candidates: list[tuple[float, int, str, str, str]] = []
+    # On a purchase order, N/Id CEE is the issuer's tax ID and V/Id CEE
+    # the recipient supplier's. This explicit label outranks the issuer prior.
+    source_text = str((registration.get("evidence") or {}).get("source_text") or "")
+    possessive = None
+    for vat_match in _FR_VAT_RE.finditer(source_text):
+        source_vat = "FR" + re.sub(r"[ .-]", "", vat_match.group(1) + vat_match.group(2)).upper()
+        if source_vat != registration.get("vat_number"):
+            continue
+        possessive = re.search(r"\b([NV])\s*/\s*ID\s+CEE\s*[:#-]?\s*$", _fold(source_text[:vat_match.start()]))
+        break
+    if is_purchase_order and possessive:
+        explicit_role = "buyer" if possessive.group(1) == "N" else "supplier"
+        candidates.append((0.999, 4, explicit_role, explicit_role, "explicit_possessive_tax_label_v1"))
     if role in {"buyer", "supplier"}:
         method = str(assignment.get("method") or "explicit_role_context_v1")
         score = float(registration.get("role_confidence") or 0.0)

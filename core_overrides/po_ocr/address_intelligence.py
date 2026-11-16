@@ -58,7 +58,7 @@ ROUTING_PATTERNS = {
 
 BUILDING_RE = re.compile(r"\b(?:BATIMENT|B[ÂA]T\.?|IMMEUBLE|TOUR|BLOC|HALL)\b[^,;|]*", re.I)
 RESIDENCE_RE = re.compile(r"\b(?:RESIDENCE|R[ÉE]SIDENCE)\b[^,;|]*", re.I)
-ZONE_RE = re.compile(r"\b(?:Z\.?\s*I\.?|Z\.?\s*A\.?\s*C\.?|Z\.?\s*A\.?\s*E\.?|ZONE INDUSTRIELLE|ZONE D['’]?ACTIVIT[ÉE]S?)\b[^,;|]*", re.I)
+ZONE_RE = re.compile(r"\b(?:Z\.?\s*I\.?|Z\.?\s*A\.?\s*C\.?|Z\.?\s*A\.?\s*E\.?|Z\.?\s*A\.?|ZONE INDUSTRIELLE|ZONE D['’]?ACTIVIT[ÉE]S?)\b[^,;|]*", re.I)
 PARK_RE = re.compile(r"\b(?:PARC D['’]?ACTIVIT[ÉE]S?|PARC ACTIVIT[ÉE]S?|BUSINESS PARK|TECHNOP[ÔO]LE)\b[^,;|]*", re.I)
 LIEU_DIT_RE = re.compile(r"\b(?:LIEU[- ]DIT|LD)\b\s*[:\-]?\s*(.+)", re.I)
 FLOOR_RE = re.compile(r"\b(?:ETAGE|[ÉE]TAGE|NIVEAU)\s*[:\-]?\s*([A-Z0-9\-]+)", re.I)
@@ -239,7 +239,12 @@ def parse_address(addr: Address, *, infer_country: bool = True) -> tuple[Address
     ):
         m = pat.search(joined)
         if m:
-            setattr(out, field, clean_text(m.group(0)).strip(" ,;|"))
+            component = clean_text(m.group(0))
+            # An inline zone may be followed by the locality and telephone
+            # instruction. They are separate postal/contact components.
+            component = re.split(r"\b\d{5}\s+[A-Za-zÀ-ÿ]", component, maxsplit=1)[0]
+            component = _strip_metadata_tail(component).strip(" ,;|-")
+            setattr(out, field, component)
             conf[field] = 0.94
     m = LIEU_DIT_RE.search(joined)
     if m:

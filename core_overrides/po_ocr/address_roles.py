@@ -88,7 +88,7 @@ def formatted_address(addr: Address) -> str | None:
             add(f"{addr.street_name} {addr.street_type or ''}".strip())
         else:
             add(" ".join(x for x in (addr.house_number, addr.street) if x))
-    elif addr.line1:
+    elif addr.line1 and not (addr.industrial_zone or addr.business_park or addr.lieu_dit):
         add(addr.line1)
     add(addr.industrial_zone); add(addr.business_park); add(addr.lieu_dit); add(addr.address_complement)
     add(addr.po_box); add(addr.tsa); add(addr.cs); add(addr.postal_routing_code)
@@ -161,6 +161,7 @@ ROLE_BLOCK_LABELS = {
     "supplier": ["adresse de commande fournisseur", "supplier address", "vendor address", "adresse fournisseur"],
     "buyer": ["adresse acheteur", "buyer address", "ordering address", "adresse donneur d'ordre"],
 }
+ROLE_BLOCK_LABELS["ship_to"].extend(["livraison a l'adresse", "livraison à l'adresse"])
 
 _ROLE_STOP_TOKENS = (
     "code client", "n° accord", "no accord", "date de livraison", "mode de règlement", "mode de reglement",
@@ -174,6 +175,8 @@ def _is_role_stop_text(value: str) -> bool:
     """Return true for real block boundaries, not inline page counters."""
     low = _fold(value)
     if re.match(r"^page\s+\d+(?:\s*/\s*\d+)?\s*$", low):
+        return True
+    if re.match(r"^remises?\b", low):
         return True
     return any(
         token in low for token in _ROLE_STOP_TOKENS if token != "page "
@@ -205,15 +208,24 @@ def _looks_metadata_line(text: str) -> bool:
     return bool(re.match(
         r"^(?:tel|telephone|fax|e[_ -]?mail|email|mail|contact|correspondant|a l'attention|attention|"
         r"infos?|consigne|code d'ouverture|horaires?|reception|en express|merci de|"
-        r"livraison uniquement|point de terminaison|entre\s+\d{1,2}\s*h\s+et\s+\d{1,2}\s*h)\b",
+        r"livraison uniquement|point de terminaison|entre\s+\d{1,2}\s*h\s+et\s+\d{1,2}\s*h|"
+        r"\d+\s+heures?\s+avant|appeler|prevenir)\b",
         low,
     ))
 
 def _choose_party_and_address(lines: list[str]):
-    clean=[clean_text(x) for x in lines if clean_text(x)]
+    clean=[clean_text(x).strip(" :;|") for x in lines if clean_text(x)]
     clean=[x for x in clean if not _looks_metadata_line(x)]
     clean=[x for x in clean if not re.fullmatch(r"[^A-Za-z0-9]+", ascii_fold(x))]
     if not clean: return None,None,[]
+    # Wrapped inline delivery address: COMPANY / NAME - ZA ... - 12345 CITY.
+    # Split at the explicit site marker, then join only the name fragments.
+    for index, line in enumerate(clean):
+        inline_site = re.match(r"^(.+?)\s+-\s+((?:Z\.?\s*[IA](?:\.?\s*[CE])?\.?|ZONE\b).*)$", line, re.I)
+        if inline_site and not _looks_address_line(inline_site.group(1)):
+            name = " ".join([*clean[:index], inline_site.group(1)])
+            clean = [name, inline_site.group(2), *clean[index + 1:]]
+            break
     # Free-form instructions commonly keep the company and first street on
     # the same baseline: ``SOCIETE CLIENT 21 avenue de Nimes``.  Split only at
     # an explicit numbered thoroughfare, so the company stays a party and the
@@ -288,13 +300,12 @@ def _explicit_role_anchors(segments):
     deduplicated = []
     for role, anchor in sorted(
         anchors,
-        key=lambda item: len(item[1]["words"]),
+        key=lambda item: (len(item[1]["words"]), -(item[1]["bbox"][3] - item[1]["bbox"][1])),
         reverse=True,
     ):
         word_ids = {id(word) for word in anchor["words"]}
         if any(
             existing_role == role
-            and abs(existing["bbox"][1] - anchor["bbox"][1]) <= 3
             and word_ids & {id(word) for word in existing["words"]}
             for existing_role, existing in deduplicated
         ):
@@ -489,7 +500,14 @@ def recover_explicit_role_blocks(result, pages: list[PageResult]):
             _,cur_score,_=local_validation(cur,curc)
             # An explicit labelled geometry block is stronger evidence than a mixed generic header parse.
             # Require postal locality plus a meaningful structural score so labels cannot absorb nearby tables.
-            explicit_good = bool(cand.postal_code and cand.city and cand_score >= 0.72)
+            # A named site/industrial zone may be the entire printed address:
+            # do not require a street number to prefer this explicitly labelled
+            # block over a truncated generic parse of the same locality.
+            site_address = bool(party_name and (cand.industrial_zone or cand.business_park or cand.lieu_dit))
+            explicit_good = bool(
+                cand.postal_code and cand.city
+                and (cand_score >= 0.72 or (site_address and cand_score >= 0.58))
+            )
             if explicit_good or cand_score >= max(0.58,cur_score+0.05) or not existing.address.postal_code or not existing.address.city:
                 changed_locality = bool(cur.postal_code and cand.postal_code and cur.postal_code != cand.postal_code)
                 if changed_locality:
@@ -510,8 +528,72 @@ def recover_explicit_role_blocks(result, pages: list[PageResult]):
                         setattr(existing,key,value)
     return result
 
+def recover_registration_party_blocks(result, pages: list[PageResult]):
+    """N/Id CEE and V/Id CEE explicitly identify issuer and addressee blocks.
+
+    Restrict recovery to a purchase-order header with both labels and complete
+    postal localities. Geometry isolates their columns from transaction cells.
+    """
+    if not pages:
+        return result
+    page = pages[0]
+    rows = all_rows([page], y_factor=0.46)
+    if not any("commande" in _fold(row.text) and row.bbox[1] < page.height * 0.25 for row in rows):
+        return result
+    anchors = {}
+    for row in rows:
+        if row.bbox[1] > page.height * 0.32:
+            continue
+        for word in row.words:
+            token = _fold(word.text).replace(" ", "").rstrip(":")
+            if token in {"n/id", "v/id"} and "cee" in _fold(row.text):
+                anchors["buyer" if token == "n/id" else "supplier"] = word
+    if set(anchors) != {"buyer", "supplier"}:
+        return result
+    for role, anchor in anchors.items():
+        other = anchors["supplier" if role == "buyer" else "buyer"]
+        left = anchor.bbox[0] - 8
+        right = other.bbox[0] - 12 if other.bbox[0] > anchor.bbox[0] else page.width
+        content = []
+        previous_y = anchor.bbox[1]
+        for row in reversed(rows):
+            if row.bbox[1] > anchor.bbox[1] + 3:
+                continue
+            words = [word for word in row.words if left <= word.bbox[0] < right]
+            if not words:
+                continue
+            y = min(word.bbox[1] for word in words)
+            if previous_y - y > page.height * 0.055:
+                break
+            previous_y = y
+            text = " ".join(word.text for word in words)
+            if re.match(r"^(?:commande|fournisseur|date)\b", _fold(text)):
+                break
+            if re.search(r"\b(?:siret|siren|cee)\b", _fold(text)):
+                continue
+            content.insert(0, text)
+        contacts, postal = _block_contacts(content)
+        name, department, address_lines = _choose_party_and_address(postal)
+        if not name or not address_lines:
+            continue
+        candidate = Address(raw_lines=address_lines, line1=address_lines[0],
+                            line2=address_lines[1] if len(address_lines)>1 else None,
+                            line3=address_lines[2] if len(address_lines)>2 else None)
+        parsed, _, _ = parse_address(candidate)
+        if not parsed.postal_code or not parsed.city:
+            continue
+        party = getattr(result, role)
+        party.name = party.legal_name = name
+        party.address = candidate
+        party.department = department
+        party.contact = Contact(**contacts)
+        party.phone, party.fax, party.email = (contacts.get(key) for key in ("phone", "fax", "email"))
+    return result
+
+
 def build_business_addresses(result, pages: list[PageResult], config: dict | None = None) -> list[BusinessAddress]:
     result = recover_explicit_role_blocks(result, pages)
+    result = recover_registration_party_blocks(result, pages)
     cfg = (config or {}).get("addresses", {}) if isinstance(config, dict) else {}
     min_conf = float(cfg.get("min_address_confidence", 0.60))
     role_order = cfg.get("role_priority") or [

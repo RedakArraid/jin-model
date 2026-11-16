@@ -599,14 +599,64 @@ def restore_leading_source_material_roles(
     return repaired
 
 
+def recover_labeled_material_references(lines, config: dict | None = None) -> int:
+    """Resolve explicit product/assembly IDs, never numbers in unlabelled prose.
+
+    A customer's reference column can coexist with our grouped reference in the
+    designation. Assembly labels outrank component references; otherwise exactly
+    one labelled identifier is required. Keep the customer's original code.
+    """
+    profile = load_material_reference_profile(config)
+    if not profile:
+        return 0
+    recovered = 0
+    pattern = re.compile(
+        r"\b(?P<label>REF(?:ERENCE)?\.?\s+ENSEMBLE|CODE(?:\s+ARTICLE)?|REF(?:ERENCE)?\.?)"
+        r"\s*[:#=]?\s*(?P<value>\d+(?:[ \t]+\d+)*)(?![A-Z0-9])", re.I,
+    )
+    for line in lines or []:
+        current = line.supplier_material_number or line.material_number or line.article_number
+        if current and score_material_reference(current, profile, min_score=0.86).supported:
+            continue
+        if line.quantity is None or (line.unit_price is None and line.line_total is None):
+            continue
+        description = " ".join(str(line.description or "").split())
+        folded = unicodedata.normalize("NFKD", description).encode("ascii", "ignore").decode()
+        # Only the product prefix is eligible, not a kit's components or old IDs.
+        prefix = re.split(r"\b(?:COMPOSE\s+DE|COMPRENANT|REMPLACE|REMPLACEMENT|ANCIENNE?\s+REF)\b", folded, maxsplit=1, flags=re.I)[0]
+        candidates = []
+        for match in pattern.finditer(prefix):
+            value = normalize_reference(match.group("value"))
+            if len(value) not in {10, 11} or not value.isdigit():
+                continue
+            if score_material_reference(value, profile, min_score=0.90).supported:
+                candidates.append(("ENSEMBLE" in match.group("label").upper(), value))
+        assemblies = {value for assembly, value in candidates if assembly}
+        choices = assemblies or {value for _, value in candidates}
+        if len(choices) != 1:
+            continue
+        value = next(iter(choices))
+        # Do not destroy a distinct, already typed customer reference.
+        if current and line.customer_material_number not in (None, current):
+            continue
+        line.customer_material_number = current or line.customer_material_number
+        line.material_number = line.article_number = line.supplier_material_number = value
+        warning = "supplier_reference_from_explicit_description_label"
+        if warning not in line.warnings:
+            line.warnings.append(warning)
+        recovered += 1
+    return recovered
+
+
 def recover_material_references_from_descriptions(
     lines, config: dict | None = None
 ) -> int:
-    """Recover a leading grouped supplier reference from a commercial row.
+    """Recover explicit labelled references or leading grouped references.
 
-    Recovery is narrow: the row needs quantity and price/amount, all normal
-    reference fields must be empty, and a 10/11-digit candidate must strongly
-    match the aggregate profile. No exact article lookup is involved.
+    A labelled product/assembly reference can disambiguate a customer code.
+    Unlabelled leading recovery requires empty references (or an alphabetic-only
+    miscapture). Both paths require commercial values and profile support;
+    no exact article lookup is involved.
     """
     layout = (config or {}).get("layout", {})
     if not layout.get("material_reference_description_recovery", True):
@@ -614,10 +664,11 @@ def recover_material_references_from_descriptions(
     profile = load_material_reference_profile(config)
     if not profile:
         return 0
+    labeled_recovered = recover_labeled_material_references(lines, config)
     threshold = float(layout.get(
         "material_reference_description_recovery_min_score", 0.90
     ))
-    recovered = 0
+    recovered = labeled_recovered
     for line in lines or []:
         existing = [
             normalize_reference(getattr(line, field, None))

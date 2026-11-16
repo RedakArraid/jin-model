@@ -5,6 +5,34 @@ from jin_runtime.generic_document_fields import enrich_generic_document_fields
 
 
 class GenericDocumentFieldsTests(unittest.TestCase):
+    def test_own_and_your_cee_labels_override_purchase_order_buyer_prior(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{"page": 1, "text": "N/Id CEE : FR49483135737\nV/Id CEE : FR50340530864"}],
+            "business_extractions": {"purchase_order": {
+                "purchase_order": {}, "buyer": {}, "supplier": {}, "lines": [],
+            }},
+        }
+        out = enrich_generic_document_fields(payload)
+        identifiers = {item["vat_number"]: item for item in out["document_tax_identifiers"]}
+        self.assertEqual(identifiers["FR49483135737"]["role"], "buyer")
+        self.assertEqual(identifiers["FR50340530864"]["role"], "supplier")
+        self.assertFalse(identifiers["FR50340530864"]["role_assignment"]["inferred"])
+        po = out["business_extractions"]["purchase_order"]
+        self.assertEqual(po["supplier"]["vat_number"], "FR50340530864")
+
+    def test_paired_cee_labels_on_one_row_bind_each_tax_identifier(self):
+        payload = {
+            "document": {"primary_document_type": "purchase_order"},
+            "pages": [{"page": 1, "text": "N/Id CEE : FR49483135737 V/Id CEE : FR50340530864"}],
+            "business_extractions": {"purchase_order": {
+                "purchase_order": {}, "buyer": {}, "supplier": {}, "lines": [],
+            }},
+        }
+        out = enrich_generic_document_fields(payload)
+        roles = {item["vat_number"]: item["role"] for item in out["document_tax_identifiers"]}
+        self.assertEqual(roles, {"FR49483135737": "buyer", "FR50340530864": "supplier"})
+
     def test_valid_siret_derives_vat_with_explicit_provenance(self):
         payload = {
             "document": {"primary_document_type": "purchase_order"},

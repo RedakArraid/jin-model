@@ -768,6 +768,8 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
     def header_token(text):
         from difflib import get_close_matches
         token=_fold(text).strip("|[](){}.,:")
+        if re.fullmatch(r"p\.?\s*u\.?", token):
+            return "pu"
         known=("reference","article","designation","description","libelle","famille","family","gamme","range","quantite","montant","total")
         if len(token)>=5 and token not in known:
             close=get_close_matches(token,known,n=1,cutoff=0.84)
@@ -786,6 +788,8 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
 
     previous_anchors = None
     previous_page_number = None
+    previous_table_anchors = None
+    previous_table_height = 0
     for pg in pages:
         rows=all_rows([pg], y_factor=0.50)
         header_idx=None; anchors={}
@@ -891,12 +895,22 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
         family_quantity_boundary=(family_x+qx)/2 if family_x is not None and family_x<qx else q_left
         sec_x=anchors.get("secondary")
         sec_desc_boundary=(sec_x+desc_x)/2 if sec_x is not None else desc_x-12
-        current=None
+        # A designation may continue immediately below the repeated table header
+        # on the next page. Only carry it across an adjacent, aligned table.
+        current = items[-1] if (
+            items and items[-1].page == pg.page - 1
+            and previous_table_anchors is not None
+            and all(abs(anchors.get(key, -pg.width) - value) <= pg.width * 0.025
+                    for key, value in previous_table_anchors.items())
+            and items[-1].bbox and items[-1].bbox[3] >= previous_table_height * 0.85
+        ) else None
+        previous_table_anchors = dict(anchors)
+        previous_table_height = pg.height
         for row in rows[header_idx+1:]:
             low=_fold(row.text)
             if any(term and term in low for term in stop_terms) or re.search(r"\btotal\s+h\.?\s*t\.?(?=\s|$)|\b(?:montant\s+ht|total\s+(?:ht|net|ttc))\s*[:=]",low):
                 break
-            if _row_center_safe(row)>pg.height*0.90:
+            if _row_center_safe(row)>pg.height*0.97:
                 break
             left=[w for w in row.words if center(w)<q_left]
             qws=[w for w in row.words if q_left<=center(w)<qp]
@@ -996,7 +1010,8 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                     footer_or_instruction=bool(re.search(
                         r"^(?:franco\b|nb\s*:|sans\s+retour\b|instructions?\b|"
                         r"prise\s+de\s+rendez[- ]vous\b|par\s+mail\b|"
-                        r"ou\s+par\s+tel\b|horaire\s+d[' ]?acces\b|\*)",
+                        r"ou\s+par\s+tel\b|horaire\s+d[' ]?acces\b|"
+                        r"reserve\s+de\s+propriete\b|conditions\s+generales\b|notre\s+droit\b|\*)",
                         folded_cont,
                     ))
                     if commercial_note:
@@ -1481,6 +1496,7 @@ def _enhance_requested_delivery_date_v5169(po, pages, config: dict):
         r"date\s+(?:de\s+)?livraison(?:\s+(?:souhaitee?|demandee?|requise?|estimee?|prevue?))?"
         r"|livraison\s+(?:souhaitee?|demandee?|requise?|prevue?)(?:\s+le)?"
         r"|livraison\s+par\s+(?:vos|nos)\s+soins\s+le"
+        r"|livraison\s+a\s+partir\s+du"
         r"|(?:a\s+)?livrer\s+(?:pour\s+)?le"
         r"|delai(?:\s+de\s+livraison)?"
         r"|requested\s+delivery\s+date|delivery\s+date|required\s+date"
@@ -1561,6 +1577,7 @@ def _enhance_requested_delivery_date_v5169(po, pages, config: dict):
             validation_confidence=1.0,
             final_confidence=final_confidence,
             validation_status="VALID",
+            warnings=["delivery_not_before_date"] if "a partir du" in _fold(source_text) else [],
             evidence=Evidence(
                 page=page_number,
                 bbox=bbox,
@@ -5494,6 +5511,27 @@ def _enhance_strict_order_number_v47(po, pages, config: dict):
             score -= float(config.get("layout",{}).get("learned_shape_mismatch_penalty",0.10))
         candidates.append((float(score), val, row, method, words or getattr(row,"words",[])))
 
+    # Compact ERP header cells: the issuer and unrelated date/vendor cells may
+    # share these rows. Bind the value to the order column, not the whole row.
+    for index, row in enumerate(rows):
+        if _row_center_safe(row) > pg.height * 0.25:
+            break
+        ordered = sorted(row.words, key=lambda word: word.bbox[0])
+        label = next((word for word in ordered if _fold(word.text) == "commande"), None)
+        other_labels = [word for word in ordered if _fold(word.text) in {"date", "fournisseur", "supplier"}]
+        if label is None or len(other_labels) < 2:
+            continue
+        center = (label.bbox[0] + label.bbox[2]) / 2
+        right = min((word.bbox[0] for word in other_labels if word.bbox[0] > label.bbox[2]), default=pg.width)
+        for following in rows[index + 1:index + 3]:
+            if _row_center_safe(following) - _row_center_safe(row) > pg.height * 0.04:
+                break
+            words = [word for word in following.words
+                     if label.bbox[0] - 12 <= word.bbox[0] < right
+                     and abs((word.bbox[0] + word.bbox[2]) / 2 - center) < pg.width * 0.09]
+            if len(words) == 1:
+                add(words[0].text, 9.8, following, "explicit_order_header_cell", words)
+
     # Preserve segmented identifiers printed after an explicit number marker,
     # for example ``N° 02 - 9260205710``.  The short left segment is part of
     # the customer's identifier (often an agency/series), not disposable noise.
@@ -8737,7 +8775,10 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     )
     recover_material_references_from_descriptions(po.lines, config)
     parser_diag["description_reference_recoveries"] = sum(
-        "material_reference_recovered_from_description" in line.warnings
+        any(warning in line.warnings for warning in (
+            "material_reference_recovered_from_description",
+            "supplier_reference_from_explicit_description_label",
+        ))
         for line in po.lines
     )
     parser_diag["leading_source_reference_repairs"] = sum(

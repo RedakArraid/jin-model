@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Recognize dotted unit-price headers (`P.U. HT`) and retain bottom-of-page
+  products and wrapped descriptions across aligned continuation tables.
+  Explicit assembly/product references in descriptions are resolved separately
+  from customer codes and component references, without exact catalog lookup.
+- Bind compact order-number header cells to their own columns; preserve the
+  qualification on delivery dates stated as "a partir du". Recover distinct
+  issuer/addressee postal blocks and tax roles from paired `N/Id CEE` / `V/Id CEE`
+  labels, and separate inline delivery sites from locality/contact instructions.
+- Add synthetic two-page PDF and negative regression coverage for these layouts;
+  no customer PDFs or automatically validated training labels are committed.
+
 - Added authenticated, resumable MCP transfers for Studio PDFs, extraction
   results and complete annotation histories, preserving reviewed values,
   evidence boxes, identities and timestamps. Imports verify SHA-256, refuse
