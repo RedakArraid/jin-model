@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Preserve visible spaces within customer purchase-order numbers, including
+  numeric groups and the original spacing around short slash suffixes. Collapse
+  repeated whitespace to one space; use compact identifiers only for internal
+  comparisons. Remove the legacy digit-group compaction option and retain raw
+  source text during suffix reconciliation. Cover inline, repeated and column
+  headers with regression tests, including native PDF extraction.
+
 - Distinguish wrapped customer-article headers from dotted supplier-reference
   headers, keep freight codes as additional charges, and stop descriptions at
   closed table borders instead of absorbing accounting footers.

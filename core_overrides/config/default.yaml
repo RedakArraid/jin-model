@@ -359,7 +359,6 @@ layout:
   inline_order_number_max_chars: 48
   inline_order_number_min_digits: 3
   inline_order_number_allow_spaces: true
-  inline_order_number_normalize_digit_groups: true
   inline_order_number_keep_alpha_groups: true
   inline_order_date_context_tokens:
   - au

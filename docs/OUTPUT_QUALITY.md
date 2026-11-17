@@ -38,6 +38,20 @@ identique à une référence article de ligne est supprimé. Les commandes group
 peuvent exposer plusieurs numéros source sans inventer artificiellement un
 numéro primaire.
 
+### Espaces dans le numéro client
+
+La valeur restituée conserve les espaces visibles entre groupes numériques ou
+alphanumériques : `26 365 / CPM` ne doit pas devenir `26365 / CPM`.
+Plusieurs espaces consécutifs, tabulations ou espaces insécables sont ramenés
+à un espace simple. Les espaces autour de `/` ne sont ni ajoutés ni supprimés
+lors de la récupération d'un suffixe d'en-tête ; le texte de preuve est conservé.
+
+La forme compacte, sans espaces, reste utilisable comme clé de comparaison
+entre candidats, jamais comme valeur à afficher. `SOURCE_SUPPORTED` indique
+une concordance avec la source, pas une garantie typographique ni une validation
+humaine. L'ancienne option `inline_order_number_normalize_digit_groups` est
+retirée et n'a plus d'effet, même dans une ancienne configuration externe.
+
 ## Lignes de commande et montants
 
 Les hypothèses de tableau sont classées avec quatre familles de signaux :

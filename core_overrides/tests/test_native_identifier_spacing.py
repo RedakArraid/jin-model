@@ -8,7 +8,7 @@ from po_ocr.config import load_config
 from po_ocr.extract import all_rows
 from po_ocr.models import DocumentMeta, PageResult, PurchaseOrderResult, WordToken
 from po_ocr.pdf_native import _stitch_touching_native_identifiers, extract_native_page
-from uda.business import _enhance_inline_transaction_header_v46
+from uda.business import _enhance_inline_transaction_header_v46, _normalize_inline_po_number
 
 
 def _word(text, x0, x1, *, y=100, source="native_pdf", page=1):
@@ -99,3 +99,31 @@ def test_native_pdf_to_order_header_preserves_each_side_of_slash(number, suffix,
         assert field.value == field.raw_value == field.normalized_value == expected
         assert field.evidence.source_text == expected
         assert po.purchase_order.order_date.value == "2026-11-13"
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("26 365", "26 365"), ("26   365", "26 365"),
+    ("26\u00a0365", "26 365"), ("00\u202f365", "00 365"),
+    ("26365", "26365"), ("dse  g idn  147", "dse g idn 147"),
+])
+@pytest.mark.parametrize("legacy_setting", [False, True])
+def test_inline_identifiers_never_compact_visible_spaces(raw, expected, legacy_setting):
+    config = {"layout": {"inline_order_number_normalize_digit_groups": legacy_setting}}
+    assert _normalize_inline_po_number(raw, config) == (expected, None)
+
+
+def test_native_supplier_order_header_retains_numeric_group_spaces():
+    with fitz.open() as document:
+        page = document.new_page(width=595, height=842)
+        page.insert_text((180, 160), "COMMANDE FOURNISSEUR : 26 365 / CPM", fontsize=12)
+        text, words, confidence = extract_native_page(page, 1, {"hybrid_native_ocr_enabled": False})
+        assert "26 365 / CPM" in text
+        parsed = PageResult(page=1, width=595, height=842, source_type="native_pdf",
+                            text=text, words=words, confidence=confidence)
+        meta = DocumentMeta(id="groups", filename="groups.pdf", extension="pdf", file_size=1,
+                            sha256="groups", page_count=1, is_pdf=True, is_native_pdf=True,
+                            has_text_layer=True, model_version="test",
+                            processing_timestamp=datetime.now(timezone.utc).isoformat())
+        po = _enhance_inline_transaction_header_v46(PurchaseOrderResult(document=meta), [parsed], load_config(None))
+        assert po.purchase_order.number.value == "26 365"
+        assert po.purchase_order.number.evidence.source_text == "26 365"

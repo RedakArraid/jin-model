@@ -33,9 +33,9 @@ def _page(rows, width=600.0, height=842.0):
 def test_inline_po_number_grammar_supports_compact_and_spaced_ids():
     cfg=load_config(None)
     assert _normalize_inline_po_number('FBC27834 au 17/08/26',cfg)[0]=='FBC27834'
-    assert _normalize_inline_po_number('193 444 / Nice',cfg)==('193444','Nice')
+    assert _normalize_inline_po_number('193 444 / Nice',cfg)==('193 444','Nice')
     assert _normalize_inline_po_number('ST C CSP 33443',cfg)[0]=='ST C CSP 33443'
-    assert _normalize_inline_po_number('72 475 Adresse de livraison',cfg)==('72475',None)
+    assert _normalize_inline_po_number('72 475 Adresse de livraison',cfg)==('72 475',None)
 
 
 def test_inline_header_extracts_number_date_supplier_code_and_buyer_contact():
@@ -47,7 +47,7 @@ def test_inline_header_extracts_number_date_supplier_code_and_buyer_contact():
     ])
     po=PurchaseOrderResult(document=_meta())
     po=_enhance_inline_transaction_header_v46(po,[pg],cfg)
-    assert po.purchase_order.number.value=='193444'
+    assert po.purchase_order.number.value=='193 444'
     assert po.purchase_order.project_name.value=='Nice'
     assert po.purchase_order.order_date.value=='2026-08-06'
     assert po.supplier.code=='20501'

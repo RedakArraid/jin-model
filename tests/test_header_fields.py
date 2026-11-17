@@ -33,7 +33,7 @@ class HeaderFieldReconciliationTests(unittest.TestCase):
         ]
         reconcile_header_fields(doc)
         header = doc["business_extractions"]["purchase_order"]["purchase_order"]
-        self.assertEqual(header["number"]["value"], "264018 / EX")
+        self.assertEqual(header["number"]["value"], "264 018 / EX")
         self.assertEqual(
             header["number"]["evidence"]["extraction_method"],
             "repeated_explicit_order_suffix_v61",
@@ -51,7 +51,7 @@ class HeaderFieldReconciliationTests(unittest.TestCase):
         }]
         reconcile_header_fields(doc)
         header = doc["business_extractions"]["purchase_order"]["purchase_order"]
-        self.assertEqual(header["number"]["value"], "256347 / EX")
+        self.assertEqual(header["number"]["value"], "256 347 / EX")
         self.assertEqual(
             header["number"]["evidence"]["extraction_method"],
             "explicit_supplier_order_suffix_v62",
@@ -203,7 +203,7 @@ class HeaderFieldReconciliationTests(unittest.TestCase):
         ])
         reconcile_header_fields(doc)
         header = doc["business_extractions"]["purchase_order"]["purchase_order"]
-        self.assertEqual(header["number"]["value"], "248061")
+        self.assertEqual(header["number"]["value"], "248 061")
         self.assertEqual(
             header["number"]["evidence"]["extraction_method"],
             "explicit_reference_commande_column_v60",

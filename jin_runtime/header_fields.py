@@ -79,7 +79,7 @@ def _reference_commande_candidate(blocks: list[dict[str, Any]]) -> tuple[str, di
             )
             if not match:
                 continue
-            number = re.sub(r"\s+", "", match.group("number"))
+            number = " ".join(match.group("number").split())
             candidates.append((abs(center[0] - label_center[0]), number, block))
         if candidates:
             _, number, block = min(candidates, key=lambda item: item[0])
@@ -124,13 +124,14 @@ def _piece_column_candidate(blocks: list[dict[str, Any]]) -> tuple[str, dict[str
             if block_page != page or center is None:
                 continue
             delta_y = center[1] - piece_center[1]
-            text = "".join(str(block.get("text") or "").split())
+            text = " ".join(str(block.get("text") or "").split())
+            compact = re.sub(r"\s+", "", text)
             if (
                 5 <= delta_y <= 45
                 and abs(center[0] - piece_center[0]) <= 45
-                and re.fullmatch(r"[A-Z0-9._/-]{5,30}", text, flags=re.I)
-                and any(char.isdigit() for char in text)
-                and not re.fullmatch(r"\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}", text)
+                and re.fullmatch(r"[A-Z0-9._/-]{5,30}", compact, flags=re.I)
+                and any(char.isdigit() for char in compact)
+                and not re.fullmatch(r"\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}", compact)
             ):
                 candidates.append((abs(center[0] - piece_center[0]), text, block))
         if candidates:
@@ -194,7 +195,9 @@ def _explicit_suffix_candidate(
             base = re.sub(r"\s+", "", value.group("base")).upper()
             if base != current:
                 continue
-            composite = f"{base} / {value.group('suffix').upper()}"
+            # The compact base is only an agreement key. Publish the source
+            # spelling, including digit groups and spaces on each side of '/'.
+            composite = " ".join(value.group(0).split()).upper()
             strong_supplier_title = bool(re.search(
                 r"COMMANDE\s+FOURNISSEUR", label.group(0), flags=re.I
             )) and len(value.group("suffix")) <= 4
@@ -204,7 +207,7 @@ def _explicit_suffix_candidate(
                 int(page.get("page") or page_number),
                 strong_supplier_title,
             ))
-    if len(matches) >= 2 and len({item[0] for item in matches}) == 1:
+    if len(matches) >= 2 and len({re.sub(r"\s+", "", item[0]) for item in matches}) == 1:
         return matches[0][:3] + (True,)
     if len(matches) == 1 and matches[0][3]:
         return matches[0][:3] + (False,)
@@ -221,7 +224,7 @@ def _repeated_inline_order_candidate(
             continue
         text = " ".join(str(block.get("text") or "").split())
         values = [
-            re.sub(r"\s+", "", match).upper()
+            " ".join(match.split()).upper()
             for match in re.findall(
                 r"\b(?:CDE|COMMANDE)\s+N(?:\s*[^A-Z0-9\s])?\s*:?[ ]*"
                 r"([0-9](?:[ ]?[0-9]){5,})",
@@ -230,12 +233,14 @@ def _repeated_inline_order_candidate(
             )
         ]
         compact_text = re.sub(r"\s+", "", text).upper()
-        repeated = [
-            value for value in set(values)
-            if compact_text.count(value) >= 2
-        ]
+        # Deduplicate by compact identity but retain the first source spelling.
+        repeated = {}
+        for value in values:
+            compact = re.sub(r"\s+", "", value)
+            if compact_text.count(compact) >= 2:
+                repeated.setdefault(compact, value)
         if len(repeated) == 1:
-            return repeated[0], block
+            return next(iter(repeated.values())), block
     return None
 
 
@@ -484,7 +489,7 @@ def reconcile_header_fields(payload: dict[str, Any]) -> dict[str, Any]:
         promoted = copy.deepcopy(current) if isinstance(current, dict) else {}
         promoted.update({
             "value": number,
-            "raw_value": number,
+            "raw_value": source_text,
             "normalized_value": number,
             "semantic_confidence": 0.998,
             "validation_confidence": 1.0,
@@ -534,9 +539,8 @@ def reconcile_header_fields(payload: dict[str, Any]) -> dict[str, Any]:
         return payload
 
     number, block = candidate
-    compact_current = re.sub(r"\s+", "", str(current_value or "")).upper()
-    compact_number = re.sub(r"\s+", "", number).upper()
-    if compact_current == compact_number:
+    # Equal compact keys do not authorize keeping a lossy displayed value.
+    if " ".join(str(current_value or "").split()).upper() == number.upper():
         return payload
     if current_value not in (None, ""):
         header["number_original"] = copy.deepcopy(current)

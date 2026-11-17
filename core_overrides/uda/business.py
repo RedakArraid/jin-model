@@ -393,11 +393,11 @@ def _enhance_order_header_from_page_layout(po, pages, config: dict):
 
 
 def _normalize_inline_po_number(raw: str, config: dict | None = None) -> tuple[str | None, str | None]:
-    """Normalize a transaction identifier while preserving meaningful alpha groups.
+    """Normalize excess whitespace without collapsing source identifier groups.
 
     Examples:
       ``FBC27834`` -> ``FBC27834``
-      ``193 444 / Nice`` -> (``193444``, ``Nice``)
+      ``193 444 / Nice`` -> (``193 444``, ``Nice``)
       ``ST C CSP 33443`` -> ``ST C CSP 33443``
 
     The optional second return value is a site/suffix printed after a slash.  We do not
@@ -434,13 +434,10 @@ def _normalize_inline_po_number(raw: str, config: dict | None = None) -> tuple[s
     if not text:
         return None, site
 
-    # Numeric identifiers are often typeset in visual groups: 193 444 -> 193444.
-    parts=text.split()
-    if cfg.get("inline_order_number_normalize_digit_groups", True) and len(parts)>1 and all(re.fullmatch(r"\d{1,6}", p) for p in parts):
-        text="".join(parts)
-    else:
-        # Preserve meaningful alpha groups but normalize excessive whitespace.
-        text=" ".join(parts)
+    # Identifiers are not amounts: a visible space between numeric groups is
+    # part of their source presentation. Legacy normalize_digit_groups settings
+    # must not erase it; compact forms belong only in comparison keys.
+    text=" ".join(text.split())
 
     min_digits=int(cfg.get("inline_order_number_min_digits", 3))
     max_chars=int(cfg.get("inline_order_number_max_chars", 48))
