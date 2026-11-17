@@ -21,6 +21,8 @@ spatiale, pas la version actuelle du runtime.
 
 ## Documentation opérationnelle actuelle
 
+- [Portail Docupedia et maintenance](DOCUPEDIA.md) : emplacement officiel,
+  guides par usage et publication ciblée depuis GenieCommande.
 - [README principal](../README.md) : vue d'ensemble, architecture et commandes
   usuelles.
 - [Installation et exploitation](RUNTIME_SETUP.md) : modes standalone et
@@ -38,6 +40,8 @@ spatiale, pas la version actuelle du runtime.
 - [Sauvegarde et restauration](BACKUP_AND_RESTORE.md) : copie cohérente des
   PDF, annotations, comptes, cœur JIN, modèles appris et externalisation hors
   VM.
+- [Transfert documentaire par MCP](STUDIO_DOCUMENT_TRANSFER.md) : PDF,
+  extraction et historique d'annotations entre instances, sans SCP.
 - [Version 5.19.0](RELEASE_V5_19_0.md) : identité, rôles et audit JIN Studio.
 - [Version 5.20.0](RELEASE_V5_20_0.md) : contrat d'adresse canonique et remise à zéro des annotations.
 - [Version 5.18.0](RELEASE_V5_18_0.md) : création initiale de JIN Studio.

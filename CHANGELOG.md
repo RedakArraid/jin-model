@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Preserve OCR punctuation and separate oversized logo glyphs from order-number
+  baselines. Recover missing underlined postal-role captions with a bounded
+  sparse-text OCR pass, retaining coordinates and reread diagnostics. Reconcile
+  low-confidence telephone digits only with a stronger local labelled reading.
+- Scale scanned address-column geometry, distinguish ordering contacts from
+  supplier addressees and separate postal routing services from legal names.
+  Replaced address blocks no longer inherit unrelated department instructions.
+- Stop product descriptions at complete net/gross summary rows, retain labelled
+  customer article references, and exclude table headings from order references.
+  Read dotted VAT amounts and "Montant TTC" totals; keep supplier codes outside
+  delivery-date values and reconcile role-bound VAT OCR only with a matching,
+  checksum-valid identifier present in the document.
+
 - Preserve visible spaces within customer purchase-order numbers, including
   numeric groups and the original spacing around short slash suffixes. Collapse
   repeated whitespace to one space; use compact identifiers only for internal

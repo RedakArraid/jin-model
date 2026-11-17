@@ -463,6 +463,13 @@ def _enhance_inline_transaction_header_v46(po, pages, config: dict):
     pg=pages[0]
     rows=all_rows([pg], y_factor=0.50)
     max_y=pg.height*0.48
+    # A product-table reference is not a transaction/header reference. The
+    # table may begin high on a short order, before the percentage cutoff.
+    table_headers = [row for row in rows if sum(bool(re.search(pattern, _fold(row.text)))
+                     for pattern in (r"\b(?:reference|article)\b", r"\b(?:designation|description)\b",
+                                     r"\b(?:quantite|qte)\b", r"\b(?:prix|unitaire)\b")) >= 3]
+    header_end = min((row.bbox[1] for row in table_headers), default=pg.height)
+    max_y = min(max_y, header_end)
 
     for row in rows:
         if _row_center_safe(row)>max_y:
@@ -554,7 +561,7 @@ def _enhance_inline_transaction_header_v46(po, pages, config: dict):
     if not po.purchase_order.internal_number.value:
         for idx,row in enumerate(rows):
             low=_fold(row.text)
-            if _row_center_safe(row)>pg.height*0.50: break
+            if _row_center_safe(row)>min(pg.height*0.50, header_end): break
             ref_words=[w for w in row.words if _fold(w.text) in {"reference","ref"}]
             if not ref_words:
                 continue
@@ -749,7 +756,7 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
     """Recover line items from visible PDF columns even when no native table object exists."""
     from po_ocr.extract import all_rows
     from po_ocr.models import LineItem, AdditionalCharge, Evidence
-    from po_ocr.normalize import parse_number
+    from po_ocr.normalize import parse_number, ascii_fold
     import re
 
     cfg=config.get("layout", {}) if isinstance(config, dict) else {}
@@ -944,10 +951,25 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                     table_bottom = min(table_bottom, bottom)
         for row in rows[header_idx+1:]:
             low=_fold(row.text)
+            # Test complete rows before clipping them into table columns: a
+            # right-aligned total can otherwise leave "Montant" in the item
+            # description and allow the legal footer to follow it.
+            if re.search(r"\bmontant\s+(?:(?:h\.?\s*t\.?(?:\s+net)?)|net|t\.?\s*t\.?\s*c\.?)\s*[:=]?\s*\d", low):
+                break
             if any(term and term in low for term in stop_terms) or re.search(r"\btotal\s+h\.?\s*t\.?(?=\s|$)|\b(?:montant\s+ht|total\s+(?:ht|net|ttc))\s*[:=]",low):
                 break
             if _row_center_safe(row)>table_bottom:
                 break
+            customer_ref = re.fullmatch(
+                r"\s*(?:notre\s+ref(?:erence)?|our\s+ref(?:erence)?)\s*[:.]?\s*([A-Z0-9][A-Z0-9._/-]*\d[A-Z0-9._/-]*)\s*",
+                ascii_fold(row.text), flags=re.I,
+            )
+            if customer_ref and current is not None and current.page == pg.page and current.bbox:
+                gap = row.bbox[1] - current.bbox[3]
+                if 0 <= gap <= 3 * max(1, current.bbox[3] - current.bbox[1]):
+                    current.customer_material_number = customer_ref.group(1)
+                    current.raw_text = " | ".join(filter(None, [current.raw_text, row.text]))
+                    continue
             left=[w for w in row.words if center(w)<q_left]
             qws=[w for w in row.words if q_left<=center(w)<qp]
             pws=[w for w in row.words if qp<=center(w)<pa]
@@ -2928,7 +2950,7 @@ def _sanitize_summary_totals_v46(po, pages, config: dict, default_currency: str=
             if m:
                 v=parse_number(m.group(1))
                 if v is not None: monetary.append((v,row))
-        gm=re.search(r"(?:TOTAL\s+TTC|NET\s+[AÀ]\s+PAYER|TOTAL\s+[AÀ]\s+PAYER)\s*[:.-]?\s*([0-9][0-9 .']*(?:[,.]\d+)?)",text,flags=re.I)
+        gm=re.search(r"(?:(?:TOTAL|MONTANT)\s+T\.?T\.?C\.?|NET\s+[AÀ]\s+PAYER|TOTAL\s+[AÀ]\s+PAYER)\s*[:.-]?\s*([0-9][0-9 .']*(?:[,.]\d+)?)",text,flags=re.I)
         if gm:
             v=parse_number(gm.group(1));
             if v is not None: explicit_grand.append((v,row))
@@ -7811,6 +7833,16 @@ def _extract_vat_identifiers_v52(po, pages, config: dict):
                 "warnings":warnings,
             })
     po.tax_identifiers=found
+    # Reconcile an existing role-bound raw OCR VAT only against a checksum-valid
+    # identifier independently found in this document; never change its role.
+    validated = {item["vat_number"] for item in found if _valid_french_vat_v52(item["vat_number"])}
+    for role in ("buyer", "supplier", "bill_to", "ship_to", "sold_to", "payer", "invoice_to"):
+        party = getattr(po, role, None)
+        raw = str(getattr(party, "vat_number", "") or "").replace(" ", "").upper()
+        if raw.startswith("FR"):
+            corrected = "FR" + raw[2:].translate(str.maketrans({"O": "0", "I": "1", "L": "1"}))
+            if corrected in validated:
+                party.vat_number = corrected
     for item in found:
         target=po.supplier if item["role"]=="supplier" else po.buyer
         if target is not None and not target.vat_number:

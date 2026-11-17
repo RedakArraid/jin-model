@@ -40,6 +40,7 @@ FIELD_PATTERNS = {
         r"(?:requisition|demande\s+d['’]?achat|banf)\s*(?:n[o°.]*)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9._/\-]{2,})",
     ],
     "expected_delivery_date": [
+        r"(?:requested\s*delivery\s*date|delivery\s*date|required\s*date|date\s*(?:de\s*)?livraison|lieferdatum)\s*[:\-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{4})(?!\d)",
         r"(?:requested\s*delivery\s*date|delivery\s*date|required\s*date|date\s*(?:de\s*)?livraison|lieferdatum)\s*[:\-]?\s*([^\n]{6,30})",
     ],
 }
@@ -805,15 +806,16 @@ def _merge_continuations(lines: list[LineItem]) -> list[LineItem]:
 def extract_totals(rows: list[TextRow], default_currency: str = "EUR") -> Totals:
     totals = Totals(currency=default_currency)
     patterns = [
-        ("grand_total", r"(?:grand\s*total|total\s*(?:ttc|due|commande|order)?|gesamtbetrag|total\s+general)\s*[: ]+([^\n]+)$"),
+        ("grand_total", r"(?:grand\s*total|montant\s+t\.?t\.?c\.?|total\s*(?:ttc|due|commande|order)?|gesamtbetrag|total\s+general)\s*[: ]+([^\n]+)$"),
         ("total_net", r"(?:net\s*total|total\s*(?:h\.?t\.?|hors\s+taxes?)|netto)\s*[: ]+([^\n]+)$"),
         ("subtotal", r"(?:sub\s*total|sous[- ]?total|zwischensumme)\s*[: ]+([^\n]+)$"),
-        ("total_vat", r"(?:vat|tva|mwst)\s*(?:total)?\s*[: ]+([^\n]+)$"),
+        ("total_vat", r"(?:vat|t\.?v\.?a\.?|mwst)\s*(?:total)?\s*[: ]+([^\n]+)$"),
         ("total_tax", r"(?:tax|taxe)\s*(?:total)?\s*[: ]+([^\n]+)$"),
         ("total_shipping", r"(?:shipping|freight|transport|port)\s*[: ]+([^\n]+)$"),
     ]
     for row in rows:
         folded_row = ascii_fold(row.text).lower()
+        folded_row = re.sub(r"\bt\.\s*v\.\s*a\.?", "tva", folded_row)
         legal_vat_identifier = bool(re.search(
             r"(?:n[\s.°ºo-]*|no\s+|numero\s+|number\s+)(?:de\s*)?(?:tva|vat)\b|"
             r"\b(?:tva|vat)\s*(?:ic\b|intra|id|no|number|registration|[:#-]\s*[a-z]{0,2}\d{8,})",
@@ -1520,6 +1522,12 @@ def extract_multiline_lines_from_pages(pages: list[PageResult], default_currency
                 rm = re.search(r"n\s*/?\s*ref\s*[:.]?\s*(.+)$", r.text, flags=re.I)
                 if rm:
                     customer_ref = clean_text(rm.group(1))
+                material_ref = re.fullmatch(
+                    r"\s*(?:notre\s+ref(?:erence)?|our\s+ref(?:erence)?)\s*[:.]?\s*([A-Z0-9][A-Z0-9._/-]*\d[A-Z0-9._/-]*)\s*",
+                    ascii_fold(r.text), flags=re.I,
+                )
+                if material_ref:
+                    customer_material = material_ref.group(1)
             if aidx == 0:
                 for r in pending_note_rows[-3:]:
                     rm = re.search(r"n\s*/?\s*ref\s*[:.]?\s*(.+)$", r.text, flags=re.I)

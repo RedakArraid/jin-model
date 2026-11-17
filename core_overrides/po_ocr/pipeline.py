@@ -182,6 +182,9 @@ class PurchaseOrderOCR:
             ocr_diagnostics=diag if self.config.get("engine", {}).get("keep_ocr_diagnostics", True) else {},
             image_quality_metrics=quality_metrics if self.config.get("engine", {}).get("keep_image_quality_metrics", True) else {},
         )
+        if self.config.get("layout", {}).get("recover_underlined_role_labels", True):
+            from .ocr import recover_underlined_role_labels
+            recover_underlined_role_labels(page_result, processed, self.config["ocr"])
         if self.config.get("layout", {}).get("verify_compact_order_header", True):
             from .extract import verify_compact_header_number
             verify_compact_header_number(page_result, processed, self.config["ocr"])

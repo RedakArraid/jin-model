@@ -156,12 +156,14 @@ ROLE_BLOCK_LABELS = {
         "adresse de facturation", "adresse facturation", "billing address",
         "bill to", "adresse facture", "facture a expedier", "facture a",
         "facturer a l'adresse suivante", "merci de facturer a l'adresse suivante",
+        "a facturer a", "a facturer", "facturer a",
     ],
     "ship_to": ["adresse de livraison", "adresse livraison", "adresse destinataire", "shipping address", "ship to", "a livrer", "à livrer", "livrer a", "livrer à", "livraison souhaitée à", "lieu de livraison"],
     "supplier": ["adresse de commande fournisseur", "supplier address", "vendor address", "adresse fournisseur"],
-    "buyer": ["adresse acheteur", "buyer address", "ordering address", "adresse donneur d'ordre"],
+    "buyer": ["adresse acheteur", "buyer address", "ordering address", "adresse donneur d'ordre", "commande par"],
 }
 ROLE_BLOCK_LABELS["ship_to"].extend(["livraison a l'adresse", "livraison à l'adresse"])
+ROLE_BLOCK_LABELS["ship_to"].append("a livrer a")
 
 _ROLE_STOP_TOKENS = (
     "code client", "n° accord", "no accord", "date de livraison", "mode de règlement", "mode de reglement",
@@ -188,6 +190,8 @@ _DEPARTMENT_TOKENS = (
 )
 
 def _split_visual_row(row, page: PageResult | None = None, gap_threshold: float = 48.0):
+    if page and page.source_type in {"scan_ocr", "image_ocr"}:
+        gap_threshold *= page.width / 595.0
     groups = split_items_by_compartments(
         row.words,
         page.vector_lines if page else None,
@@ -211,6 +215,8 @@ def _looks_metadata_line(text: str) -> bool:
     return bool(re.match(
         r"^(?:tel|telephone|fax|e[_ -]?mail|email|mail|contact|correspondant|a l'attention|attention|"
         r"infos?|consigne|code d'ouverture|horaires?|reception|en express|merci de|"
+        r"n[°ºo]?\s*(?:intracom|tva)|tva|siret|siren|rcs|iban|bic|"
+        r"(?:ve|vir|virement|traite)\s+\d+\s*j\b|"
         r"livraison uniquement|point de terminaison|entre\s+\d{1,2}\s*h\s+et\s+\d{1,2}\s*h|"
         r"\d+\s+heures?\s+avant|appeler|prevenir)\b",
         low,
@@ -250,7 +256,8 @@ def _choose_party_and_address(lines: list[str]):
     addr=clean[first_addr:]
     party=None; department=[]
     if pre:
-        nondept=[x for x in pre if not any(t in _fold(x) for t in _DEPARTMENT_TOKENS)]
+        nondept=[x for x in pre if not any(t in _fold(x) for t in _DEPARTMENT_TOKENS)
+                 and not re.search(r"\b(?:scan\s*docs?|documents?|invoices?)\s+(?:center|centre)\b", _fold(x))]
         party=(nondept[-1] if nondept else pre[0])
         department=[x for x in pre if x != party]
     elif clean and not _looks_address_line(clean[0]):
@@ -262,7 +269,7 @@ def _label_word(text: str) -> str:
     return _fold(text).strip(" :;.-")
 
 
-def _explicit_role_anchors(segments):
+def _explicit_role_anchors(segments, unit: float = 1.0):
     """Match label words across adjacent baselines in their own narrow column."""
     words = [word for segment in segments for word in segment["words"]]
     anchors = []
@@ -283,8 +290,15 @@ def _explicit_role_anchors(segments):
                             continue
                         dx = word.bbox[0] - previous.bbox[2]
                         dy = word.bbox[1] - previous.bbox[1]
-                        same_row = abs(dy) <= height * 0.55 and -1 <= dx <= 16
-                        next_row = height * 0.6 < dy <= height * 2.0 and abs(word.bbox[0] - first.bbox[0]) <= 24
+                        # Underlines can inflate the first OCR glyph's box into
+                        # the following word. Permit modest overlap while still
+                        # requiring a left-to-right progression of word centres.
+                        overlap = max(unit, height * 0.65, 1.5 * min(
+                            previous.bbox[2] - previous.bbox[0], word.bbox[2] - word.bbox[0],
+                        )) if previous.source == word.source == "ocr" else unit
+                        forwards = (word.bbox[0] + word.bbox[2]) > (previous.bbox[0] + previous.bbox[2])
+                        same_row = abs(dy) <= height * 0.55 and -overlap <= dx <= 16 * unit and forwards
+                        next_row = height * 0.6 < dy <= height * 2.0 and abs(word.bbox[0] - first.bbox[0]) <= 24 * unit
                         if same_row or next_row:
                             candidates.append(word)
                     if not candidates:
@@ -402,12 +416,13 @@ def recover_explicit_role_blocks(result, pages: list[PageResult]):
     """
     rows=all_rows(pages,y_factor=0.46)
     for page in pages:
+        unit = page.width / 595.0 if page.source_type in {"scan_ocr", "image_ocr"} else 1.0
         prows=[r for r in rows if r.page==page.page]
         segments=[]
         for row in prows:
             for text,bbox,words in _split_visual_row(row, page):
                 segments.append({"text":text,"bbox":bbox,"words":words})
-        anchors = _explicit_role_anchors(segments)
+        anchors = _explicit_role_anchors(segments, unit)
         if not anchors: continue
         # Group labels on the same header line; their x positions define column boundaries.
         for role,anchor in anchors:
@@ -415,31 +430,31 @@ def recover_explicit_role_blocks(result, pages: list[PageResult]):
             label_ids = {id(word) for _, label in anchors for word in label["words"]}
             label_height = max(w.bbox[3] - w.bbox[1] for w in anchor["words"])
             sidebar = ay2 - ay1 > 1.5 * label_height
-            same=[(r,s) for r,s in anchors if abs(s["bbox"][1]-ay1) <= 12]
+            same=[(r,s) for r,s in anchors if abs(s["bbox"][1]-ay1) <= 12 * unit]
             centers=sorted([(s["bbox"][0]+s["bbox"][2])/2 for _,s in same])
             center=(ax1+ax2)/2
             left=0.0; right=float(page.width or 10000)
             lower=[c for c in centers if c<center]; upper=[c for c in centers if c>center]
             if lower: left=(max(lower)+center)/2
-            elif len(same)==1: left=max(0.0,ax1-30)
+            elif len(same)==1: left=max(0.0,ax1-30 * unit)
             if upper: right=(min(upper)+center)/2
             elif len(same)==1:
                 page_w=float(page.width or ax2+420)
                 if center < page_w * 0.5:
-                    right=min(page_w * 0.56, ax2+420)
+                    right=min(page_w * 0.56, ax2+420 * unit)
                 else:
-                    right=min(page_w, ax2+420)
+                    right=min(page_w, ax2+420 * unit)
                     left=max(left, page_w * 0.44)
             stop_candidates=[]
             for seg2 in segments:
                 ystop=seg2["bbox"][1]; low2=_fold(seg2["text"])
-                if ystop > ay1 + 20 and _is_role_stop_text(low2):
+                if ystop > ay1 + 20 * unit and _is_role_stop_text(low2):
                     stop_candidates.append(ystop)
             for _, other in anchors:
                 ox1, oy1, ox2, _ = other["bbox"]
-                if oy1 > ay2 + 6 and left <= (ox1 + ox2) / 2 <= right:
+                if oy1 > ay2 + 6 * unit and left <= (ox1 + ox2) / 2 <= right:
                     stop_candidates.append(oy1)
-            end_y=min(stop_candidates) - 2 if stop_candidates else ay2 + 220
+            end_y=min(stop_candidates) - 2 * unit if stop_candidates else ay2 + 220 * unit
             left, right, end_y = _vector_bounds(page, anchor["bbox"], left, right, end_y)
             collected=[]
             for seg in segments:
@@ -456,14 +471,14 @@ def recover_explicit_role_blocks(result, pages: list[PageResult]):
                     # Vertical labels sit to the left of content on the same rows.
                     # A company name can be one row above such a sidebar.
                     if sidebar:
-                        if y1 < ay1 - 2 * label_height or x1 <= ax2 + 3: continue
-                    elif y1 <= ay1 + 6:
+                        if y1 < ay1 - 2 * label_height or x1 <= ax2 + 3 * unit: continue
+                    elif y1 <= ay1 + 6 * unit:
                         # Inline role leads are valid too: ``A facturer a :
                         # CLIENT 21 rue ...``.  Keep only content clearly to
                         # the right of the matched label on the same baseline.
                         same_baseline_content = (
-                            abs(y1 - ay1) <= max(4.0, label_height * 0.6)
-                            and x1 >= ax2 + 2
+                            abs(y1 - ay1) <= max(4.0 * unit, label_height * 0.6)
+                            and x1 >= ax2 + 2 * unit
                         )
                         if not same_baseline_content:
                             continue
@@ -479,7 +494,7 @@ def recover_explicit_role_blocks(result, pages: list[PageResult]):
             # leaving distant customer codes and the neighbouring column alone.
             grouped=[]
             for y, x1, x2, text in sorted(collected,key=lambda item:(item[0],item[1])):
-                if grouped and abs(y-grouped[-1][0]) <= 4 and -2 <= x1-grouped[-1][2] <= 85:
+                if grouped and abs(y-grouped[-1][0]) <= 4 * unit and -2 * unit <= x1-grouped[-1][2] <= 85 * unit:
                     grouped[-1]=(grouped[-1][0],grouped[-1][1],x2,grouped[-1][3]+" "+text)
                 else:
                     grouped.append((y,x1,x2,text))
@@ -490,6 +505,24 @@ def recover_explicit_role_blocks(result, pages: list[PageResult]):
                     lines.append(text); seen.add(k)
             contacts, lines = _block_contacts(lines)
             party_name,department,address_lines=_choose_party_and_address(lines)
+            if role == "buyer" and anchor["text"] == "commande par" and party_name and not address_lines:
+                # Ordering-contact forms can name a buyer without printing its
+                # postal address here. Do not retain a neighbouring vendor's
+                # address or phone from the earlier full-width row parse.
+                existing = getattr(result, role, None)
+                if existing is not None:
+                    same_name = _fold(existing.name) == _fold(party_name)
+                    existing.name = existing.legal_name = party_name
+                    if not same_name:
+                        existing.address = Address()
+                        existing.contact = Contact()
+                        existing.phone = existing.fax = existing.email = None
+                    for key, value in contacts.items():
+                        setattr(existing.contact, key, value)
+                    if department:
+                        existing.contact.name = department
+                    existing.department = None
+                continue
             if not address_lines: continue
             candidate=Address(raw_lines=address_lines,line1=address_lines[0] if address_lines else None,
                               line2=address_lines[1] if len(address_lines)>1 else None,
@@ -523,8 +556,10 @@ def recover_explicit_role_blocks(result, pages: list[PageResult]):
                 if party_name:
                     existing.name=party_name
                     existing.legal_name=party_name
-                if department:
-                    existing.department=department
+                # This block replaces the postal identity, including an
+                # explicitly absent department from the corrected source.
+                existing.department=department
+                existing.contact.department=department
                 for key,value in contacts.items():
                     setattr(existing.contact,key,value)
                     if key in {"phone","fax","email"}:
@@ -713,8 +748,61 @@ def recover_accounting_postal_notice(result, pages: list[PageResult]):
     return result
 
 
+def recover_ordering_form_addressee(result, pages: list[PageResult]):
+    """Resolve an unlabelled vendor opposite an explicit ordering-contact box.
+
+    Require an order title, the buyer caption, and a complete independent
+    name/street/locality block above the next labelled postal role. Neither
+    company dictionaries nor a fixed customer template are used.
+    """
+    for page in pages[:1]:
+        if not re.search(r"\b(?:bon de commande|purchase order)\b", _fold(page.text)):
+            continue
+        rows = all_rows([page], y_factor=0.46)
+        segments = [{"text": text, "bbox": bbox, "words": words}
+                    for row in rows for text, bbox, words in _split_visual_row(row, page)]
+        unit = page.width / 595.0 if page.source_type in {"scan_ocr", "image_ocr"} else 1.0
+        anchors = _explicit_role_anchors(segments, unit)
+        ordering = [a for role, a in anchors if role == "buyer" and a["text"] == "commande par"
+                    and a["bbox"][1] < page.height * 0.35]
+        if (len(ordering) != 1 or any(role == "supplier" for role, _ in anchors)
+                or any(re.fullmatch(r"(?:fournisseur|supplier|vendor)\s*:?", _fold(seg["text"]))
+                       for seg in segments)):
+            continue
+        anchor = ordering[0]
+        buyer_left = (anchor["bbox"][0] + anchor["bbox"][2]) / 2 < page.width * 0.5
+        opposite = lambda box: ((box[0] + box[2]) / 2 < page.width * 0.5) != buyer_left
+        start = max(0, anchor["bbox"][1] - 30 * unit)
+        stops = [a["bbox"][1] for _, a in anchors
+                 if opposite(a["bbox"]) and a["bbox"][1] > anchor["bbox"][3]]
+        if not stops:
+            continue
+        end = min(min(stops), anchor["bbox"][3] + page.height * 0.16)
+        block = [seg["text"] for seg in sorted(segments, key=lambda s: s["bbox"][1])
+                 if opposite(seg["bbox"]) and start <= seg["bbox"][1] < end]
+        contacts, postal = _block_contacts(block)
+        name, department, address_lines = _choose_party_and_address(postal)
+        if not name or not address_lines or _looks_metadata_line(name):
+            continue
+        address = Address(raw_lines=address_lines)
+        parsed, _, _ = parse_address(address, infer_country=True)
+        if not (parsed.street and parsed.postal_code and parsed.city):
+            continue
+        # An explicit role block is never displaced; the addressee here is
+        # admitted only after all the independent source requirements above.
+        result.supplier = Party(name=name, legal_name=name, department=department,
+                                address=parsed, contact=Contact(**contacts))
+        for row in rows:
+            code = re.search(r"\bfournisseur\s+n[°ºo]?\s*[:.-]?\s*([A-Z0-9][A-Z0-9_-]{2,19})\b", row.text, re.I)
+            if code:
+                result.supplier.code = code.group(1)
+                break
+    return result
+
+
 def build_business_addresses(result, pages: list[PageResult], config: dict | None = None) -> list[BusinessAddress]:
     result = recover_explicit_role_blocks(result, pages)
+    result = recover_ordering_form_addressee(result, pages)
     result = recover_registration_party_blocks(result, pages)
     result = recover_named_supplier_form(result, pages)
     result = recover_accounting_postal_notice(result, pages)
