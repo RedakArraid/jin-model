@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Respect owned article columns ("Votre reference" / "Your reference") even
+  after the description; preserve separate customer article numbers. Join
+  grouped numeric references only inside a complete reference cell, retain
+  source text, and use printed header-cell borders where available. Exclude
+  preceding delivery terms from table headers and preserve line delivery dates
+  and units. Keep adjacent unlabelled postal blocks outside delivery recipients.
+
 - Preserve OCR punctuation and separate oversized logo glyphs from order-number
   baselines. Recover missing underlined postal-role captions with a bounded
   sparse-text OCR pass, retaining coordinates and reread diagnostics. Reconcile

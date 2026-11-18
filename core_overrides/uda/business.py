@@ -754,7 +754,10 @@ def _repair_scan_currency_suffix_artifacts_v64(po, pages, config: dict):
 
 def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str="EUR"):
     """Recover line items from visible PDF columns even when no native table object exists."""
-    from po_ocr.extract import all_rows
+    from po_ocr.extract import (
+        all_rows, _find_table_header, _table_column_regions, _partition_row,
+        _line_from_cells, _is_line_table_stop,
+    )
     from po_ocr.models import LineItem, AdditionalCharge, Evidence
     from po_ocr.normalize import parse_number, ascii_fold
     import re
@@ -796,6 +799,9 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
     previous_table_height = 0
     for pg in pages:
         rows=all_rows([pg], y_factor=0.50)
+        typed_header = _find_table_header(rows, min_terms)
+        typed_columns = {}
+        typed_regions = {}
         header_idx=None; anchors={}
         for idx,row in enumerate(rows):
             if _row_center_safe(row)>pg.height*float(cfg.get("geometry_table_max_header_y_ratio", 0.68)):
@@ -891,6 +897,11 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
         else:
             previous_anchors = dict(anchors)
         previous_page_number = pg.page
+        if (typed_header and typed_header[0] == header_idx
+                and "supplier_material" in typed_header[2]):
+            start, end, typed_columns = typed_header
+            typed_regions = _table_column_regions(pg, rows[start:end], typed_columns)
+            header_idx = end - 1
 
         # Boundaries are midway between numeric anchors. Left columns remain flexible.
         qx,px=anchors["quantity"],anchors["price"]
@@ -951,6 +962,8 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                     table_bottom = min(table_bottom, bottom)
         for row in rows[header_idx+1:]:
             low=_fold(row.text)
+            if typed_columns and _is_line_table_stop(low):
+                break
             # Test complete rows before clipping them into table columns: a
             # right-aligned total can otherwise leave "Montant" in the item
             # description and allow the legal footer to follow it.
@@ -960,6 +973,25 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                 break
             if _row_center_safe(row)>table_bottom:
                 break
+            if typed_columns and not _fee_kind(low):
+                # Explicit ownership beats the old first-code-from-the-left
+                # heuristic. Read the complete cells, including references
+                # printed after the description and grouped numeric codes.
+                cells = _partition_row(row, typed_columns, typed_regions)
+                typed = _line_from_cells(cells, row, default_currency)
+                if typed and typed.quantity is not None and typed.unit_price is not None:
+                    computed = typed.quantity * typed.unit_price
+                    tolerance = max(float(cfg.get("geometry_table_amount_tolerance_abs", .04)),
+                                    abs(computed) * float(cfg.get("geometry_table_amount_tolerance_rel", .006)))
+                    if (typed.material_number and typed.line_total is not None
+                            and (abs(typed.line_total - computed) <= tolerance
+                                 or not cfg.get("geometry_table_validate_quantity_price", True))):
+                        typed.line_number = typed.line_number or str(len(items) + 1)
+                        current = typed
+                        items.append(current)
+                    # Do not substitute a different column when an explicitly
+                    # labelled reference is unreadable or arithmetic fails.
+                    continue
             customer_ref = re.fullmatch(
                 r"\s*(?:notre\s+ref(?:erence)?|our\s+ref(?:erence)?)\s*[:.]?\s*([A-Z0-9][A-Z0-9._/-]*\d[A-Z0-9._/-]*)\s*",
                 ascii_fold(row.text), flags=re.I,
@@ -1050,7 +1082,11 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
             # A wrapped continuation line has no right-side numerical columns.
             if qty is None and price is None and amount is None:
                 if current is not None and left:
-                    cont_words=[w.text for w in left if sec_x is None or center(w)>=sec_desc_boundary]
+                    cont_words=(
+                        [_partition_row(row, typed_columns, typed_regions).get("description", "")]
+                        if typed_columns else
+                        [w.text for w in left if sec_x is None or center(w)>=sec_desc_boundary]
+                    )
                     cont=" ".join(cont_words).strip()
                     if cont in {current.material_number,current.supplier_material_number}:
                         continue

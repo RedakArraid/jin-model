@@ -445,6 +445,28 @@ def recover_explicit_role_blocks(result, pages: list[PageResult]):
                 else:
                     right=min(page_w, ax2+420 * unit)
                     left=max(left, page_w * 0.44)
+            if len(same) == 1 and center < page.width * .5:
+                # A neighbouring addressee need not have a role caption. If
+                # two independent postal blocks prove a gutter, do not import
+                # its company name as this recipient's department.
+                for neighbor in segments:
+                    nx, ny, _, _ = neighbor["bbox"]
+                    if (nx <= ax2 + 80 * unit or abs(ny - ay1) > label_height
+                            or _looks_address_line(neighbor["text"])
+                            or _looks_metadata_line(neighbor["text"])
+                            or _is_role_stop_text(neighbor["text"])):
+                        continue
+                    local_lines = [seg["text"] for seg in segments
+                                   if ay2 < seg["bbox"][1] < ay2 + 100 * unit
+                                   and seg["bbox"][2] < nx]
+                    other_lines = [seg["text"] for seg in segments
+                                   if ny < seg["bbox"][1] < ny + 100 * unit
+                                   and abs(seg["bbox"][0] - nx) < 18 * unit]
+                    def complete_postal_block(lines):
+                        parsed, _, _ = parse_address(Address(raw_lines=lines), infer_country=True)
+                        return bool(parsed.street and parsed.postal_code and parsed.city)
+                    if complete_postal_block(local_lines) and complete_postal_block(other_lines):
+                        right = min(right, nx - 2 * unit)
             stop_candidates=[]
             for seg2 in segments:
                 ystop=seg2["bbox"][1]; low2=_fold(seg2["text"])

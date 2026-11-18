@@ -60,8 +60,8 @@ PARTY_LABELS = {
 }
 
 HEADER_ALIASES = {
-    "line": {"line", "pos", "position", "item", "poste", "ligne"},
-    "material": {"material", "article", "itemno", "item-no", "part", "reference", "référence", "ref", "sku", "code", "product"},
+    "line": {"line", "pos", "position", "item", "poste", "ligne", "n°", "nº"},
+    "material": {"material", "article", "d'article", "d’article", "itemno", "item-no", "part", "reference", "référence", "ref", "sku", "code", "product"},
     "description": {"description", "designation", "désignation", "libelle", "libellé", "desc", "bezeichnung"},
     "product_family": {"family", "famille", "productfamily", "product-family", "gamme", "range"},
     "quantity": {"qty", "quantity", "quantite", "quantité", "menge"},
@@ -89,6 +89,8 @@ def _is_line_table_stop(text: str) -> bool:
     # Summary labels can share their physical row with a left-hand note (for
     # example ``FRANCO ... Montant HT Net 95.48``), so they are not guaranteed
     # to appear at the beginning of the reconstructed text row.
+    if re.search(r"\bmontant\s+(?:(?:h\.?\s*t\.?)(?:\s+net)?|net|t\.?\s*t\.?\s*c\.?)\s*[:=]?\s*\d", low):
+        return True
     if re.search(r"\bmontant\s+(?:h\.?t\.?\s+)?net\b", low):
         return True
     if re.match(
@@ -415,6 +417,20 @@ def _column_headers_from_rows(rows: list[TextRow]) -> dict[str, float]:
                 qualifiers.append(("customer_material", center))
             elif token in SUPPLIER_MATERIAL_QUALIFIERS:
                 qualifiers.append(("supplier_material", center))
+            # On a purchase order the issuer's "our reference" is the customer
+            # code, and "your reference" belongs to the supplier. Require an
+            # adjacent reference label, not an arbitrary possessive in prose.
+            elif token in {"notre", "nos", "our", "votre", "vos", "your"}:
+                neighbors = [j for j in (index - 1, index + 1) if 0 <= j < len(words)]
+                for j in neighbors:
+                    if _canonical_header(words[j].text) != "material":
+                        continue
+                    gap = max(words[index].bbox[0], words[j].bbox[0]) - min(words[index].bbox[2], words[j].bbox[2])
+                    height = max(word.bbox[3] - word.bbox[1], 1)
+                    if gap <= height * 2:
+                        role = "customer_material" if token in {"notre", "nos", "our"} else "supplier_material"
+                        qualifiers.append((role, (words[j].bbox[0] + words[j].bbox[2]) / 2))
+                        break
 
     columns = {key: statistics.fmean(values) for key, values in found.items()}
     assigned: set[str] = set()
@@ -431,6 +447,10 @@ def _column_headers_from_rows(rows: list[TextRow]) -> dict[str, float]:
             assigned.add(role)
         else:
             unresolved.append(center)
+    if len(unresolved) == 1 and "supplier_material" in columns and "customer_material" not in columns:
+        # A distinct unqualified article column beside an explicitly owned
+        # supplier reference is the issuer's internal article number.
+        columns["customer_material"] = unresolved.pop()
     if unresolved:
         columns.setdefault("material", unresolved.pop(0))
     if unresolved:
@@ -498,7 +518,10 @@ def _find_table_header(
             candidate = (score, start, start + width, columns)
             if best is None or score > best[0]:
                 best = candidate
-        if best is not None and best[1] == start and best[0][0] >= 1 and best[0][1] >= 1:
+        if (best is not None and best[1] == start and best[2] == start + 1
+                and best[0][0] >= 1 and best[0][1] >= 1):
+            # A wide candidate may include payment/delivery terms immediately
+            # above the table. Keep searching for its tighter actual header.
             break
     return (best[1], best[2], best[3]) if best else None
 
@@ -551,6 +574,11 @@ def _reference_cell(value: str | None) -> tuple[str | None, str | None]:
     if not text:
         return None, None
     tokens = text.split()
+    # Only join a complete numeric reference cell in grouped notation. Never
+    # concatenate two full codes, dimensions, dates or surrounding prose.
+    if (2 <= len(tokens) <= 5 and all(re.fullmatch(r"\d{1,4}", token) for token in tokens)
+            and 7 <= sum(map(len, tokens)) <= 13):
+        return "".join(tokens), None
     index = next((i for i, token in enumerate(tokens) if _looks_like_item_code(token)), None)
     if index is None:
         return None, text
@@ -559,7 +587,27 @@ def _reference_cell(value: str | None) -> tuple[str | None, str | None]:
     return reference, spill
 
 
-def _partition_row(row: TextRow, columns: dict[str, float]) -> dict[str, str]:
+def _table_column_regions(page: PageResult, header_rows: list[TextRow], columns: dict[str, float]) -> dict[str, tuple[float, float]]:
+    """Prefer printed header-cell rules to midpoint guesses between labels."""
+    top = min(row.bbox[1] for row in header_rows)
+    bottom = max(row.bbox[3] for row in header_rows)
+    tolerance = max(2.0, page.width * .004)
+    edges = sorted({line["x0"] for line in page.vector_lines
+                    if line.get("orientation") == "vertical"
+                    and line["y0"] <= top + tolerance
+                    and line["y1"] >= bottom - tolerance})
+    regions = {}
+    for key, center in columns.items():
+        for left, right in zip(edges, edges[1:]):
+            if left < center < right:
+                # A merged cell does not establish independent column bounds.
+                if sum(left < value < right for value in columns.values()) == 1:
+                    regions[key] = (left, right)
+                break
+    return regions if len(regions) == len(columns) else {}
+
+
+def _partition_row(row: TextRow, columns: dict[str, float], regions: dict | None = None) -> dict[str, str]:
     if not columns:
         return {}
     ordered = sorted(columns.items(), key=lambda kv: kv[1])
@@ -568,6 +616,11 @@ def _partition_row(row: TextRow, columns: dict[str, float]) -> dict[str, str]:
     keys = [k for k, _ in ordered]
     for w in row.words:
         cx = (w.bbox[0] + w.bbox[2]) / 2
+        if regions:
+            key = next((key for key, (left, right) in regions.items() if left <= cx < right), None)
+            if key is not None:
+                buckets[key].append(w.text)
+            continue
         idx = min(range(len(centers)), key=lambda i: abs(cx - centers[i]))
         buckets[keys[idx]].append(w.text)
     return {k: " ".join(v).strip() for k, v in buckets.items()}
@@ -751,7 +804,8 @@ def extract_lines_from_pages(pages: list[PageResult], default_currency: str = "E
         header = _find_table_header(rows, min_header_matches)
         if not header:
             continue
-        _, header_end, cols = header
+        header_start, header_end, cols = header
+        regions = _table_column_regions(page, rows[header_start:header_end], cols)
         for row in rows[header_end:]:
             ws = row.words
             low=ascii_fold(row.text).lower().strip()
@@ -760,7 +814,7 @@ def extract_lines_from_pages(pages: list[PageResult], default_currency: str = "E
             # Ignore repeated headers / prose and require at least one numeric token.
             if sum(1 for w in ws if _canonical_header(w.text)) >= 2:
                 continue
-            item=_line_from_cells(_partition_row_intervals(row,cols),row,default_currency)
+            item=_line_from_cells(_partition_row(row,cols,regions),row,default_currency)
             commercial_values = item and (
                 item.quantity is not None
                 or item.unit_price is not None
@@ -1251,6 +1305,7 @@ def extract_multiline_lines_from_pages(pages: list[PageResult], default_currency
         if header is None:
             continue
         header_idx, header_end, cols = header
+        regions = _table_column_regions(page, rows[header_idx:header_end], cols)
 
         ordered = sorted(cols.items(), key=lambda kv: kv[1])
         x_by = dict(ordered)
@@ -1428,7 +1483,7 @@ def extract_multiline_lines_from_pages(pages: list[PageResult], default_currency
             customer_material = None
             line_warnings: list[str] = []
             parsed_detail = _line_from_cells(
-                _partition_row(detail_row, cols), detail_row, default_currency
+                _partition_row(detail_row, cols, regions), detail_row, default_currency
             )
             if parsed_detail is not None:
                 material = parsed_detail.material_number or material
