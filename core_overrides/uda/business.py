@@ -3241,7 +3241,46 @@ def _packed_native_table_items(table, default_currency: str = "EUR"):
     return all_items
 
 
-def _standard_native_table_items(table, default_currency: str = "EUR"):
+def _aligned_native_optional_cells(table, row_index, code_col, value_col, codes, values, pages):
+    """Align sparse stacked values by their PDF baseline, never broadcast one."""
+    count = len(codes)
+    if count <= 1 or len(values) == count:
+        return values, False
+    if not values:
+        return [""] * count, False
+    cells = {cell.column - 1: cell.source.bbox for cell in table.cells
+             if cell.row == row_index + 1}
+    code_box, value_box = cells.get(code_col), cells.get(value_col)
+    page = next((page for page in pages or [] if page.page == table.source.page), None)
+    if not code_box or not value_box or page is None:
+        return [""] * count, True
+    from po_ocr.extract import all_rows
+
+    def inside(word, box):
+        x = (word.bbox[0] + word.bbox[2]) / 2
+        y = (word.bbox[1] + word.bbox[3]) / 2
+        return box[0] <= x <= box[2] and box[1] <= y <= box[3]
+
+    aligned = []
+    used = set()
+    for row in all_rows([page], y_factor=0.46):
+        code_words = [word for word in row.words if inside(word, code_box)]
+        if not code_words:
+            continue
+        code = re.sub(r"\s+", "", " ".join(word.text for word in code_words))
+        if len(aligned) >= count or code != re.sub(r"\s+", "", codes[len(aligned)]):
+            return [""] * count, True
+        value_words = [word for word in row.words if inside(word, value_box)]
+        aligned.append(" ".join(word.text for word in value_words))
+        used.update(id(word) for word in value_words)
+    # Wrapped/unmatched values are not silently assigned to a nearby article.
+    unmatched = any(inside(word, value_box) and id(word) not in used for word in page.words)
+    if len(aligned) != count or unmatched:
+        return [""] * count, True
+    return aligned, False
+
+
+def _standard_native_table_items(table, default_currency: str = "EUR", pages=None):
     from po_ocr.models import LineItem
     from po_ocr.normalize import parse_number
     import re
@@ -3266,7 +3305,7 @@ def _standard_native_table_items(table, default_currency: str = "EUR"):
     if code_col is None or desc_col is None or qty_col is None or price_col is None or code_col == desc_col:
         return []
     items = []
-    for row in data[1:]:
+    for row_index, row in enumerate(data[1:], start=1):
         if code_col >= len(row):
             continue
         codes = _split_cell_lines(row[code_col])
@@ -3276,6 +3315,10 @@ def _standard_native_table_items(table, default_currency: str = "EUR"):
         amounts = _split_cell_lines(row[amount_col] if amount_col is not None and amount_col < len(row) else None)
         lots = _split_cell_lines(row[lot_col] if lot_col is not None and lot_col < len(row) else None)
         quotes = _split_cell_lines(row[quote_col] if quote_col is not None and quote_col < len(row) else None)
+        quotes, quote_unresolved = _aligned_native_optional_cells(
+            table, row_index, code_col, quote_col, codes, quotes, pages)
+        lots, lot_unresolved = _aligned_native_optional_cells(
+            table, row_index, code_col, lot_col, codes, lots, pages)
         # Wrapped descriptions are continuation text, not duplicate products, when all
         # transactional columns contain exactly one value.
         singleton_stacks=[len(codes),len(qtys),len(prices),len(amounts)]
@@ -3288,8 +3331,8 @@ def _standard_native_table_items(table, default_currency: str = "EUR"):
             qty_raw = qtys[i] if i < len(qtys) else (qtys[0] if len(qtys) == 1 else "")
             price_raw = prices[i] if i < len(prices) else (prices[0] if len(prices) == 1 else "")
             amount_raw = amounts[i] if i < len(amounts) else (amounts[0] if len(amounts) == 1 else "")
-            lot_raw = lots[i] if i < len(lots) else (lots[0] if len(lots) == 1 else "")
-            quote_raw = quotes[i] if i < len(quotes) else (quotes[0] if len(quotes) == 1 else "")
+            lot_raw = lots[i] if i < len(lots) else ""
+            quote_raw = quotes[i] if i < len(quotes) else ""
             # Material identifiers may be numeric or alpha-numeric (e.g. PORTSTD).
             if not code or not re.search(r"[A-Za-z0-9]", code) or _is_continuation_marker(code) or _is_continuation_marker(desc):
                 continue
@@ -3317,6 +3360,8 @@ def _standard_native_table_items(table, default_currency: str = "EUR"):
                 quantity=qty, ordered_quantity=qty, pack_quantity=lot,
                 unit_price=price, net_unit_price=price, line_total=amount, line_net_amount=amount,
                 quote_number=quote_raw or None,
+                warnings=[f"{field}_stack_alignment_unresolved" for field, unresolved in
+                          (("quote", quote_unresolved), ("pack_quantity", lot_unresolved)) if unresolved],
                 currency=default_currency, raw_text=" | ".join(x for x in [code, desc, qty_raw, price_raw, amount_raw, lot_raw, quote_raw] if x),
                 page=table.source.page, confidence=float(table.confidence) * 0.997,
             ))
@@ -4817,7 +4862,7 @@ def _repair_packed_fee_rows(table, items, default_currency: str = "EUR"):
     return items, charges
 
 
-def _native_table_line_items_and_charges(tables, default_currency: str = "EUR"):
+def _native_table_line_items_and_charges(tables, default_currency: str = "EUR", pages=None):
     from po_ocr.extract import line_item_set_quality
     all_items=[]; all_charges=[]
     for table in tables:
@@ -4838,7 +4883,7 @@ def _native_table_line_items_and_charges(tables, default_currency: str = "EUR"):
             temporary, _ = _separate_additional_charge_lines_v62(temporary, {})
             dual_reference = temporary.lines
             dual_charges = temporary.additional_charges
-        standard = _standard_native_table_items(table, default_currency=default_currency)
+        standard = _standard_native_table_items(table, default_currency=default_currency, pages=pages)
         stacked = _stacked_column_native_table_items_v46(table, default_currency=default_currency)
         packed = _packed_native_table_items(table, default_currency=default_currency)
         packed, packed_charges = _repair_packed_fee_rows(table, packed, default_currency=default_currency)
@@ -5306,8 +5351,24 @@ def _enhance_parties_zone_v2(po, pages, config: dict):
             po.supplier.name = name; po.supplier.legal_name = name; explicit_supplier = True
 
     # Corporate buyer/issuer: strongest short organisation-like line in the very top block.
+    # A labelled neighbouring address is not part of the issuer's masthead,
+    # even when PDF row grouping puts both on the same baseline.
+    from po_ocr.address_roles import ROLE_BLOCK_LABELS, _split_visual_row
+    from po_ocr.extract import TextRow
+    boundaries = [bbox[0] for row in rows if _row_center_safe(row) <= buyer_y_max
+                  for text, bbox, _ in _split_visual_row(row, page)
+                  if bbox[0] > width * .48 and any(
+                      _fold(text).startswith(_fold(label))
+                      for role in ("ship_to", "bill_to", "supplier")
+                      for label in ROLE_BLOCK_LABELS[role])]
+    corporate_rows = rows
+    if boundaries:
+        boundary = min(boundaries)
+        corporate_rows = [TextRow(row.page, [word for word in row.words if word.bbox[2] < boundary])
+                          for row in rows]
+        corporate_rows = [row for row in corporate_rows if row.words]
     buyer_candidates = []
-    for row in rows:
+    for row in corporate_rows:
         cy = _row_center_safe(row)
         if cy > buyer_y_max:
             break
@@ -5324,7 +5385,7 @@ def _enhance_parties_zone_v2(po, pages, config: dict):
             po.buyer.legal_name = candidate
         # Address and corporate phone immediately below the organisation row.
         addr_lines = []
-        for row in rows:
+        for row in corporate_rows:
             cy = _row_center_safe(row)
             if cy <= _row_center_safe(crow) or cy > min(buyer_y_max, _row_center_safe(crow) + height * 0.095):
                 continue
@@ -7259,7 +7320,7 @@ def _material_anchored_numeric_row_items_v61(
     header context, a quantity/unit cell and an arithmetic price/amount pair are
     required, so standalone numbers cannot activate the parser.
     """
-    from po_ocr.extract import all_rows
+    from po_ocr.extract import all_rows, _is_line_table_stop
     from po_ocr.models import LineItem
     from uda.material_references import load_material_reference_profile, normalize_reference, score_material_reference
     from decimal import Decimal, ROUND_HALF_UP
@@ -7286,28 +7347,29 @@ def _material_anchored_numeric_row_items_v61(
 
     for page in pages:
         rows = all_rows([page], y_factor=0.50)
+        active_header = None
         for index, row in enumerate(rows):
-            if _row_center_safe(row) < page.height * 0.18 or _row_center_safe(row) > page.height * 0.80:
-                continue
-            # Product rows commonly alternate with a wrapped description and a
-            # secondary discount row. A fixed 12-row look-back therefore lost
-            # the table header after only two products on dense scanned orders.
-            context_rows = max(12, int(layout.get(
-                "material_numeric_header_context_rows", 64
-            )))
-            context_height = float(layout.get(
-                "material_numeric_header_context_height_ratio", 0.30
-            ))
+            # Remember an actual, compact table heading until a semantic footer
+            # or a new page. Sliding distance/row-count windows cut long tables
+            # in half even when every remaining row has complete numeric cells.
             header_rows = [
-                previous for previous in rows[max(0, index - context_rows):index]
-                if 0 < row.bbox[1] - previous.bbox[3] <= page.height * context_height
+                previous for previous in rows[max(0, index - 2):index + 1]
+                if row.bbox[1] - previous.bbox[3] <= page.height * 0.035
             ]
             header_text = _fold(" ".join(previous.text for previous in header_rows))
-            if not (
-                re.search(r"\b(?:article|reference|code)\b", header_text)
+            if (
+                any(re.fullmatch(r"article|reference|code|designation|description|libelle|montant|prix|net|unit",
+                                 _fold(word.text).strip(".:")) for word in row.words)
+                and re.search(r"\b(?:article|reference|code)\b", header_text)
                 and re.search(r"\b(?:designation|description|libelle)\b", header_text)
                 and re.search(r"\b(?:montant|net|prix|unit)\b", header_text)
             ):
+                active_header = header_rows
+                continue
+            if _is_line_table_stop(row.text):
+                active_header = None
+                continue
+            if active_header is None:
                 continue
 
             reference_candidates = []
@@ -7323,6 +7385,17 @@ def _material_anchored_numeric_row_items_v61(
             _, reference_word, reference = max(reference_candidates, key=lambda item: item[0])
 
             ordered = sorted(row.words, key=lambda word: word.bbox[0])
+            # A separate client article column must not disappear when the
+            # supplier reference is printed at the beginning of DESIGNATION.
+            description_anchors = [center(word) for heading in active_header for word in heading.words
+                                   if _fold(word.text).strip(".:") in {"designation", "description", "libelle"}]
+            leading_codes = [word.text for word in ordered
+                             if word.bbox[2] <= reference_word.bbox[0]
+                             and description_anchors and center(word) < min(description_anchors)
+                             and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_/-]{3,23}", word.text)
+                             and not re.fullmatch(r"\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}", word.text)
+                             and any(char.isdigit() for char in word.text)]
+            customer_reference = leading_codes[0] if len(leading_codes) == 1 else None
             numeric = []
             for position, word in enumerate(ordered):
                 if center(word) <= center(reference_word) + page.width * 0.18:
@@ -7400,6 +7473,7 @@ def _material_anchored_numeric_row_items_v61(
                     material_number=reference,
                     article_number=reference,
                     supplier_material_number=reference,
+                    customer_material_number=customer_reference,
                     description=description,
                     quantity=quantity,
                     ordered_quantity=quantity,
@@ -7461,6 +7535,7 @@ def _material_anchored_numeric_row_items_v61(
                 "page": page,
                 "row": row,
                 "reference": reference,
+                "customer_reference": customer_reference,
                 "description": description,
                 "quantity": quantity,
                 "uom": uom,
@@ -7489,6 +7564,7 @@ def _material_anchored_numeric_row_items_v61(
                 material_number=candidate["reference"],
                 article_number=candidate["reference"],
                 supplier_material_number=candidate["reference"],
+                customer_material_number=candidate["customer_reference"],
                 description=candidate["description"],
                 quantity=candidate["quantity"],
                 ordered_quantity=candidate["quantity"],
@@ -8117,13 +8193,14 @@ def _summary_table_totals_v48(po, tables, config: dict, default_currency: str="E
 def _strict_text_totals_v48(po, pages, config: dict, default_currency: str="EUR"):
     """Recover labels such as Montant HT Net and Net à payer from native text rows."""
     import re
-    from po_ocr.extract import all_rows
+    from po_ocr.extract import all_rows, abbreviated_net_total
     from po_ocr.normalize import parse_number
     if not config.get("layout",{}).get("strict_text_totals_v48",True): return po
     for pg in pages:
         rows=all_rows([pg],y_factor=0.50)
         for idx,row in enumerate(rows):
             text=" ".join(row.text.split()); low=_fold(text)
+            abbreviated_net = abbreviated_net_total(text)
             kind=None
             # An explicit ISO currency at the start of a monetary summary row
             # is stronger than stray OCR symbols elsewhere in the document.
@@ -8168,7 +8245,8 @@ def _strict_text_totals_v48(po, pages, config: dict, default_currency: str="EUR"
                                 po.totals.total_gross=value; po.totals.total_after_tax=value
                             po.totals.currency=po.totals.currency or default_currency
                             break
-            if "net a payer" in low or "amount due" in low or re.search(r"\btotal\s+t\.?t\.?c\.?\b",low): kind="grand"
+            if abbreviated_net: kind="net"
+            elif "net a payer" in low or "amount due" in low or re.search(r"\btotal\s+t\.?t\.?c\.?\b",low): kind="grand"
             elif re.search(r"\b(?:montant\s+hors\s+taxes|montant\s+ht\s+net|total\s+ht|total\s+net\s+ht|montant\s+ht)\b",low): kind="net"
             elif re.search(r"\btva\s*\d*(?:[.,]\d+)?\s*%?\b",low) and not re.search(r"\btva\s*(?:intra|ic\b)|\b(?:numero|n[°ºo])\s*tva",low): kind="vat"
             if not kind: continue
@@ -8177,7 +8255,7 @@ def _strict_text_totals_v48(po, pages, config: dict, default_currency: str="EUR"
                 v=parse_number(m.group(0))
                 if v is not None: nums.append(float(v))
             if not nums: continue
-            value=nums[-1]
+            value=parse_number(abbreviated_net.group("amount")) if abbreviated_net else nums[-1]
             if kind=="net":
                 po.totals.total_net=value; po.totals.subtotal=value; po.totals.total_before_tax=value
             elif kind=="vat":
@@ -8616,6 +8694,75 @@ def _partial_line_hypothesis_rejection_v5175(
     return None
 
 
+def _coherent_source_subset_rejection(lines, hypotheses, total_fit):
+    """Do not prefer a clean fragment over its arithmetically coherent superset.
+
+    Reference-shape support is not coverage: another parser may read client
+    codes rather than supplier codes while still locating all product rows.
+    Compare source positions AND printed numeric cells, never just row counts.
+    A subset reconciling to the document total remains eligible.
+    """
+    import math
+    import re
+
+    if total_fit.get("valid") or len(lines) < 2:
+        return None
+
+    def coherent(line):
+        values = (line.quantity, line.unit_price, line.line_total)
+        if not line.page or not line.bbox or any(value is None for value in values):
+            return False
+        if not all(math.isfinite(float(value)) for value in values):
+            return False
+        if not re.search(r"\d", str(line.material_number or "")) or not re.search(r"[A-Za-z]{2}", str(line.description or "")):
+            return False
+        expected = float(line.quantity) * float(line.unit_price)
+        return expected > 0 and abs(float(line.line_total) - expected) <= max(0.04, expected * 0.006)
+
+    def same_source(left, right):
+        if left.page != right.page:
+            return False
+        # The start of the source row is stable even if a wrapped description
+        # expands one parser's evidence rectangle below the numeric baseline.
+        tolerance = min(4.0, max(1.0, min(left.bbox[3] - left.bbox[1], right.bbox[3] - right.bbox[1]) * 0.3))
+        if abs(left.bbox[1] - right.bbox[1]) > tolerance:
+            return False
+        if min(left.bbox[2], right.bbox[2]) <= max(left.bbox[0], right.bbox[0]):
+            return False
+        return all(abs(float(a) - float(b)) <= max(0.02, abs(float(a)) * 0.001)
+                   for a, b in zip((left.quantity, left.unit_price, left.line_total),
+                                   (right.quantity, right.unit_price, right.line_total)))
+
+    if not all(coherent(line) for line in lines):
+        return None
+    for name, alternatives, _, _ in hypotheses:
+        if len(alternatives) < len(lines) + 2:
+            continue
+        source_rows = []
+        for line in alternatives:
+            if coherent(line) and not any(same_source(line, seen) for seen in source_rows):
+                source_rows.append(line)
+        if len(source_rows) < len(lines) + 2:
+            continue
+        matched = set()
+        for line in lines:
+            match = next((index for index, source in enumerate(source_rows)
+                          if index not in matched and same_source(line, source)), None)
+            if match is None:
+                break
+            matched.add(match)
+        else:
+            return {
+                "reason": "partial_coverage_vs_coherent_source_rows",
+                "covering_hypothesis": name,
+                "candidate_lines": len(lines),
+                "source_supported_lines": len(source_rows),
+                "missing_source_rows": len(source_rows) - len(matched),
+                "printed_total_reconciled": False,
+            }
+    return None
+
+
 def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict):
     """V4.7 post-processor: strict semantic guards + native/geometry hypothesis fusion."""
     import re
@@ -8640,7 +8787,7 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     po = _enhance_inline_transaction_header_v46(po, pages, config)
     po = _enhance_strict_order_number_v47(po, pages, config)
     po, _ = _recover_split_header_order_date_v5202(po, pages, config)
-    table_lines, table_charges = _native_table_line_items_and_charges(tables, default_currency=default_currency)
+    table_lines, table_charges = _native_table_line_items_and_charges(tables, default_currency=default_currency, pages=pages)
     geometry_lines, geometry_charges = _extract_geometry_table_items_v46(pages, config, default_currency=default_currency)
     receipt_date_lines = _dual_reference_receipt_date_items_v5169(
         pages, config, default_currency=default_currency
@@ -8844,6 +8991,10 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
             len(po.lines),
             config,
         )
+        if rejection is None:
+            rejection = _coherent_source_subset_rejection(
+                candidate_lines, hypotheses, result[2]
+            )
         if rejection:
             suppressed_hypotheses[name] = rejection
             continue

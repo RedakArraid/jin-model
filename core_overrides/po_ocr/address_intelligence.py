@@ -216,6 +216,17 @@ def _split_city_cedex(text: str) -> tuple[str | None, bool | None, str | None]:
 
 def _extract_postal_city(lines: list[str], routing_spans: list[str]) -> tuple[str | None, str | None, bool | None, str | None]:
     routing_numbers = set(re.findall(r"\d{2,10}", " ".join(routing_spans)))
+    # Some postal blocks print "City, 12345". Require a complete comma-
+    # separated locality line, excluding streets and BP/TSA/CS routing lines.
+    for line in reversed(lines):
+        cleaned = _strip_metadata_tail(line)
+        match = re.fullmatch(r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ '’.-]{1,80}),\s*(\d{5})", cleaned)
+        if (match and match.group(2) not in routing_numbers
+                and not STREET_RE.match(cleaned) and not META_TOKEN_RE.search(cleaned)
+                and not re.fullmatch(r"(?:B\.?\s*P\.?|T\.?\s*S\.?\s*A\.?|C\.?\s*S\.?)", match.group(1), re.I)
+                and not any(pattern.search(cleaned) for pattern in ROUTING_PATTERNS.values())):
+            city, cedex, cedex_number = _split_city_cedex(match.group(1))
+            return match.group(2), city, cedex, cedex_number
     # Prefer a line whose 5-digit code is followed by city text. This avoids BP/TSA/CS numbers.
     for line in reversed(lines):
         cleaned = _strip_metadata_tail(line)
@@ -436,7 +447,7 @@ def parse_address(addr: Address, *, infer_country: bool = True) -> tuple[Address
     typed_folded = {_fold(x) for x in (
         out.building, out.residence, out.industrial_zone, out.business_park,
         out.po_box, out.tsa, out.cs, out.street, f"{out.postal_code or ''} {out.city or ''}".strip(),
-        out.country, street_source_line,
+        out.country, street_source_line, f"{out.city}, {out.postal_code}" if out.city and out.postal_code else None,
     ) if x}
     complements: list[str] = []
     for line in lines:

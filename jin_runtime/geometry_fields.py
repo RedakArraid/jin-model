@@ -1347,6 +1347,21 @@ def _locality_v3(row, anchor_x, neighbors):
     if not postals:
         return None
     postal = min(postals, key=lambda token: abs(token["bbox"][0] - anchor_x))
+    # Read "City, 12345" within its visual segment before looking to the
+    # right of the postcode, where another address column may begin.
+    for segment in _row_segments(row):
+        prefix = [token for token in segment["tokens"]
+                  if anchor_x - 40 <= token["bbox"][0] < postal["bbox"][0]]
+        if (prefix and str(prefix[-1]["text"]).endswith(",")
+                and 0 <= postal["bbox"][0] - prefix[-1]["bbox"][2] <= 20):
+            text = " ".join(token["text"] for token in prefix).rstrip(",").strip()
+            if (re.fullmatch(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ '’.-]{1,80}", text)
+                    and _norm(text) not in {"BP", "B P", "CS", "C S", "TSA", "T S A", "FRANCE"}
+                    and not _street_v3(segment)):
+                city = [dict(token) for token in prefix]
+                city[-1]["text"] = city[-1]["text"].rstrip(",")
+                return {"postal": postal, "postal_value": _postal_value_v3(postal),
+                        "city": city, "cedex": None, "row": row}
     column_right = postal["bbox"][0] + 190
     search = [
         token for token in row["tokens"]

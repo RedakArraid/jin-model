@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Keep numeric-anchored product tables active until their actual footer instead
+  of dropping rows beyond a header-distance or page-height threshold. Retain
+  separate client article codes, reject partial hypotheses when another parser
+  covers the same coherent source rows plus additional products, and recognize
+  printed MT/MNT H.T. totals in extraction and validation. Add long-table,
+  multipage, footer, dual-reference and financial-reconciliation regressions.
+
+- Preserve native PDF table/cell coordinates and use source baselines to align
+  sparse offer and pack values in stacked rows; never repeat one optional value
+  across articles without row evidence. Isolate the issuer masthead from adjacent
+  labelled addresses, parse comma-separated city/postcode lines, and stop completed
+  postal blocks before a distant addressee. Reject geometry-to-party matches with
+  contradictory postal components. Cover prefixed order IDs beside vendor details.
+
 - Respect owned article columns ("Votre reference" / "Your reference") even
   after the description; preserve separate customer article numbers. Join
   grouped numeric references only inside a complete reference cell, retain

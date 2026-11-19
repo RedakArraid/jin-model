@@ -114,8 +114,13 @@ def read_pdf_or_image(path: str | Path, po_engine: PurchaseOrderOCR) -> ReadResu
                     for t_idx, table in enumerate(finder.tables, start=1):
                         data = table.extract() or []
                         if data:
-                            tables.append(_table(f"page_{page_index}_table_{t_idx}", data,
-                                                 SourceRef(page=page_index), 0.98))
+                            native = _table(f"page_{page_index}_table_{t_idx}", data,
+                                            SourceRef(page=page_index, bbox=table.bbox), 0.98)
+                            # Keep the PDF cells' geometry: newline stacks alone
+                            # lose the position of sparse optional values.
+                            for cell in native.cells:
+                                cell.source.bbox = table.rows[cell.row - 1].cells[cell.column - 1]
+                            tables.append(native)
                 except Exception:
                     pass
             doc.close()

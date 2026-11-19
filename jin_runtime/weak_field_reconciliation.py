@@ -122,6 +122,20 @@ def _address_equivalent(left: dict[str, Any], right: dict[str, Any]) -> bool:
 def _candidate_matches_block(candidate: dict[str, Any], block: dict[str, Any]) -> bool:
     components = candidate.get("components") or {}
     target = _address(block)
+    # A matching company name never resolves contradictory postal evidence:
+    # one customer can order for several sites, or a zone can absorb a vendor.
+    for key in ("postal_code", "house_number"):
+        left = _compact(components.get(key))
+        right = _compact(target.get(key) or (target.get("building_number") if key == "house_number" else None))
+        if left and right and left != right:
+            return False
+    if (components.get("city") and target.get("city")
+            and _city_tokens(components["city"]) != _city_tokens(target["city"])):
+        return False
+    left_street, right_street = _street(components), _street(target)
+    if (left_street and right_street and left_street not in right_street and right_street not in left_street
+            and set(left_street.split()) != set(right_street.split())):
+        return False
     evidence = 0
     party = _norm(candidate.get("party_name"))
     target_party = _norm(block.get("party_name"))

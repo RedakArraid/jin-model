@@ -82,8 +82,19 @@ SUPPLIER_MATERIAL_QUALIFIERS = {
 STOP_WORDS = {"subtotal", "sub total", "sous-total", "sous total", "net total", "total net", "grand total", "total", "vat", "tva", "tax", "taxe", "mwst", "shipping", "freight"}
 
 
+def abbreviated_net_total(text: str):
+    """Match a printed MT/MNT H.T. amount, not an empty table heading."""
+    return re.search(
+        r"\b(?:mt|mnt)\.?[ \t]+h\.?[ \t]*t\.?[ \t]*[:=]?[ \t]*"
+        r"(?P<amount>(?:\d{1,3}(?:[ \u00a0\u202f.']\d{3})+|\d+)[,.]\d{2})(?!\d)",
+        ascii_fold(text).lower(),
+    )
+
+
 def _is_line_table_stop(text: str) -> bool:
     low = ascii_fold(text).lower().strip()
+    if abbreviated_net_total(text):
+        return True
     if any(low.startswith(value) for value in STOP_WORDS):
         return True
     # Summary labels can share their physical row with a left-hand note (for
@@ -101,7 +112,7 @@ def _is_line_table_stop(text: str) -> bool:
         return True
     return bool(re.match(
         r"^(?:\(?\d+\)?\s+)?(?:a\s+livrer\b|adresse\s+de\s+livraison\b|"
-        r"delivery\s+address\b|reglement\b|payment\b|poids\b|attention\b|"
+        r"delivery\s+address\b|(?:mode\s+de\s+)?reglement\b|payment\b|poids\b|attention\b|"
         r"total\s+hors\b|montant\s+de\s+port\b|frais\s+de\s+(?:port|transport)\b|"
         r"(?:shipping|freight)\s+(?:charge|cost|fee)\b)",
         low,

@@ -202,6 +202,7 @@ def _split_visual_row(row, page: PageResult | None = None, gap_threshold: float 
 
 def _looks_address_line(text: str) -> bool:
     low=_fold(text)
+    if re.fullmatch(r"[a-z][a-z '’.-]{1,80},\s*\d{5}", low): return True
     if re.search(r"\b\d{5}\s+[a-z]", low): return True
     if re.search(r"^\s*\d{1,5}(?:\s*(?:-|&|/|bis|ter)\s*\d*)?\s+(?:rue|avenue|av\.?|boulevard|bd\.?|route|chemin|impasse|allee|allée|place|quai)\b", low): return True
     if re.search(r"\b(?:rue|avenue|boulevard|route|chemin|impasse|allee|allée|zac|zae|zone|z\.?i\.?|tsa|b\.?p\.?|c\.?s\.?|cedex)\b", low): return True
@@ -521,10 +522,18 @@ def recover_explicit_role_blocks(result, pages: list[PageResult]):
                 else:
                     grouped.append((y,x1,x2,text))
             lines=[]; seen=set()
-            for _,_,_,text in grouped:
+            previous_y = None
+            for y,_,_,text in grouped:
+                # A completed address followed by a large vertical gap is a
+                # new block, even when the next addressee has no role caption.
+                if previous_y is not None and y - previous_y > 2.5 * label_height:
+                    parsed, _, _ = parse_address(Address(raw_lines=lines), infer_country=True)
+                    if parsed.street and parsed.postal_code and parsed.city:
+                        break
                 k=_fold(text)
                 if k and k not in seen and not re.fullmatch(r"\d+",k):
                     lines.append(text); seen.add(k)
+                    previous_y = y
             contacts, lines = _block_contacts(lines)
             party_name,department,address_lines=_choose_party_and_address(lines)
             if role == "buyer" and anchor["text"] == "commande par" and party_name and not address_lines:

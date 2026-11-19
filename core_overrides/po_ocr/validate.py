@@ -301,9 +301,10 @@ def validate(result: PurchaseOrderResult, cfg: dict) -> PurchaseOrderResult:
             warnings.append("Structured line items are missing fields that are explicitly present in the document table header")
 
     if cfg.get("printed_total_presence_check", True):
+        from .extract import abbreviated_net_total
         raw_text="\n".join(p.text for p in result.pages if getattr(p,"text",None))
         low=_fold_semantic(raw_text)
-        printed_total=any(x in low for x in ("total ht","total h.t","total net ht","net a payer"))
+        printed_total=any(x in low for x in ("total ht","total h.t","total net ht","net a payer")) or bool(abbreviated_net_total(raw_text))
         extracted_total=result.totals.total_net is not None or result.totals.subtotal is not None or result.totals.grand_total is not None
         checks["printed_total_presence"]={"printed_label_present":printed_total,"extracted":extracted_total,"valid":(not printed_total) or extracted_total}
         if printed_total and not extracted_total:
