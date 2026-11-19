@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Keep stacked-row article references separate from model names in the following
+  description, and preserve product characteristics crossing a quantity-column
+  boundary. Recognize complete RBGA identifiers without a separate derogation
+  label and link them only to their source lines; retain commercial notes outside
+  the product description. Separate currency labels from quote labels and payment
+  summaries from payer identities. Recover OCR-split MT/MNT/MI H.T. amounts and
+  isolate labelled head-office addresses from neighboring agency columns.
+  Add positive, negative and cross-resolution regression tests.
+
 - Keep numeric-anchored product tables active until their actual footer instead
   of dropping rows beyond a header-distance or page-height threshold. Retain
   separate client article codes, reject partial hypotheses when another parser

@@ -582,7 +582,7 @@ def _enhance_inline_transaction_header_v46(po, pages, config: dict):
     if not po.purchase_order.quote_number.value:
         for p in pages:
             for row in all_rows([p], y_factor=0.50):
-                qm=re.search(r"(?:offre\s+de\s+prix|offre|devis|quotation|quote)\s*(?:n[°ºo]?|no|#)?\s*[:.-]?\s*([A-Za-z0-9._/-]{3,50})",row.text,flags=re.I)
+                qm=re.search(r"\b(?:offre\s+de\s+prix|offre|devis|quotation|quote)\b\s*(?:n[°ºo]?|no|#)?\s*[:.-]?\s*([A-Za-z0-9._/-]{3,50})",row.text,flags=re.I)
                 if qm:
                     po.purchase_order.quote_number=_make_spatial_field(qm.group(1),p.page,row.bbox,method="quote_reference_anchor",confidence=0.96)
                     break
@@ -5367,6 +5367,35 @@ def _enhance_parties_zone_v2(po, pages, config: dict):
         corporate_rows = [TextRow(row.page, [word for word in row.words if word.bbox[2] < boundary])
                           for row in rows]
         corporate_rows = [row for row in corporate_rows if row.words]
+    # Multiple branch addresses often share the masthead's physical baselines.
+    # Use the explicitly labelled head-office column, not the whole row and not
+    # a fixed page-width fraction. Keep the branding above these labels intact.
+    for label_row in corporate_rows:
+        if _row_center_safe(label_row) > buyer_y_max:
+            break
+        starts = [i for i, word in enumerate(label_row.words)
+                  if re.match(r"^(?:siege\s+social|head\s+office|agence|branch)\b",
+                              _fold(" ".join(w.text for w in label_row.words[i:i+2])))]
+        fragments = []
+        for index, start in enumerate(starts):
+            stop = starts[index+1] if index+1 < len(starts) else len(label_row.words)
+            words = label_row.words[start:stop]
+            fragment = TextRow(label_row.page, words)
+            fragments.append((fragment.text, fragment.bbox, words))
+        office = next((i for i, (text, _, _) in enumerate(fragments)
+                       if re.match(r"^(?:siege\s+social|head\s+office)\b", _fold(text))), None)
+        if office is None or not any(re.match(r"^(?:agence|branch)\b", _fold(text))
+                                     for text, _, _ in fragments):
+            continue
+        bounds = fragments[office][1]
+        left = (fragments[office-1][1][2] + bounds[0]) / 2 if office else 0
+        right = (bounds[2] + fragments[office+1][1][0]) / 2 if office+1 < len(fragments) else width
+        corporate_rows = [TextRow(row.page, [word for word in row.words
+                            if left <= (word.bbox[0]+word.bbox[2])/2 < right])
+                          if _row_center_safe(label_row) <= _row_center_safe(row) <= buyer_y_max
+                          else row for row in corporate_rows]
+        corporate_rows = [row for row in corporate_rows if row.words]
+        break
     buyer_candidates = []
     for row in corporate_rows:
         cy = _row_center_safe(row)
@@ -6623,7 +6652,7 @@ def _extract_amount_only_geometry_v47(pages, config: dict, default_currency: str
                 out.append(current); continue
             if current and desc:
                 # Continuation rows: quote/ref notes and wrapped product description.
-                qm=re.search(r"(?:offre|devis)\s*n[°ºo]?\s*[:.-]?\s*([A-Za-z0-9._/-]{3,50})",desc,flags=re.I)
+                qm=re.search(r"\b(?:offre|devis)\b\s*n[°ºo]?\s*[:.-]?\s*([A-Za-z0-9._/-]{3,50})",desc,flags=re.I)
                 if qm: current.quote_number=qm.group(1); current.notes.append(desc)
                 elif re.fullmatch(r"\d{8,14}",desc) or re.search(r"[A-Za-zÀ-ÿ]{2,}",desc):
                     current.description=" ".join(x for x in (current.description,desc) if x)
@@ -8069,6 +8098,11 @@ def _separate_promotional_continuation_notes_v5171(lines) -> int:
         )
         description = " ".join(description.split())
         match = pattern.search(description)
+        if not match:
+            match = re.search(
+                r"\s+(?P<note>march[eé]\b[^|]*\bRBGA-\d{6,12})\s*$",
+                description, flags=re.I,
+            )
         if not match and has_html:
             match = re.search(
                 r"\s+(?P<note>(?:devis|offre|d.rogation)\s+"
@@ -8254,7 +8288,7 @@ def _strict_text_totals_v48(po, pages, config: dict, default_currency: str="EUR"
             for m in re.finditer(r"(?<!\d)(?:\d{1,3}(?:[ .']\d{3})+|\d+)[,.]\d{2}(?!\d)",text):
                 v=parse_number(m.group(0))
                 if v is not None: nums.append(float(v))
-            if not nums: continue
+            if not nums and not abbreviated_net: continue
             value=parse_number(abbreviated_net.group("amount")) if abbreviated_net else nums[-1]
             if kind=="net":
                 po.totals.total_net=value; po.totals.subtotal=value; po.totals.total_before_tax=value
@@ -8478,7 +8512,7 @@ def _anchor_party_address_v48(po,pages,config:dict):
             cleaned=[]
             for v in best:
                 m=re.search(r"\b(\d{5})\s+(.+)$",v)
-                if m and not re.search(r"\b(?:rue|avenue|route|impasse|boulevard|chemin)\b",_fold(v[:m.start()])):
+                if m and not re.search(r"\b(?:rue|avenue|route|impasse|boulevard|chemin|b\.?\s*p\.?|c\.?\s*s\.?|t\.?\s*s\.?\s*a\.?)\b",_fold(v[:m.start()])):
                     v=f"{m.group(1)} {m.group(2)}"
                 cleaned.append(v)
             party.address=Address(line1=cleaned[0] if cleaned else None,line2=cleaned[1] if len(cleaned)>1 else None,line3=cleaned[2] if len(cleaned)>2 else None)
@@ -8513,7 +8547,7 @@ def _sanitize_party_addresses_v48(po, config:dict):
                 continue
             # Strip a contact firstname/label before a postal code: "Guillaume 93700 Drancy".
             m=re.search(r"\b(\d{5})\s+(.+)$",text)
-            if m and not re.search(r"\b(?:rue|avenue|route|impasse|boulevard|chemin)\b",_fold(text[:m.start()])):
+            if m and not re.search(r"\b(?:rue|avenue|route|impasse|boulevard|chemin|b\.?\s*p\.?|c\.?\s*s\.?|t\.?\s*s\.?\s*a\.?)\b",_fold(text[:m.start()])):
                 text=f"{m.group(1)} {m.group(2)}"
             if text and text not in out: out.append(text)
         party.address.line1=out[0] if out else None

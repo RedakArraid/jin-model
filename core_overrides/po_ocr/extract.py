@@ -34,7 +34,7 @@ FIELD_PATTERNS = {
         r"(?:contract|contrat|vertrag)\s*(?:n[o°.]*)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9._/\-]{2,})",
     ],
     "quote_number": [
-        r"(?:quote|quotation|devis|angebot)\s*(?:n[o°.]*)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9._/\-]{2,})",
+        r"\b(?:quote|quotation|devis|angebot)\b\s*(?:n[o°.]*)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9._/\-]{2,})",
     ],
     "requisition_number": [
         r"(?:requisition|demande\s+d['’]?achat|banf)\s*(?:n[o°.]*)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9._/\-]{2,})",
@@ -83,10 +83,11 @@ STOP_WORDS = {"subtotal", "sub total", "sous-total", "sous total", "net total", 
 
 
 def abbreviated_net_total(text: str):
-    """Match a printed MT/MNT H.T. amount, not an empty table heading."""
+    """Match a printed MT/MNT H.T. amount, including the OCR confusion MT -> MI."""
     return re.search(
-        r"\b(?:mt|mnt)\.?[ \t]+h\.?[ \t]*t\.?[ \t]*[:=]?[ \t]*"
-        r"(?P<amount>(?:\d{1,3}(?:[ \u00a0\u202f.']\d{3})+|\d+)[,.]\d{2})(?!\d)",
+        r"\b(?:mt|mnt|mi)\.?[ \t]+h\.?[ \t]*t\.?[ \t]*[:=]?[ \t]*"
+        r"(?P<amount>(?:\d{1,3}(?:[ \u00a0\u202f.']\d{3})+|\d+)"
+        r"[ \t]*[,.][ \t]*\d{2})(?!\d)",
         ascii_fold(text).lower(),
     )
 
@@ -328,7 +329,7 @@ def _extract_party(rows: list[TextRow], labels: list[str]) -> Party:
         folded = ascii_fold(row.text).lower()
         # Avoid semantic collisions such as French "NET A PAYER", where "payer"
         # is an amount label and not a business party.
-        if "payer" in label_tokens and re.search(r"\b(?:net|montant|total)\s+a\s+payer\b", folded):
+        if "payer" in label_tokens and re.search(r"\b(?:net|montant|total)\s+(?:a\s+)?payer\b", folded):
             continue
         matched = [lbl for lbl in label_tokens if re.search(r"(?<![a-z0-9])" + re.escape(lbl) + r"(?![a-z0-9])", folded)]
         if matched:
@@ -673,7 +674,7 @@ def _line_from_cells(cells: dict[str, str], row: TextRow, default_currency: str)
     unit_bound = [
         match for match in qty_matches
         if re.match(
-            r"\s*(?:p\.?|u|ea|pc|pcs|pce|piece|pieces|kg|g|m|m2|m3|l|h)\b",
+            r"\s*(?:p\.?|u|un|ea|pc|pcs|pce|piece|pieces|kg|g|m|m2|m3|l|h)\b",
             qty_raw[match.end():],
             flags=re.I,
         )
@@ -692,7 +693,11 @@ def _line_from_cells(cells: dict[str, str], row: TextRow, default_currency: str)
         prefix = clean_text(qty_raw[:qty_match.start()].strip())
         suffix = clean_text(qty_raw[qty_match.end():].strip())
         if inline_uom:
-            prefix = suffix = ""
+            # Only strip the unit marker, not product characteristics which
+            # drifted across the quantity boundary ("24KW 5,000 U").
+            unit_marker = r"(?:p\.?|u|un|ea|pc|pcs|pce|piece|pieces|kg|g|m|m2|m3|l|h)"
+            prefix = re.sub(r"\b" + unit_marker + r"\.?$", "", prefix, flags=re.I).strip()
+            suffix = re.sub(r"^" + unit_marker + r"\b\.?", "", suffix, flags=re.I).strip()
         spill = clean_text(" ".join(x for x in [prefix, suffix] if x))
         if spill and re.search(r"[A-Za-zÀ-ÿ]", spill):
             desc = clean_text(" ".join(x for x in [desc, spill] if x))
@@ -1347,6 +1352,11 @@ def extract_multiline_lines_from_pages(pages: list[PageResult], default_currency
             id_tokens = [w for w in left_tokens if _looks_like_item_code(w.text)]
             if id_tokens:
                 first = min(id_tokens, key=lambda w: w.bbox[0])
+                if any(word.bbox[2] <= first.bbox[0] and re.search(r"[A-Za-z]{2}", word.text)
+                       for word in left_tokens):
+                    # "MODULE G10-4" is a description, not a new article row.
+                    # Line-position digits or OCR'd vertical rules remain legal.
+                    continue
                 # Reject prose/note rows: first code must be close to the material header x-position.
                 if abs(first.bbox[0] - material_x) <= max(160.0, page.width * 0.08):
                     anchors.append((ridx, row, id_tokens))
@@ -1493,8 +1503,30 @@ def extract_multiline_lines_from_pages(pages: list[PageResult], default_currency
             description = clean_text(" ".join(w.text for w in desc_words))
             customer_material = None
             line_warnings: list[str] = []
+            detail_cells = _partition_row(detail_row, cols, regions)
+            if detail_row is not anchor_row:
+                # Stacked tables put references on the anchor row and prose on
+                # the next one. A model name (G10-4, 24KW...) in the same x-zone
+                # must not replace the reference already read above it.
+                anchor_cells = _line_from_cells(
+                    _partition_row(anchor_row, cols, regions), anchor_row, default_currency
+                )
+                if anchor_cells is not None:
+                    material = anchor_cells.material_number or material
+                    supplier_ref = anchor_cells.supplier_material_number or supplier_ref
+                    customer_material = anchor_cells.customer_material_number
+                description_columns = [key for key, _ in ordered if key in {
+                    "material", "customer_material", "supplier_material",
+                    "secondary_material", "description",
+                }]
+                detail_cells["description"] = clean_text(" ".join(
+                    detail_cells.get(key, "") for key in description_columns
+                ))
+                for key in description_columns:
+                    if key != "description":
+                        detail_cells[key] = ""
             parsed_detail = _line_from_cells(
-                _partition_row(detail_row, cols, regions), detail_row, default_currency
+                detail_cells, detail_row, default_currency
             )
             if parsed_detail is not None:
                 material = parsed_detail.material_number or material
@@ -1578,7 +1610,7 @@ def extract_multiline_lines_from_pages(pages: list[PageResult], default_currency
             customer_ref = None
             line_notes: list[str] = []
             for r in segment:
-                qm = re.search(r"(?:offre|quote|devis)\s*n?[°o.]?\s*([A-Z0-9][A-Z0-9._/\-]+)", r.text, flags=re.I)
+                qm = re.search(r"\b(?:offre|quote|devis)\b\s*n?[°o.]?\s*([A-Z0-9][A-Z0-9._/\-]+)", r.text, flags=re.I)
                 if qm:
                     quote_number = qm.group(1)
                     dm = re.search(r"\b(?:du|dated?|date)\s+(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})", r.text, flags=re.I)

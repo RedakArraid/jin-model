@@ -5,6 +5,43 @@ from jin_runtime.commercial_references import enrich_commercial_references
 
 
 class CommercialReferenceTests(unittest.TestCase):
+    def test_self_identifying_rbga_is_linked_only_to_its_source_line(self):
+        payload = {
+            "pages": [{"page": 1, "text": "MARCHE B2C RBGA-10170897\nRBGA-10203040"}],
+            "business_extractions": {"purchase_order": {
+                "purchase_order": {}, "lines": [
+                    {"line_number": "1", "material_number": "7733703987", "description": "MODULE"},
+                    {"line_number": "2", "material_number": "7716704752", "description": "CHAUDIERE",
+                     "notes": ["MARCHE B2C RBGA-10170897"], "page": 1},
+                ],
+            }},
+        }
+        output = enrich_commercial_references(payload)
+        po = output["business_extractions"]["purchase_order"]
+        self.assertNotIn("derogation_numbers", po["lines"][0])
+        self.assertEqual(po["lines"][1]["derogation_numbers"], ["RBGA-10170897"])
+        records = {item["number"]: item for item in po["derogation_references"]}
+        self.assertEqual(records["RBGA-10170897"]["line_numbers"], ["2"])
+        self.assertEqual(records["RBGA-10203040"]["scope"], "document")
+        clean = build_clean_output(output)
+        self.assertEqual(clean["order"]["line_items"][1]["references"]["derogation_number"], "RBGA-10170897")
+
+    def test_rbga_needs_complete_identifier_and_not_an_article_collision(self):
+        for text in ["RBGA", "RBGA-12", "XRBGA-10170897", "RBGA-10170897-ABC", "RBGA-10170897A"]:
+            with self.subTest(text=text):
+                output = enrich_commercial_references({
+                    "pages": [{"page": 1, "text": text}],
+                    "business_extractions": {"purchase_order": {"purchase_order": {}, "lines": []}},
+                })
+                self.assertNotIn("commercial_references", output)
+        output = enrich_commercial_references({
+            "pages": [{"page": 1, "text": "RBGA-10170897"}],
+            "business_extractions": {"purchase_order": {"purchase_order": {}, "lines": [
+                {"material_number": "RBGA-10170897", "raw_text": "RBGA-10170897 1 10,00"},
+            ]}},
+        })
+        self.assertNotIn("commercial_references", output)
+
     def test_multiple_quotes_are_linked_only_to_their_explicit_lines(self):
         payload = {
             "document": {"primary_document_type": "purchase_order"},

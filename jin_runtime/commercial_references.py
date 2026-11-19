@@ -27,6 +27,9 @@ _DEROGATION_LABEL_RE = re.compile(
 )
 _REFERENCE_RE = re.compile(r"(?=[A-Z0-9._/-]{3,50}\b)(?=[A-Z0-9._/-]*\d)[A-Z0-9][A-Z0-9._/-]{2,49}", re.I)
 _NEXT_REFERENCE_RE = re.compile(r"^\s*(?:,|;|/|\+|\bET\b|\bAND\b)\s*(?:N\s*(?:[°º]|O)?\s*)?", re.I)
+# This namespace is self-identifying: customers also print "MARCHE ... RBGA-..."
+# without the word DEROGATION. Require the complete numeric ID and boundaries.
+_DEROGATION_ID_RE = re.compile(r"(?<![A-Z0-9_/-])RBGA-\d{6,12}(?![A-Z0-9_/-])", re.I)
 _INVALID_VALUES = {
     "DEVIS", "OFFRE", "PRIX", "NUMERO", "REFERENCE", "REF", "PAGE",
     "EUR", "EURO", "HT", "TTC", "TVA",
@@ -90,6 +93,8 @@ def _references_after_labels(text: str, kind: str) -> list[str]:
             if _valid_reference(value) and value not in found:
                 found.append(value)
             position += candidate.end()
+    if kind == "derogation":
+        found = list(dict.fromkeys([*found, *_DEROGATION_ID_RE.findall(folded)]))
     return found
 
 
