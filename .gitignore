@@ -3,6 +3,7 @@ data/
 feedback/
 artifacts/
 backups/
+studio_annotations/
 *.zip
 dist/
 .env

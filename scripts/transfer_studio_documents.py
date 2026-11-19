@@ -1,7 +1,7 @@
 """Copy PDFs and reviewed annotation history between two JIN Studio MCP servers.
 
-Dry-run by default. Tokens come only from JIN_SOURCE_MCP_TOKEN and
-JIN_TARGET_MCP_TOKEN. No local staging of customer documents or credentials.
+Dry-run by default. An integrity-checked export is mandatory before real imports.
+Tokens come only from JIN_SOURCE_MCP_TOKEN and JIN_TARGET_MCP_TOKEN.
 """
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ import base64
 import json
 import os
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -96,10 +98,38 @@ def transfer_document(source, target, document_id: str, *, execute: bool, truste
     return summary | {"state": completed["state"]}
 
 
+def prepare_export_source(source, ids: list[str], directory: Path):
+    """Finish and verify the entire backup BEFORE connecting to the destination."""
+    try:
+        from scripts.export_studio_annotations import ExportSource, export_annotations
+    except ModuleNotFoundError:
+        from export_studio_annotations import ExportSource, export_annotations
+    directory = Path(directory)
+    if not directory.exists():
+        export_annotations(source, directory, ids, progress=lambda row: print(json.dumps(row), flush=True))
+    snapshot = ExportSource(directory)
+    if not set(ids).issubset(snapshot.rows):
+        raise ValueError("Export does not contain every selected document; create a new complete export")
+    return snapshot
+
+
+def verify_remote_document(source, target, document_id: str) -> None:
+    expected = source.call("export_document_bundle", document_id=document_id)
+    actual = target.call("export_document_bundle", document_id=document_id)
+    if (actual["bundle_sha256"] != expected["bundle_sha256"]
+            or actual["document"] != expected["document"]
+            or actual["annotations"] != expected["annotations"]
+            or actual["pdf_size"] != expected["pdf_size"]):
+        raise ValueError("Destination differs from the exported snapshot; no existing annotations were overwritten")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-url", required=True)
+    origin = parser.add_mutually_exclusive_group(required=True)
+    origin.add_argument("--source-url")
+    origin.add_argument("--from-export", type=Path, help="Use a verified portable export, without a live source")
     parser.add_argument("--target-url", required=True)
+    parser.add_argument("--export-dir", type=Path, help="Mandatory snapshot directory for --source-url --execute; never overwrites")
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument("--all", action="store_true")
     selection.add_argument("--document-id", action="append")
@@ -107,25 +137,56 @@ def main() -> int:
     parser.add_argument("--confirm-trusted-source", action="store_true", help="Attest that existing human validations come from a trusted source")
     parser.add_argument("--allow-http", action="store_true", help="Explicitly allow unencrypted remote HTTP on a private network")
     args = parser.parse_args()
-    if args.source_url.rstrip("/") == args.target_url.rstrip("/"):
+    if args.source_url and args.source_url.rstrip("/") == args.target_url.rstrip("/"):
         parser.error("Source and destination must be different Studio instances")
+    if args.execute and args.source_url and not args.export_dir:
+        parser.error("--execute requires --export-dir or --from-export: back up annotations before importing")
+    if args.from_export and args.export_dir:
+        parser.error("--from-export already supplies the verified backup; omit --export-dir")
+    report = None
     try:
-        source = MCPClient(args.source_url, os.getenv("JIN_SOURCE_MCP_TOKEN", ""), allow_http=args.allow_http)
-        target = MCPClient(args.target_url, os.getenv("JIN_TARGET_MCP_TOKEN", ""), allow_http=args.allow_http) if args.execute else None
+        if args.from_export:
+            try:
+                from scripts.export_studio_annotations import ExportSource
+            except ModuleNotFoundError:
+                from export_studio_annotations import ExportSource
+            source = ExportSource(args.from_export)
+        else:
+            source = MCPClient(args.source_url, os.getenv("JIN_SOURCE_MCP_TOKEN", ""), allow_http=args.allow_http)
         ids = document_ids(source, args.document_id)
+        if args.execute:
+            if args.export_dir:
+                source = prepare_export_source(source, ids, args.export_dir)
+            if not set(ids).issubset(source.rows):
+                raise ValueError("Selected documents are missing from the verified export")
+            report_path = (args.from_export or args.export_dir) / ("transfer-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ") + ".jsonl")
+            report = report_path.open("x", encoding="utf-8")
+            print(json.dumps({"state": "EXPORT_VERIFIED", "documents": len(ids), "report": str(report_path)}), flush=True)
+        # Do not even initialize the target client until the complete export passes.
+        target = MCPClient(args.target_url, os.getenv("JIN_TARGET_MCP_TOKEN", ""), allow_http=args.allow_http) if args.execute else None
         failures = 0
         for document_id in ids:
             try:
                 result = transfer_document(source, target, document_id, execute=args.execute, trusted=args.confirm_trusted_source)
-                print(json.dumps(result, ensure_ascii=True), flush=True)
+                if args.execute:
+                    verify_remote_document(source, target, document_id)
+                    result["verified"] = True
             except Exception as exc:
                 failures += 1
-                print(json.dumps({"document_id": document_id, "state": "FAILED", "error": str(exc)}, ensure_ascii=True), flush=True)
+                result = {"document_id": document_id, "state": "FAILED", "error": str(exc)}
+            line = json.dumps(result, ensure_ascii=True)
+            print(line, flush=True)
+            if report:
+                report.write(line + "\n")
+                report.flush()
         print(json.dumps({"documents": len(ids), "failed": failures, "execute": args.execute}))
         return 1 if failures else 0
     except Exception as exc:
         print(f"Transfer failed: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if report:
+            report.close()
 
 
 if __name__ == "__main__":

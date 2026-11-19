@@ -9,6 +9,7 @@ Commandes*/
 data/
 feedback/
 backups/
+studio_annotations/
 corpus/
 *.zip
 **/__pycache__/

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add a portable Studio annotation export with a per-document JSONL manifest,
+  unchanged per-revision annotation JSON, extraction bundles and original PDFs.
+  Verify every file before marking an export complete. Require this verified
+  snapshot before batch transfers, support offline snapshot replay, preserve
+  draft/validated history and verify the remote readback without overwriting
+  existing work or starting training.
+
 - Keep stacked-row article references separate from model names in the following
   description, and preserve product characteristics crossing a quantity-column
   boundary. Recognize complete RBGA identifiers without a separate derogation
