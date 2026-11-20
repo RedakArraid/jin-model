@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Recover bracketed article references with spacing around a known prefix;
+  retain source-row coordinates and link separate eco-fees to their products.
+  Reconcile repeated charges by source occurrence, not just equal text/amount.
+  Read Total EUR HT and require a printed net total independently of TTC.
+  Keep short order IDs separate from following dates, recover registered issuer
+  names/addresses from comma-delimited legal footers, preserve compound street
+  numbers, and respect contact-column boundaries. Add regression coverage for
+  multipage products, repeated fees, totals, order IDs, addresses and contacts.
+
 - Preserve the entire explicitly labelled customer order number in the core,
   including alphabetic/alphanumeric slash suffixes, visible digit-group spaces
   and source case. Do not reinterpret a slash suffix as a project name. Keep

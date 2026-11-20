@@ -2060,13 +2060,14 @@ def _dual_reference_discount_rows_v5202(pages, config: dict, default_currency="E
 def _explicit_reference_layout_rows_v5202(pages, config: dict, default_currency="EUR"):
     """Recover complete product rows from JIN's normalized visual text order."""
     import re
+    from po_ocr.extract import all_rows
     from po_ocr.models import Evidence, LineItem
 
     cfg = config.get("layout", {}) if isinstance(config, dict) else {}
     if not cfg.get("explicit_reference_layout_rows_v5202", True):
         return []
     money = r"(?:\d{1,3}(?: \d{3})+|\d+),\d{1,4}"
-    product = re.compile(r"^\[(?:ELM)?(?P<ref>\d{10,11})\]\s+(?P<body>.+)$", re.I)
+    product = re.compile(r"^\[\s*(?:ELM\s*)?(?P<ref>\d{10,11})\s*\]\s*(?P<body>.+)$", re.I)
     eco_row = re.compile(r"^\[ECO\s+PART\]|^ECO\s+PART", re.I)
     bracket_price = re.compile(
         rf"(?P<qty>{money})\s+(?P<price>{money})\s+(?P<vat>{money})\s+"
@@ -2103,6 +2104,7 @@ def _explicit_reference_layout_rows_v5202(pages, config: dict, default_currency=
         if not has_table and not (previous_table_page == page.page - 1 and bracket_count >= 2):
             continue
         previous_table_page = page.page
+        source_rows = list(all_rows([page], y_factor=0.50))
         for index, row in enumerate(rows):
             ref = description = None
             quantity = price = amount = discount_percent = None
@@ -2168,6 +2170,11 @@ def _explicit_reference_layout_rows_v5202(pages, config: dict, default_currency=
             )
             if abs(expected - amount) > max(0.04, amount * 0.006):
                 continue
+            source_row = next((candidate for candidate in source_rows
+                               if _fold(candidate.text) == _fold(row)), None)
+            bbox = source_row.bbox if source_row else None
+            if source_row is not None:
+                source_rows.remove(source_row)
             items.append(LineItem(
                 line_number=str(len(items) + 1), material_number=ref,
                 article_number=ref, description=description,
@@ -2176,10 +2183,10 @@ def _explicit_reference_layout_rows_v5202(pages, config: dict, default_currency=
                 net_unit_price=(amount / quantity if discount_percent is not None else price),
                 discount_percent=discount_percent,
                 line_total=amount, line_net_amount=amount,
-                currency=default_currency, page=page.page,
+                currency=default_currency, page=page.page, bbox=bbox,
                 confidence=min(0.96, float(page.confidence or 0.0) * 0.94),
                 raw_text=raw,
-                evidence=Evidence(page=page.page, source_text=raw,
+                evidence=Evidence(page=page.page, bbox=bbox, source_text=raw,
                                   extraction_method="explicit_reference_layout_row_v5202"),
                 warnings=["line_amount_calculated_from_printed_quantity_and_price"]
                 if "ref fsseur" in header and "tarif unitaire" in header else [],
@@ -2309,7 +2316,7 @@ def _explicit_reference_vertical_items_v5202(pages, config: dict, default_curren
     if not cfg.get("explicit_reference_vertical_recovery_v5202", True):
         return []
     anchor = re.compile(
-        r"(?im)^(?:\[(?:ELM)?(?P<bracket>\d{10,11})\]\s*(?P<bracket_desc>[^\n]*)"
+        r"(?im)^(?:\[[ \t]*(?:ELM[ \t]*)?(?P<bracket>\d{10,11})[ \t]*\][ \t]*(?P<bracket_desc>[^\n]*)"
         r"|(?P<labelled>[^\n]+?)\s*[-–]?\s*REF\s*:?\s*(?P<inline>\d{10,11})\s*"
         r"|(?P<standalone>\d{10,11})\s*)$"
     )
@@ -3964,13 +3971,21 @@ def _repair_buyer_from_matching_registration_footer_v5202(po, pages):
             if not registration and not (structural_issuer or vat_siren == footer_siret[:9]):
                 continue
             for candidate_line in reversed(lines[max(0, index - 6):index]):
+                # Contact details and a page counter can follow a compact
+                # legal address on the same footer row. Do not include them
+                # in the city, and keep hyphens/apostrophes in company names.
+                address_line = re.split(
+                    r"(?i)\s+-\s+(?=(?:t[eé]l|fax|email|e-mail)\b)|\s+-\s+(?=\S+@\S+)",
+                    candidate_line, maxsplit=1,
+                )[0]
+                address_line = re.sub(r"\s+\d+\s*/\s*\d+\s*$", "", address_line)
                 candidate = re.match(
-                    r"^([A-Z][A-Z0-9 &.'()/]{3,50}?)\s+-\s+(.+?)\s+(\d{5})\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ -]{1,50})$",
-                    candidate_line,
+                    r"^([A-Z][A-Z0-9 &.'()/-]{3,50}?)(?:\s+-\s+|,\s*)(.+?)\s*,?\s+(\d{5})\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ -]{1,50})$",
+                    address_line,
                 )
                 if not candidate:
                     continue
-                company, street, postal_code, city = (part.strip() for part in candidate.groups())
+                company, street, postal_code, city = (part.strip(" ,") for part in candidate.groups())
                 if (_bad_party_name(company) or _fold(company) == _fold(po.supplier.name)
                         or _company_name_quality_v48(company) < 0.62):
                     continue
@@ -3979,6 +3994,7 @@ def _repair_buyer_from_matching_registration_footer_v5202(po, pages):
                 po.buyer.address.line1 = street
                 po.buyer.address.line2 = None
                 po.buyer.address.line3 = None
+                po.buyer.address.raw_lines = [street, f"{postal_code} {city}"]
                 po.buyer.address.postal_code = postal_code
                 po.buyer.address.city = city
                 company_stem = re.sub(r"[^a-z0-9]", "", _fold(company).split()[0])
@@ -3995,6 +4011,10 @@ def _repair_buyer_from_matching_registration_footer_v5202(po, pages):
                 if po.buyer.phone and po.buyer.phone == po.supplier.phone:
                     po.buyer.phone = None
                     po.buyer.contact.phone = None
+                phone = re.search(r"(?i)\bt[eé]l\.?\s*:?\s*(0\d(?:[ .-]?\d{2}){4})\b", candidate_line)
+                if phone:
+                    po.buyer.phone = phone.group(1)
+                    po.buyer.contact.phone = phone.group(1)
                 return po, 1
     return po, 0
 
@@ -7134,14 +7154,27 @@ def _merge_explicit_page_charges_v63(po, pages, config: dict):
     existing = list(getattr(po, "additional_charges", []) or [])
     counts = Counter()
 
-    def duplicate(kind: str, page_number: int, amount: float) -> bool:
-        return any(
-            charge.charge_type == kind
-            and charge.page == page_number
-            and charge.amount is not None
-            and abs(float(charge.amount) - amount) <= 0.01
-            for charge in existing
-        )
+    # Match existing parser output one-to-one to source occurrences. Equal
+    # amounts/text on different rows (or pages) are not duplicate charges.
+    unmatched = list(existing)
+
+    def duplicate(kind, page_number, amount, row):
+        for index, charge in enumerate(unmatched):
+            if charge.charge_type != kind or charge.page != page_number:
+                continue
+            evidence = getattr(charge, "evidence", None)
+            box = getattr(evidence, "bbox", None)
+            same_text = _fold(getattr(evidence, "source_text", None)) == _fold(row.text)
+            same_amount = charge.amount is not None and abs(float(charge.amount) - amount) <= 0.01
+            if box:
+                same_row = abs((box[1] + box[3]) / 2 - (row.bbox[1] + row.bbox[3]) / 2) <= 3
+                matched = same_row and (same_text or same_amount)
+            else:
+                matched = same_text or same_amount
+            if matched:
+                unmatched.pop(index)
+                return True
+        return False
 
     for page in pages or []:
         page_rows = all_rows([page], y_factor=0.50)
@@ -7180,14 +7213,6 @@ def _merge_explicit_page_charges_v63(po, pages, config: dict):
                 )
                 if in_summary_grid:
                     continue
-            # A selected parser may already have recovered the exact labelled row
-            # and calculated a per-unit fee using its parent quantity. Source-row
-            # identity is therefore a stronger duplicate key than amount equality.
-            if any(
-                _fold(getattr(getattr(charge, "evidence", None), "source_text", None)) == low
-                for charge in existing
-            ):
-                continue
             values = []
             for word in row.words:
                 token = str(word.text).strip("€$£()[]{}:;")
@@ -7203,7 +7228,7 @@ def _merge_explicit_page_charges_v63(po, pages, config: dict):
             if not values:
                 continue
             amount = max(values, key=lambda item: item[0])[1]
-            if duplicate(kind, page.page, amount):
+            if duplicate(kind, page.page, amount, row):
                 continue
             ordered = sorted(row.words, key=lambda word: word.bbox[0])
             unit_index = next((
@@ -7218,6 +7243,16 @@ def _merge_explicit_page_charges_v63(po, pages, config: dict):
             uom = None
             unit_price = None
             description_end = min(center for center, _ in values)
+            # Five explicitly labelled columns: quantity, HT unit price, VAT
+            # rate, TTC unit price, HT amount. Never inherit the product's
+            # quantity: a fee can legitimately print a different quantity.
+            if unit_index is None and len(values) == 5 and any(
+                re.search(r"\b(?:qte|quantite)\s+pu\s+ht\s+%?tva\s+pu\s+ttc\s+(?:mtt|montant)\s+ht\b", _fold(prior.text))
+                for prior in page_rows[:row_index]
+            ):
+                cells = [value for _, value in sorted(values)]
+                if cells[0] > 0 and abs(cells[0] * cells[1] - amount) <= 0.03:
+                    quantity, unit_price = cells[:2]
             if unit_index is not None and unit_index > 0:
                 quantity_token = ordered[unit_index - 1].text.strip("€$£()[]{}:;")
                 if re.fullmatch(r"[-+]?\d+(?:[,.]\d{1,6})?", quantity_token):
@@ -7648,7 +7683,7 @@ def _enhance_strict_totals_v47(po, pages, config: dict):
         rows=all_rows([pg],y_factor=0.50)
         for i,row in enumerate(rows):
             low=_fold(row.text)
-            if not re.search(r"\btotal\s+(?:h\.?t\.?|net\s+ht)\b",low):
+            if not re.search(r"\btotal\s+(?:eur\s+)?(?:h\.?t\.?|net\s+ht)\b",low):
                 continue
             label_words=[w for w in row.words if any(k in _fold(w.text) for k in ("total","net"))]
             label_x=min((w.bbox[0] for w in label_words),default=0.0)

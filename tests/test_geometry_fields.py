@@ -464,6 +464,10 @@ class GeometryFieldTests(unittest.TestCase):
 
     def test_explicit_order_label_supports_numeric_spaced_and_next_row_values(self):
         cases = (
+            ("Commande 206", None, "206"),
+            ("Suite commande 206 du 20/11/2026", None, "206"),
+            ("Suite commande 206 le 20/11/2026", None, "206"),
+            ("Commande 206 20/11/2026", None, "206"),
             ("COMMANDE N° 674072490", None, "674072490"),
             ("COMMANDE FOURNISSEUR : 66 211 Adresse de livraison", None, "66 211"),
             ("COMMANDE N°", "NO 0 CHA 30183", "NO 0 CHA 30183"),

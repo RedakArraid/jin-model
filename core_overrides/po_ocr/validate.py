@@ -286,7 +286,7 @@ def validate(result: PurchaseOrderResult, cfg: dict) -> PurchaseOrderResult:
         price_header = any(x in low for x in ("prix net", "prix unitaire", "unit price")) or bool(
             re.search(r"\bp\s*\.?\s*u\s*\.?\s+h\s*\.?\s*t\b", low)
         )
-        amount_header=any(x in low for x in ("montant ht","montant net","line total","amount"))
+        amount_header=any(x in low for x in ("montant ht","montant net","mtt ht","line total","amount"))
         n=len(result.lines)
         qty_ratio=sum(x.quantity is not None for x in result.lines)/n
         price_ratio=sum(x.unit_price is not None for x in result.lines)/n
@@ -304,8 +304,10 @@ def validate(result: PurchaseOrderResult, cfg: dict) -> PurchaseOrderResult:
         from .extract import abbreviated_net_total
         raw_text="\n".join(p.text for p in result.pages if getattr(p,"text",None))
         low=_fold_semantic(raw_text)
-        printed_total=any(x in low for x in ("total ht","total h.t","total net ht","net a payer")) or bool(abbreviated_net_total(raw_text))
-        extracted_total=result.totals.total_net is not None or result.totals.subtotal is not None or result.totals.grand_total is not None
+        import re
+        printed_net = bool(re.search(r"\btotal\s+(?:eur\s+)?(?:h\.?t\.?|net\s+ht)\b", low)) or bool(abbreviated_net_total(raw_text))
+        printed_total=printed_net or "net a payer" in low
+        extracted_total=result.totals.total_net is not None or result.totals.subtotal is not None or (not printed_net and result.totals.grand_total is not None)
         checks["printed_total_presence"]={"printed_label_present":printed_total,"extracted":extracted_total,"valid":(not printed_total) or extracted_total}
         if printed_total and not extracted_total:
             warnings.append("A printed financial total is visible but no structured total was extracted")

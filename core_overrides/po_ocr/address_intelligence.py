@@ -146,7 +146,7 @@ def _street_regex() -> re.Pattern:
     aliases = sorted(set(aliases), key=len, reverse=True)
     exp = "|".join(re.escape(x) for x in aliases)
     return re.compile(
-        rf"^\s*(?:(?P<num>\d{{1,5}}(?:\s*(?:BIS|TER|QUATER|[A-Z]|[-/&]\s*\d{{1,5}}[A-Z]?))?)(?:\s*[,;]\s*|\s+))?(?P<type>{exp})\s+(?P<name>.+?)\s*$",
+        rf"^\s*(?:(?P<num>\d{{1,5}}(?:\s*(?:BIS|TER|QUATER|[A-Z]|[-/&,]\s*\d{{1,5}}[A-Z]?))?)(?:\s*[,;]\s*|\s+))?(?P<type>{exp})\s+(?P<name>.+?)\s*$",
         re.I,
     )
 

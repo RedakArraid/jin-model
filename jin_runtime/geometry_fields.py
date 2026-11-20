@@ -326,6 +326,15 @@ def _explicit_order_number_v3(rows):
                 continue
             if norm in stop_words:
                 break
+            # A dated continuation heading is not a longer order identifier:
+            # ``Suite commande 206 du 20/11/2026``. Stop before the date, not
+            # after its digits have made a short identifier look plausible.
+            if selected and (DATE_RE.fullmatch(raw) or (
+                norm in {"DU", "LE"}
+                and offset + 1 < len(remaining)
+                and DATE_RE.fullmatch(remaining[offset + 1]["text"].strip())
+            )):
+                break
             if previous is not None and token["bbox"][0] - previous["bbox"][2] > 35:
                 break
             if token["bbox"][0] < label_x - 20:
@@ -389,7 +398,7 @@ def _explicit_order_number_v3(rows):
             return None
         compact = _norm(value)
         digits = sum(char.isdigit() for char in compact)
-        if len(compact) < 5 or digits < 4:
+        if len(compact) < 3 or digits < 3:
             return None
         # In two-column headers a large "Bon de commande" title can share a
         # visual row with the fax value from the neighboring column.  The fax

@@ -572,6 +572,32 @@ def _source_text(payload: dict[str, Any]) -> str:
     )
 
 
+def _contact_source_text(payload: dict[str, Any]) -> str:
+    """Keep compartment boundaries when a person shares a row with another party.
+
+    Page text merges columns. Proven separate blocks must take precedence for
+    contact labels, otherwise a supplier phone can become the buyer's phone.
+    Preserve the remaining source for email/name corroboration and fallbacks.
+    """
+    blocks = payload.get("blocks") or []
+    output = []
+    for page in payload.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        for line in str(page.get("text") or "").splitlines():
+            replacements = []
+            for block in blocks:
+                if not isinstance(block, dict) or not (block.get("metadata") or {}).get("compartmentalized"):
+                    continue
+                if (block.get("source") or {}).get("page") != page.get("page"):
+                    continue
+                text = str(block.get("text") or "").strip()
+                if re.match(r"^(?:SUIVI\s+PAR|ACHETEUR|CONTACT|CORRESPONDANT|DEMANDEUR)\s*:", text, re.I) and line.strip().startswith(text + " "):
+                    replacements.append(text)
+            output.append(max(replacements, key=len) if replacements else line)
+    return "\n".join(output)
+
+
 def _source_tel_fax_pairs(source: str) -> list[tuple[str, str]]:
     """Return phone/fax pairs explicitly printed on the same source line."""
     phone = r"0[1-9](?:[ .-]?\d{2}){4}"
@@ -881,8 +907,9 @@ def _source_labeled_contact(
         raw,
         flags=re.I,
     )
+    phone_boundary = re.search(r"(?<!\d)0\d(?:[ .-]?\d{2}){4}(?!\d)", raw)
     boundaries = [
-        match.start() for match in (boundary, email_boundary) if match
+        match.start() for match in (boundary, email_boundary, phone_boundary) if match
     ]
     raw_name = raw[:min(boundaries)] if boundaries else raw
     if "DEMANDEUR" in _name_key(match.group(0)):
@@ -1081,6 +1108,7 @@ def _reconcile_clean_parties(
 ) -> dict[str, dict[str, Any]]:
     """Remove OCR pollution and align parties with source-backed address roles."""
     source = _source_text(payload)
+    contact_source = _contact_source_text(payload)
     source_key = _name_key(source)
     header_buyer, header_supplier = _source_header_parties(payload)
     explicit_bill_to = _source_explicit_billing_party(source)
@@ -1289,7 +1317,7 @@ def _reconcile_clean_parties(
         buyer["name"] = buyer_name
         buyer.pop("legal_name", None)
     explicitly_labeled_buyer = _source_labeled_contact(
-        source, labels=("ACHETEUR",)
+        contact_source, labels=("ACHETEUR",)
     ).get("name")
     if (
         header_buyer
@@ -1395,7 +1423,7 @@ def _reconcile_clean_parties(
             elif replacement_kind in {"delivery", "buyer_prefix"}:
                 delivery_contact = dict((parties.get("ship_to") or {}).get("contact") or {})
                 labeled_contact = _source_labeled_contact(
-                    source, stop_phrases=(delivery_name or "",)
+                    contact_source, stop_phrases=(delivery_name or "",)
                 )
                 for key, value in {**delivery_contact, **labeled_contact}.items():
                     buyer.setdefault("contact", {}).setdefault(key, value)
@@ -1447,7 +1475,7 @@ def _reconcile_clean_parties(
     # ``Acheteur:`` is an unambiguous client-side role and therefore safely
     # outranks a line-item description accidentally parsed as a person.
     contact.update(_source_labeled_contact(
-        source,
+        contact_source,
         labels=(
             "ACHETEUR", "SUIVI PAR", "CORRESPONDANT", "AFFAIRE SUIVIE PAR",
             "PERSONNE A CONTACTER", "DEMANDEUR", "COMMANDE PAR",
@@ -1458,7 +1486,7 @@ def _reconcile_clean_parties(
         r"(?im)\bN\S*\s*DOCUMENT\s+DATE\s+CONTACT\b", source
     ):
         contact.update(_source_labeled_contact(
-            source, labels=("CONTACT",), stop_phrases=(delivery_name or "",)
+            contact_source, labels=("CONTACT",), stop_phrases=(delivery_name or "",)
         ))
 
     # A phone and a fax printed on the same line belong to the same party.
