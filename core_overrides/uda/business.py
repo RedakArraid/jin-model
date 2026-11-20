@@ -397,12 +397,12 @@ def _normalize_inline_po_number(raw: str, config: dict | None = None) -> tuple[s
 
     Examples:
       ``FBC27834`` -> ``FBC27834``
-      ``193 444 / Nice`` -> (``193 444``, ``Nice``)
+      ``193 444 / Nice`` -> (``193 444 / Nice``, ``None``)
       ``ST C CSP 33443`` -> ``ST C CSP 33443``
 
-    The optional second return value is a site/suffix printed after a slash.  We do not
-    silently append it to the purchase-order number because it is usually a location,
-    branch or operational qualifier rather than part of the identifier itself.
+    A slash does not introduce a separate project/site field: without its own
+    semantic label, the suffix belongs to the explicitly labelled identifier.
+    Keep the tuple interface for callers, but never infer a site from punctuation.
     """
     import re
     cfg=(config or {}).get("layout", {}) if isinstance(config, dict) else {}
@@ -421,18 +421,11 @@ def _normalize_inline_po_number(raw: str, config: dict | None = None) -> tuple[s
     )[0].strip()
     # Strip a trailing date context first.
     text=re.sub(r"\s+(?:au|du|le|date)\s+\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\s*$", "", text, flags=re.I)
-    # Split an operational suffix such as "/ Nice" when the right side is not itself
-    # a numeric identifier fragment.
-    site=None
-    m=re.match(r"^(.*?)(?:\s*/\s*)([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9 .'-]{1,29})$", text)
-    if m:
-        text=m.group(1).strip()
-        site=m.group(2).strip()
     # Remove common label remnants.
     text=re.sub(r"^(?:n[°ºo]?|no|number|num(?:ero|éro)?)\s*[:#.-]?\s*", "", text, flags=re.I)
     text=text.strip(" :-")
     if not text:
-        return None, site
+        return None, None
 
     # Identifiers are not amounts: a visible space between numeric groups is
     # part of their source presentation. Legacy normalize_digit_groups settings
@@ -442,10 +435,10 @@ def _normalize_inline_po_number(raw: str, config: dict | None = None) -> tuple[s
     min_digits=int(cfg.get("inline_order_number_min_digits", 3))
     max_chars=int(cfg.get("inline_order_number_max_chars", 48))
     if len(text)>max_chars or sum(ch.isdigit() for ch in text)<min_digits:
-        return None, site
+        return None, None
     if re.search(r"\b(?:tel|fax|siret|tva|page|total|conditionnement|poids|volume)\b", _fold(text)):
-        return None, site
-    return text, site
+        return None, None
+    return text, None
 
 
 def _enhance_inline_transaction_header_v46(po, pages, config: dict):
@@ -493,11 +486,9 @@ def _enhance_inline_transaction_header_v46(po, pages, config: dict):
                     candidate=candidate[:dm.start()].strip()
                     if not po.purchase_order.order_date.value and parse_date(dm.group(1)):
                         po.purchase_order.order_date=_make_spatial_field(dm.group(1), pg.page, row.bbox, kind="date", method="inline_transaction_header")
-                number, site=_normalize_inline_po_number(candidate, config)
+                number, _=_normalize_inline_po_number(candidate, config)
                 if number:
                     po.purchase_order.number=_make_spatial_field(number, pg.page, row.bbox, method="inline_transaction_header")
-                    if site and not po.purchase_order.project_name.value:
-                        po.purchase_order.project_name=_make_spatial_field(site, pg.page, row.bbox, method="inline_order_site_suffix", confidence=0.94)
 
         # Date commande : 06/08/2026
         if not po.purchase_order.order_date.value:

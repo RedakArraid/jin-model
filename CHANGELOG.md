@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Preserve the entire explicitly labelled customer order number in the core,
+  including alphabetic/alphanumeric slash suffixes, visible digit-group spaces
+  and source case. Do not reinterpret a slash suffix as a project name. Keep
+  source case in runtime suffix recovery while comparing repetitions with
+  case-insensitive keys. Cover native PDF headers, adjacent delivery labels,
+  one-page/repeated suffixes, whitespace and conflicting candidates.
+
 - Add a portable Studio annotation export with a per-document JSONL manifest,
   unchanged per-revision annotation JSON, extraction bundles and original PDFs.
   Verify every file before marking an export complete. Require this verified

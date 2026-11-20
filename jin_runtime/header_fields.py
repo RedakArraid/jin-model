@@ -197,7 +197,7 @@ def _explicit_suffix_candidate(
                 continue
             # The compact base is only an agreement key. Publish the source
             # spelling, including digit groups and spaces on each side of '/'.
-            composite = " ".join(value.group(0).split()).upper()
+            composite = " ".join(value.group(0).split())
             strong_supplier_title = bool(re.search(
                 r"COMMANDE\s+FOURNISSEUR", label.group(0), flags=re.I
             )) and len(value.group("suffix")) <= 4
@@ -207,7 +207,7 @@ def _explicit_suffix_candidate(
                 int(page.get("page") or page_number),
                 strong_supplier_title,
             ))
-    if len(matches) >= 2 and len({re.sub(r"\s+", "", item[0]) for item in matches}) == 1:
+    if len(matches) >= 2 and len({re.sub(r"\s+", "", item[0]).upper() for item in matches}) == 1:
         return matches[0][:3] + (True,)
     if len(matches) == 1 and matches[0][3]:
         return matches[0][:3] + (False,)

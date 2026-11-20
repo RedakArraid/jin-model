@@ -112,12 +112,19 @@ def test_inline_identifiers_never_compact_visible_spaces(raw, expected, legacy_s
     assert _normalize_inline_po_number(raw, config) == (expected, None)
 
 
-def test_native_supplier_order_header_retains_numeric_group_spaces():
+@pytest.mark.parametrize("number", [
+    "26 365 / CPM", "13 205 / NICE", "207 841 / Nice", "000 123 / Agence-7",
+    "13 205/NICE", "207 841/ Nice", "207 841 /Nice",
+])
+@pytest.mark.parametrize("adjacent_address", [False, True])
+def test_native_supplier_order_header_retains_full_identifier(number, adjacent_address):
     with fitz.open() as document:
         page = document.new_page(width=595, height=842)
-        page.insert_text((180, 160), "COMMANDE FOURNISSEUR : 26 365 / CPM", fontsize=12)
+        if adjacent_address:
+            page.insert_text((20, 160), "Adresse de livraison", fontsize=10)
+        page.insert_text((180, 160), "COMMANDE FOURNISSEUR : " + number, fontsize=10)
         text, words, confidence = extract_native_page(page, 1, {"hybrid_native_ocr_enabled": False})
-        assert "26 365 / CPM" in text
+        assert number in text
         parsed = PageResult(page=1, width=595, height=842, source_type="native_pdf",
                             text=text, words=words, confidence=confidence)
         meta = DocumentMeta(id="groups", filename="groups.pdf", extension="pdf", file_size=1,
@@ -125,5 +132,19 @@ def test_native_supplier_order_header_retains_numeric_group_spaces():
                             has_text_layer=True, model_version="test",
                             processing_timestamp=datetime.now(timezone.utc).isoformat())
         po = _enhance_inline_transaction_header_v46(PurchaseOrderResult(document=meta), [parsed], load_config(None))
-        assert po.purchase_order.number.value == "26 365"
-        assert po.purchase_order.number.evidence.source_text == "26 365"
+        field = po.purchase_order.number
+        assert field.value == field.raw_value == field.normalized_value == number
+        assert field.evidence.source_text == number
+        assert po.purchase_order.project_name.value is None
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("13  205  /  NICE", "13 205 / NICE"),
+    ("207\u00a0841 / Nice", "207 841 / Nice"),
+    ("000 123 / Agence-7", "000 123 / Agence-7"),
+    ("000 123 / Saint-Étienne", "000 123 / Saint-Étienne"),
+    ("207 841 / Nice Adresse de livraison", "207 841 / Nice"),
+    ("207 841 / Nice au 19/11/2026", "207 841 / Nice"),
+])
+def test_slash_suffix_is_not_reinterpreted_as_a_project(raw, expected):
+    assert _normalize_inline_po_number(raw) == (expected, None)

@@ -36,6 +36,8 @@ def _payload(number, *, pages=None, blocks=None):
     ("26365/CPM", "26365/CPM"),
     ("00 365 / EX", "00 365 / EX"),
     ("AB 12 345 / EX", "AB 12 345 / EX"),
+    ("207 841 / Nice", "207 841 / Nice"),
+    ("13 205 / NICE", "13 205 / NICE"),
 ])
 @pytest.mark.parametrize("compact_input", [False, True])
 def test_suffix_recovery_preserves_source_spacing_through_clean_contract(raw, expected, compact_input):
@@ -77,6 +79,17 @@ def test_conflicting_suffixes_do_not_overwrite_number():
     ])
     reconcile_header_fields(doc)
     assert doc["business_extractions"]["purchase_order"]["purchase_order"]["number"]["value"] == "26 365"
+
+
+@pytest.mark.parametrize("repeated", [False, True])
+def test_suffix_recovery_retains_first_source_case_even_if_repeated_in_uppercase(repeated):
+    pages = [{"page": 1, "text": "COMMANDE FOURNISSEUR : 207 841 / Nice"}]
+    if repeated:
+        pages.append({"page": 2, "text": "N° Cde : 207 841 / NICE Date : Page 2 / 2"})
+    doc = _payload("207 841", pages=pages)
+    reconcile_header_fields(doc)
+    field = doc["business_extractions"]["purchase_order"]["purchase_order"]["number"]
+    assert field["value"] == field["raw_value"] == field["normalized_value"] == "207 841 / Nice"
 
 
 @pytest.mark.parametrize("initial", ["248061", "061 / ENGAGEMENT 3"])
