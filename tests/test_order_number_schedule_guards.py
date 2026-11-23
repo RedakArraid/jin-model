@@ -68,7 +68,11 @@ def test_instruction_to_repeat_complete_order_reference_is_not_a_column_label(fo
     assert _explicit_order_number_v3(visual_lines([words])) is None
 
 
-SCHEDULES = ["MARCHANDISES 8H00-11H45", "08:00 - 11:45", "8 h 00 à 11 h 45", "8h-12h"]
+SCHEDULES = [
+    "MARCHANDISES 8H00-11H45", "08:00 - 11:45", "8 h 00 à 11 h 45", "8h-12h",
+    "COMMANDES LIVRAISONS 8h-12h",
+    "COLISAGE+BL+FACTURE SEPARES / COMMANDES - LIVRAISONS 8h-12h",
+]
 
 
 @pytest.mark.parametrize("schedule", SCHEDULES)
@@ -107,6 +111,23 @@ def test_grouped_explicit_core_identifier_is_preserved_but_real_conflict_is_repo
     assert po["purchase_order"]["number"] == original
     check = check_order_number(po, doc["weak_field_suggestions"])
     assert "ORDER_NUMBER_CANDIDATES_DISAGREE" in check["issues"]
+
+
+@pytest.mark.parametrize("identifier", ["ST 8 1A1 34119", "ST 2 1A1 81999"])
+def test_prolians_explicit_order_number_outranks_shipping_footer(identifier):
+    # Both real layouts print this grouped identifier below COMMANDE N°, while
+    # a later instruction contains the words COMMANDES LIVRAISONS 8h-12h.
+    doc = payload(source_number(identifier), candidate("COMMANDES LIVRAISONS 8h-12h"))
+    reconcile_weak_fields(doc)
+    po = doc["business_extractions"]["purchase_order"]
+    assert po["purchase_order"]["number"]["value"] == identifier
+    check = check_order_number(po, doc["weak_field_suggestions"])
+    assert check["status"] == "SOURCE_SUPPORTED"
+    assert check["issues"] == []
+    doc["order_number_check"] = check
+    clean = build_clean_output(doc)
+    assert clean["order"]["customer_order_number"]["value"] == identifier
+    assert clean["quality"]["order_number"]["status"] == "SOURCE_SUPPORTED"
 
 
 def test_replacement_of_grouped_source_identifier_is_audited():
