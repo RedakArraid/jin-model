@@ -2057,6 +2057,138 @@ def _dual_reference_discount_rows_v5202(pages, config: dict, default_currency="E
     return lines, charges
 
 
+def _unit_before_quantity_discount_rows_v5203(pages, config: dict, default_currency="EUR"):
+    """Read purchase tables with UOM before quantity and descriptions below prices.
+
+    The printed gross price, discount, net price and line amount must agree. This
+    keeps a delivery-address row or an isolated product code from becoming an item.
+    """
+    import re
+    from po_ocr.extract import all_rows
+    from po_ocr.models import Evidence, LineItem
+
+    if not config.get("layout", {}).get("unit_before_quantity_discount_rows_v5203", True):
+        return []
+    out = []
+    for page in pages:
+        rows = all_rows([page], y_factor=0.50)
+        header_index = None
+        anchors = {}
+        for index, row in enumerate(rows):
+            words = sorted(row.words, key=lambda word: word.bbox[0])
+            labels = [(_fold(word.text).strip(" .:"), word) for word in words]
+            def label(name):
+                return next((word for text, word in labels if name(text)), None)
+            selected = {
+                "article": label(lambda text: text == "article"),
+                "description": label(lambda text: text == "designation"),
+                "unit": label(lambda text: text in {"unite", "unit"}),
+                "quantity": label(lambda text: text.startswith("qte") or text == "quantite"),
+                "gross": label(lambda text: text == "brut"),
+                "discount": label(lambda text: text == "%"),
+                "net": label(lambda text: text == "net"),
+                "tax": label(lambda text: text in {"taxes", "taxe"}),
+                "amount": label(lambda text: text.startswith("mont") or text == "montant"),
+            }
+            if any(word is None for word in selected.values()):
+                continue
+            anchors = {key: (word.bbox[0] + word.bbox[2]) / 2 for key, word in selected.items()}
+            if not all(anchors[left] < anchors[right] for left, right in zip(
+                ("article", "description", "unit", "quantity", "gross", "discount", "net", "tax"),
+                ("description", "unit", "quantity", "gross", "discount", "net", "tax", "amount"),
+            )):
+                continue
+            header_index = index
+            break
+        if header_index is None:
+            continue
+
+        def cell(row, key, pattern, tolerance):
+            candidates = [word for word in row.words
+                          if re.fullmatch(pattern, word.text.strip())
+                          and abs((word.bbox[0] + word.bbox[2]) / 2 - anchors[key]) <= tolerance]
+            return min(candidates, key=lambda word: abs(
+                (word.bbox[0] + word.bbox[2]) / 2 - anchors[key]
+            )) if candidates else None
+
+        for index in range(header_index + 1, len(rows)):
+            row = rows[index]
+            if not row.words or row.bbox[1] - rows[header_index].bbox[3] > page.height * 0.75:
+                break
+            ordered = sorted(row.words, key=lambda word: word.bbox[0])
+            reference_word = next((word for word in ordered
+                                   if word.bbox[0] < anchors["description"]
+                                   and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{4,29}", word.text)
+                                   and any(char.isdigit() for char in word.text)), None)
+            if reference_word is None:
+                continue
+            unit_word = cell(row, "unit", r"(?i:U|UN|UNIT|PCE|PCS|PIECE|EA|KG)", page.width * 0.035)
+            quantity_word = cell(row, "quantity", r"\d+(?:[,.]\d+)?", page.width * 0.035)
+            money = r"\d[\d .]*(?:[,.]\d{2,4})"
+            gross_word = cell(row, "gross", money, page.width * 0.045)
+            discount_word = cell(row, "discount", money, page.width * 0.035)
+            net_word = cell(row, "net", money, page.width * 0.035)
+            amount_word = cell(row, "amount", money, page.width * 0.045)
+            if None in (unit_word, quantity_word, gross_word, discount_word, net_word, amount_word):
+                continue
+            quantity, gross, discount, net, amount = (
+                _parse_native_decimal(word.text) for word in
+                (quantity_word, gross_word, discount_word, net_word, amount_word)
+            )
+            if None in (quantity, gross, discount, net, amount):
+                continue
+            if quantity <= 0 or gross < 0 or not 0 <= discount < 100 or net < 0 or amount < 0:
+                continue
+            if abs(gross * (1 - discount / 100) - net) > max(0.03, net * 0.002):
+                continue
+            if abs(quantity * net - amount) > max(0.03, amount * 0.002):
+                continue
+
+            continuation = []
+            previous = row
+            for following in rows[index + 1:]:
+                if following.bbox[1] - previous.bbox[3] > page.height * 0.035:
+                    break
+                if cell(following, "unit", r"(?i:U|UN|UNIT|PCE|PCS|PIECE|EA|KG)", page.width * 0.035):
+                    break
+                if _fold(following.text).startswith(("total", "port ht", "montant")):
+                    break
+                continuation.append(following)
+                previous = following
+            supplier_reference = None
+            descriptions = []
+            notes = []
+            for following in continuation:
+                text = " ".join(word.text for word in sorted(following.words, key=lambda word: word.bbox[0])
+                                if word.bbox[0] < anchors["unit"] - 5).strip(" *")
+                if re.fullmatch(r"\d{10,11}", text):
+                    supplier_reference = text
+                elif re.match(r"(?i)^cde\s+\S+", text):
+                    notes.append(text)
+                elif text and not re.fullmatch(r"[=* ]+", text):
+                    descriptions.append(text)
+            if not descriptions:
+                continue
+            printed_reference = reference_word.text
+            material = supplier_reference or printed_reference
+            raw = " | ".join([row.text] + [part.text for part in continuation])
+            bbox = _bbox_union([word for part in [row, *continuation] for word in part.words])
+            out.append(LineItem(
+                line_number=str(len(out) + 1), material_number=material,
+                article_number=material, supplier_material_number=material,
+                customer_material_number=printed_reference if supplier_reference else None,
+                description=" ".join(descriptions), notes=notes,
+                quantity=quantity, ordered_quantity=quantity, uom=unit_word.text.upper(),
+                unit_price=net, gross_unit_price=gross, net_unit_price=net,
+                discount_percent=discount, line_total=amount, line_net_amount=amount,
+                currency=default_currency, page=page.page, bbox=bbox,
+                confidence=min(0.97, float(row.confidence) * 0.96), raw_text=raw,
+                evidence=Evidence(page=page.page, bbox=bbox, source_text=raw,
+                                  extraction_method="unit_before_quantity_discount_row_v5203"),
+            ))
+    return out
+
+
 def _explicit_reference_layout_rows_v5202(pages, config: dict, default_currency="EUR"):
     """Recover complete product rows from JIN's normalized visual text order."""
     import re
@@ -4414,6 +4546,82 @@ def _repair_supplier_purchase_order_addressee_v5173(po, pages, config: dict):
     return po, repairs
 
 
+def _repair_depot_expediteur_roles_v5203(po, pages, config: dict):
+    """Use matching sender-depot and delivery blocks to identify the issuer.
+
+    A labelled vendor address must not be copied to the buyer merely because
+    the buyer logo is an image. The depot and delivery recipient must agree.
+    """
+    import re
+    from po_ocr.extract import all_rows
+    from po_ocr.models import Address, Party
+
+    if not pages or not config.get("layout", {}).get("depot_expediteur_roles_v5203", True):
+        return po, 0
+    page = pages[0]
+    rows = all_rows([page], y_factor=0.50)
+    depot_index = next((index for index, row in enumerate(rows)
+                        if re.search(r"\bdepot\s+expediteur\b", _fold(row.text))
+                        and row.bbox[1] < page.height * 0.45), None)
+    delivery_index = next((index for index, row in enumerate(rows)
+                           if "adresselivraison" in re.sub(r"[^a-z]", "", _fold(row.text))), None)
+    if depot_index is None or delivery_index is None:
+        return po, 0
+
+    def block(start, limit, starred=False):
+        values = []
+        for row in rows[start + 1:start + limit + 1]:
+            if row.bbox[1] - rows[start].bbox[3] > page.height * 0.09:
+                break
+            words = [word.text for word in sorted(row.words, key=lambda word: word.bbox[0])
+                     if word.bbox[0] < page.width * 0.50 and word.text.strip(" *")]
+            value = " ".join(words).strip(" *")
+            if not value or re.fullmatch(r"[=* ]+", value):
+                if starred:
+                    break
+                continue
+            if re.match(r"(?i)^(?:tel|fax|ref)\b", value):
+                break
+            values.append(value)
+        return values
+
+    depot = block(depot_index, 7)
+    delivery = block(delivery_index, 7, starred=True)
+    if not depot or not delivery or _fold(depot[0]) != _fold(delivery[0]):
+        return po, 0
+    if _fold(depot[0]) == _fold(po.supplier.name):
+        return po, 0
+    depot_postal = next((re.search(r"\b(\d{5})\s+(.+)$", value)
+                         for value in depot[1:] if re.search(r"\b\d{5}\b", value)), None)
+    delivery_postal = next((re.search(r"\b(\d{5})\s+(.+)$", value)
+                            for value in delivery[1:] if re.search(r"\b\d{5}\b", value)), None)
+    if not depot_postal or not delivery_postal or depot_postal.group(1) != delivery_postal.group(1):
+        return po, 0
+    current_buyer = _fold(po.buyer.name)
+    if current_buyer not in {"", _fold(po.supplier.name), _fold(depot[0])}:
+        return po, 0
+
+    def address(lines, postal):
+        street = next((value for value in lines[1:] if re.search(
+            r"\b(?:rue|avenue|route|chemin|boulevard|impasse)\b", _fold(value)
+        )), None)
+        zone = next((value for value in lines[1:] if re.match(
+            r"(?i)^(?:z\.?\s*i\.?|z\.?\s*a\.?|zac)\b", value
+        )), None)
+        return Address(line1=street, line2=zone, street=street,
+                       postal_code=postal.group(1), city=postal.group(2).strip(),
+                       country="France", country_code="FR")
+
+    po.buyer.name = depot[0]
+    po.buyer.legal_name = depot[0]
+    po.buyer.address = address(depot, depot_postal)
+    po.ship_to = Party(name=delivery[0], legal_name=delivery[0],
+                       address=address(delivery, delivery_postal))
+    if _fold(po.logistics.delivery_location) in {"expediteur", "depot expediteur"}:
+        po.logistics.delivery_location = delivery[0]
+    return po, 1
+
+
 def _repair_scanned_supplier_order_header_roles_v5176(po, pages, config: dict):
     """Use a two-column order header when fee/metadata text polluted both roles.
 
@@ -5756,6 +5964,32 @@ def _enhance_strict_order_number_v47(po, pages, config: dict):
         )
     )
     reconstructed_segmented_sources={}
+    # A compact multi-column ERP header can put depot and supplier codes before
+    # ``No Cde`` on the same value row. Only the cell under that exact column is
+    # the customer order number; joining the preceding numeric cells is wrong.
+    for index, row in enumerate(rows):
+        if _row_center_safe(row) > pg.height * 0.27:
+            break
+        ordered = sorted(row.words, key=lambda word: word.bbox[0])
+        normalized = [_fold(word.text).strip(" .:") for word in ordered]
+        for pos in range(len(ordered) - 2):
+            if normalized[pos:pos + 2] not in (["no", "cde"], ["n", "cde"]):
+                continue
+            date_word = next((word for word in ordered[pos + 2:]
+                              if _fold(word.text).strip(" .:") == "date"), None)
+            if date_word is None or date_word.bbox[0] <= ordered[pos + 1].bbox[2]:
+                continue
+            for following in rows[index + 1:index + 3]:
+                gap = following.bbox[1] - row.bbox[3]
+                if gap < 0 or gap > pg.height * 0.03:
+                    continue
+                in_column = [word for word in following.words
+                             if ordered[pos].bbox[0] - pg.width * 0.015 <= word.bbox[0]
+                             and word.bbox[2] < date_word.bbox[0]]
+                if len(in_column) == 1 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{5,31}", in_column[0].text):
+                    add(in_column[0].text, 11.0, following,
+                        "explicit_no_cde_header_cell", in_column)
+            break
     for row in rows:
         if _row_center_safe(row) > pg.height*0.25:
             break
@@ -7227,6 +7461,17 @@ def _merge_explicit_page_charges_v63(po, pages, config: dict):
                     values.append(((word.bbox[0] + word.bbox[2]) / 2, float(value)))
             if not values:
                 continue
+            # A shared footer may print an empty ``PORT HT`` cell followed by
+            # ``TOTAL HT: 416,16``. The sole amount belongs to the total, not
+            # to shipping. Require an amount in the charge's own column.
+            if kind == "shipping" and re.search(r"\btotal\s+(?:ht|net|ttc)\b", low):
+                total_word = next((word for word in row.words
+                                   if _fold(word.text) == "total"), None)
+                if total_word is not None:
+                    values = [(center, value) for center, value in values
+                              if center < total_word.bbox[0]]
+                    if not values:
+                        continue
             amount = max(values, key=lambda item: item[0])[1]
             if duplicate(kind, page.page, amount, row):
                 continue
@@ -8868,6 +9113,9 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     dual_discount_lines, dual_discount_charges = _dual_reference_discount_rows_v5202(
         pages, config, default_currency
     )
+    unit_before_quantity_lines = _unit_before_quantity_discount_rows_v5203(
+        pages, config, default_currency
+    )
     piece_suffix_lines = _piece_suffix_material_rows_v5202(
         pages, config, default_currency
     )
@@ -8993,6 +9241,10 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
         not current_pattern_support or len(dual_discount_lines) >= current_pattern_support
     ):
         hypotheses.append(("dual_reference_discount", dual_discount_lines, dual_discount_charges, 0.22))
+    if unit_before_quantity_lines and (
+        not current_pattern_support or len(unit_before_quantity_lines) >= current_pattern_support
+    ):
+        hypotheses.append(("unit_before_quantity_discount", unit_before_quantity_lines, [], 0.24))
     if piece_suffix_lines and (
         not current_pattern_support or len(piece_suffix_lines) >= current_pattern_support
     ):
@@ -9162,6 +9414,9 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     )
     po, parser_diag["explicit_supplier_header_repairs"] = (
         _repair_supplier_from_explicit_header_v5202(po, pages, config)
+    )
+    po, parser_diag["depot_expediteur_role_repairs"] = (
+        _repair_depot_expediteur_roles_v5203(po, pages, config)
     )
     po = _sanitize_summary_totals_v46(po, pages, config, default_currency=default_currency)
     po = _enhance_strict_totals_v47(po, pages, config)

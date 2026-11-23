@@ -53,7 +53,7 @@ RUN pip install --no-cache-dir "pytest>=8,<10"
 WORKDIR /workspace
 COPY . /workspace/
 ENV PYTHONPATH=/workspace:/workspace/tests/support:/app
-CMD ["python", "-m", "pytest", "tests", "core_overrides/tests", "-q"]
+CMD ["sh", "-c", "python -m pytest tests -q && python -m pytest core_overrides/tests -q"]
 
 # Keep the default final image minimal even though the reusable test target is
 # declared above it.

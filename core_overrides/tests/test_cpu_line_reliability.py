@@ -48,6 +48,7 @@ from uda.business import (
     _piece_suffix_material_rows_v5202,
     _material_quantity_unit_text_rows_v5202,
     _dual_reference_discount_rows_v5202,
+    _unit_before_quantity_discount_rows_v5203,
     _explicit_charge_kind_v62,
     _line_hypothesis_total_fit_v66,
     _material_anchored_split_table_items_v61,
@@ -68,6 +69,7 @@ from uda.business import (
     _repair_order_number_evidence_bbox_v5172,
     _repair_purchase_order_party_roles_v5170,
     _repair_supplier_purchase_order_addressee_v5173,
+    _repair_depot_expediteur_roles_v5203,
     _repair_scanned_supplier_order_header_roles_v5176,
     _repair_issuer_name_from_legal_footer_v5177,
     _repair_issuer_masthead_and_vendor_code_v5201,
@@ -101,6 +103,111 @@ def _page(rows, number=1):
     return PageResult(page=number, width=600, height=842, source_type="native_pdf",
                       text="\n".join(" ".join(t for t, _, _ in cells) for _, cells in rows),
                       words=words, confidence=1.0)
+
+
+def test_no_cde_column_excludes_depot_and_supplier_codes():
+    page = _page([
+        (70, [("COMMANDE", 99, 153), ("ACHAT", 154, 185)]),
+        (100, [("Fourn", 72, 98), ("DEP", 100, 120),
+               ("No", 128, 140), ("Cde", 142, 160),
+               ("Date", 179, 210), ("ORIG", 220, 246)]),
+        (113, [("870", 82, 99), ("003", 101, 119),
+               ("32011646", 125, 164), ("20/11/2026", 169, 217),
+               ("VTE", 221, 243)]),
+    ])
+    po = SimpleNamespace(purchase_order=PurchaseOrderHeader())
+
+    _enhance_strict_order_number_v47(po, [page], {})
+
+    assert po.purchase_order.number.value == "32011646"
+    assert po.purchase_order.number.evidence.source_text == "32011646"
+    assert po.purchase_order.number.evidence.extraction_method == "explicit_no_cde_header_cell"
+
+
+def test_unit_before_quantity_table_reads_lines_and_customer_article_code():
+    header = [("Article", 35, 70), ("Designation", 91, 145),
+              ("Article", 148, 180), ("Unite", 250, 280),
+              ("QTE.C", 298, 325), ("Pu", 393, 405),
+              ("Brut", 406, 425), ("%", 435, 445),
+              ("Pu", 467, 478), ("Net", 479, 496),
+              ("Taxes", 508, 535), ("Mont.Ht", 550, 586)]
+    page = _page([
+        (290, header),
+        (400, [("87154071540", 61, 128), ("U", 263, 270),
+               ("1", 309, 315), ("160,00", 385, 418),
+               ("49,00", 435, 460), ("81,60", 473, 499),
+               ("02", 515, 526), ("81,60", 561, 588)]),
+        (411, [("VASE", 78, 97), ("EXPANSION", 100, 140), ("8L", 141, 155)]),
+        (422, [("WZELM1", 61, 105), ("U", 263, 270),
+               ("1", 309, 315), ("40,00", 389, 417),
+               ("49,00", 435, 460), ("20,40", 473, 499),
+               ("02", 515, 526), ("20,40", 561, 588)]),
+        (433, [("87174010350", 78, 145)]),
+        (444, [("Cde", 78, 94), ("4251368", 97, 127), ("SOPROGAZ", 130, 175)]),
+        (455, [("soupape", 111, 144), ("de", 147, 157), ("securite", 159, 197)]),
+        (806, [("PORT", 347, 370), ("HT", 372, 382), ("TOTAL", 468, 491),
+               ("HT", 494, 505), ("102,00", 536, 579)]),
+    ])
+
+    lines = _unit_before_quantity_discount_rows_v5203([page], {})
+
+    assert len(lines) == 2
+    assert [line.material_number for line in lines] == ["87154071540", "87174010350"]
+    assert lines[1].customer_material_number == "WZELM1"
+    assert lines[1].description == "soupape de securite"
+    assert lines[1].notes == ["Cde 4251368 SOPROGAZ"]
+    assert [(line.quantity, line.gross_unit_price, line.discount_percent,
+             line.unit_price, line.line_total) for line in lines] == [
+        (1, 160, 49, 81.6, 81.6), (1, 40, 49, 20.4, 20.4),
+    ]
+
+
+def test_empty_port_footer_does_not_copy_total_ht_into_shipping():
+    page = _page([
+        (806, [("PORT", 347, 370), ("HT", 372, 382), (":", 385, 390),
+               ("TOTAL", 468, 491), ("HT", 494, 505), (":", 508, 512),
+               ("416,16", 536, 579)]),
+    ])
+    po = SimpleNamespace(lines=[], additional_charges=[], totals=Totals(currency="EUR"))
+
+    po, recovered = _merge_explicit_page_charges_v63(po, [page], {})
+
+    assert recovered == {}
+    assert po.additional_charges == []
+    assert po.totals.total_shipping is None
+
+
+def test_depot_and_delivery_agreement_repairs_buyer_without_changing_vendor():
+    page = _page([
+        (72, [("COMMANDE", 70, 124), ("ACHAT", 128, 155)]),
+        (79, [("ELM", 370, 390), ("LEBLANC", 393, 438)]),
+        (157, [("Depot", 115, 145), ("Expediteur", 148, 210)]),
+        (169, [("ROUCHY", 90, 119), ("CLERMONT", 121, 160), ("FD", 162, 174)]),
+        (180, [("18", 90, 101), ("RUE", 104, 119), ("LOUIS", 121, 145), ("BLERIOT", 147, 182)]),
+        (191, [("ZI", 90, 102), ("LE", 104, 116), ("BREZET", 118, 150)]),
+        (213, [("63100", 90, 118), ("CLERMONT-FD", 120, 187)]),
+        (333, [("A", 69, 75), ("D", 78, 84), ("R", 87, 93), ("E", 96, 102),
+               ("S", 105, 111), ("S", 114, 120), ("E", 123, 129),
+               ("L", 136, 142), ("I", 145, 151), ("V", 154, 160),
+               ("R", 163, 169), ("A", 172, 178), ("I", 181, 187),
+               ("S", 190, 196), ("O", 199, 205), ("N", 208, 214)]),
+        (344, [("ROUCHY", 78, 107), ("CLERMONT", 109, 148), ("FD", 150, 162)]),
+        (355, [("18", 78, 89), ("RUE", 91, 106), ("LOUIS", 108, 132), ("BLERIOT", 134, 169)]),
+        (366, [("ZI", 78, 90), ("LE", 92, 104), ("BREZET", 106, 138)]),
+        (377, [("63100", 78, 106), ("CLERMONT-FD", 108, 175)]),
+    ])
+    po = SimpleNamespace(buyer=Party(name="ELM LEBLANC"),
+                         supplier=Party(name="ELM LEBLANC"), ship_to=Party(),
+                         logistics=SimpleNamespace(delivery_location="Expediteur"))
+
+    po, repaired = _repair_depot_expediteur_roles_v5203(po, [page], {})
+
+    assert repaired == 1
+    assert po.buyer.name == "ROUCHY CLERMONT FD"
+    assert po.buyer.address.postal_code == "63100"
+    assert po.ship_to.name == "ROUCHY CLERMONT FD"
+    assert po.ship_to.address.street == "18 RUE LOUIS BLERIOT"
+    assert po.supplier.name == "ELM LEBLANC"
 
 
 def test_native_pdf_stitches_overlapping_amount_fragments_without_joining_columns():
