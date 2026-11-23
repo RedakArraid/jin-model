@@ -738,7 +738,12 @@ function quotationValidationIssues(quotation) {
     const unitPrice = Number(item.pricing?.unit_price);
     const amount = Number(item.amounts?.net);
     if (item.quantity == null || item.pricing?.unit_price == null || item.amounts?.net == null) {
-      issues.push(`Article ${item.line_number || '?'} : quantité, prix ou montant manquant.`);
+      const missing = [
+        item.quantity == null ? 'quantité' : null,
+        item.pricing?.unit_price == null ? 'prix unitaire' : null,
+        item.amounts?.net == null ? 'montant HT' : null,
+      ].filter(Boolean);
+      issues.push(`Article ${item.line_number || '?'} (${item.references?.article_number || 'référence inconnue'}) : ${missing.join(', ')} à vérifier (absent du PDF ou non extrait).`);
     } else if (Number.isFinite(quantity * unitPrice - amount)
                && Math.abs(quantity * unitPrice - amount) > .02) {
       const delta = Math.abs(quantity * unitPrice - amount);
@@ -995,7 +1000,7 @@ function render(r) {
       QUOTATION_RECIPIENT_ADDRESS_MISSING: 'Adresse du destinataire non extraite.',
       QUOTATION_RECIPIENT_ADDRESS_INCOMPLETE: 'Adresse du destinataire partielle : voie manquante.',
       QUOTATION_LINES_MISSING: 'Aucun article proposé extrait.',
-      QUOTATION_VALIDATION_INCOMPLETE: 'Des écarts ont été relevés dans les articles ou les totaux de l’offre.',
+      QUOTATION_VALIDATION_INCOMPLETE: 'Des valeurs manquent ou des écarts ont été relevés dans les articles ou les totaux de l’offre.',
     };
     const list = document.createElement('ul');
     for (const reason of reasons) {

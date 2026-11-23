@@ -115,14 +115,15 @@ def _header(rows: list[dict[str, Any]], first_page: Any) -> dict[str, Any]:
     recipient_attention = _labeled(header_rows, r"\bl'attention\s+de\s*:\s*(.+)$", 320, 610)
     recipient_address = _labeled(header_rows, r"\bAdresse\s*:\s*(.+)$", 320, 610)
     if not recipient_address:
-        # Some quotations leave the street line blank but print a locality
-        # directly below "Adresse :". Preserve the partial source value.
+        # Some quotations leave the street blank but print a postal locality
+        # or department/locality directly below "Adresse :". Preserve it
+        # without inventing a street.
         address_label = next((row for row in header_rows
                               if re.fullmatch(r"Adresse\s*:\s*", _column(row, 320, 610), re.I)), None)
         if address_label:
             following = next((row for row in header_rows
                               if 0 < row["cy"] - address_label["cy"] < 18
-                              and re.match(r"\d{5}\b", _column(row, 320, 610))), None)
+                              and re.match(r"(?:\d{5}|\d{2})\s+[A-ZÀ-ÖØ-Ý]", _column(row, 320, 610))), None)
             if following:
                 words = [word for word in following["words"] if 320 <= word[0] < 610]
                 recipient_address = _field(_column(following, 320, 610),
@@ -204,21 +205,25 @@ def _line_grid(all_pages: list[list[dict[str, Any]]], page_heights: list[float])
     sections: list[dict[str, Any]] = []
     totals: dict[str, Any] = {}
     current_section = None
+    active_item: dict[str, Any] | None = None
     in_table = False
     description_left = 110.0
     for rows, page_height in zip(all_pages, page_heights):
+        continued_on_page = False
         headers = {idx for idx, row in enumerate(rows)
                    if "code article" in _fold(row["text"])
                    and "designation" in _fold(row["text"])}
         categories = {idx - 1 for idx in headers if idx > 0}
         for idx, row in enumerate(rows):
-            if row["cy"] > page_height - 85:
+            # A last article price may be only 85 points above the edge.
+            # The legal footer begins lower, so retain these price rows.
+            if row["cy"] > page_height - 65:
                 continue
             # The supplier letterhead is repeated at the top of continuation
             # pages. Do not append its address to the preceding article. A
             # real article may start as early as this zone, so keep rows that
             # contain an explicit article code.
-            if row["cy"] < 68 and not any(
+            if row["cy"] < 68 and "sous-total" not in _fold(row["text"]) and not any(
                 word[0] < 110 and _ARTICLE.fullmatch(word[4])
                 for word in row["words"]
             ):
@@ -227,6 +232,7 @@ def _line_grid(all_pages: list[list[dict[str, Any]]], page_heights: list[float])
             folded = _fold(text)
             if idx in categories:
                 current_section = text.strip()
+                active_item = None
                 continue
             if idx in headers:
                 in_table = True
@@ -240,11 +246,13 @@ def _line_grid(all_pages: list[list[dict[str, Any]]], page_heights: list[float])
                 if amount is not None:
                     sections.append({"name": current_section, "subtotal": amount,
                                      "currency": "EUR", "evidence": _evidence(row, text, "quotation_section_subtotal_v1")})
+                active_item = None
                 continue
             if "prix total net hors taxes et hors eco-participation" in folded:
                 if amount is not None:
                     totals["before_eco_participation"] = amount
                 in_table = False
+                active_item = None
                 continue
             if "total eco-participation net hors taxes" in folded:
                 if amount is not None:
@@ -258,13 +266,35 @@ def _line_grid(all_pages: list[list[dict[str, Any]]], page_heights: list[float])
                 continue
             code_word = next((word for word in row["words"]
                               if word[0] < 110 and _ARTICLE.fullmatch(word[4])), None)
+            price_target = active_item
             if code_word:
                 code = code_word[4]
                 # Some page breaks repeat an unfinished article at the top of
                 # the continuation page. Keep one item, with both descriptions.
-                if items and items[-1]["references"]["article_number"] == code and "unit_price" not in items[-1]["pricing"]:
-                    item = items[-1]
+                if (active_item and active_item["references"]["article_number"] == code
+                        and active_item["evidence"]["page"] != row["page"]
+                        and "unit_price" not in active_item["pricing"]):
+                    item = active_item
+                    continued_on_page = True
                 else:
+                    following = rows[idx + 1] if idx + 1 < len(rows) else None
+                    # At a page break the repeated article can have its
+                    # numbers aligned with the *next* code. When that next
+                    # article has a separate numeric row, keep each tuple
+                    # with its own article instead of overwriting it.
+                    if (continued_on_page and active_item
+                            and "unit_price" not in active_item["pricing"]
+                            and _money(_column(row, 333, 385)) is not None
+                            and _column(row, 385, 415).isdigit()
+                            and _money(_column(row, 455, 610)) is not None
+                            and following and _money(_column(following, 333, 385)) is not None
+                            and _column(following, 385, 415).isdigit()
+                            and _money(_column(following, 455, 610)) is not None
+                            and not any(word[0] < 110 and _ARTICLE.fullmatch(word[4])
+                                        for word in following["words"])):
+                        price_target = active_item
+                    else:
+                        price_target = None
                     item = {
                         "line_number": len(items) + 1,
                         "references": {"article_number": code}, "description": "",
@@ -273,23 +303,32 @@ def _line_grid(all_pages: list[list[dict[str, Any]]], page_heights: list[float])
                         "evidence": _evidence({**row, "words": [code_word]}, code, "quotation_article_grid_v1"),
                     }
                     items.append(item)
+                    continued_on_page = False
+                active_item = item
+                if price_target is None:
+                    price_target = item
             description = _column(row, description_left, 333)
-            if description and items and not re.match(r"^(?:Code article|D[eé]signation|S[eé]lection)", description, re.I):
-                target = items[-1]
-                target["description"] = (target["description"] + " " + description).strip()
+            if description and active_item and not re.match(r"^(?:Code article|D[eé]signation|S[eé]lection)", description, re.I):
+                active_item["description"] = (active_item["description"] + " " + description).strip()
             unit_price = _money(_column(row, 333, 385))
             quantity_text = _column(row, 385, 415)
             quantity = int(quantity_text) if quantity_text.isdigit() else None
-            line_amount = amount
-            if unit_price is not None and quantity is not None and line_amount is not None:
-                target = next((candidate for candidate in items if "unit_price" not in candidate["pricing"]), None)
-                if target:
-                    target["quantity"] = quantity
-                    target["pricing"] = {
-                        "unit_price": unit_price, "eco_participation_unit": _money(_column(row, 415, 455)),
-                        "currency": "EUR",
-                    }
-                    target["amounts"] = {"net": line_amount}
+            eco_participation = _money(_column(row, 415, 455))
+            # A missing field must not borrow the next article's value.
+            # Start after the eco-participation column for line amounts.
+            line_amount = _money(_column(row, 455, 610))
+            if price_target:
+                if quantity is not None:
+                    price_target["quantity"] = quantity
+                if unit_price is not None or eco_participation is not None:
+                    pricing = price_target["pricing"]
+                    if unit_price is not None:
+                        pricing["unit_price"] = unit_price
+                    if eco_participation is not None or "eco_participation_unit" not in pricing:
+                        pricing["eco_participation_unit"] = eco_participation
+                    pricing["currency"] = "EUR"
+                if line_amount is not None:
+                    price_target["amounts"] = {"net": line_amount}
     return items, sections, totals
 
 

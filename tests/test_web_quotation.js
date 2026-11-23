@@ -91,3 +91,24 @@ test('quote-specific sections exist and do not masquerade as purchase-order sect
   assert.match(source, /toggleSection\('orderSections', !isQuotation\)/);
   assert.match(source, /if \(isQuotation\) \{\s*renderQuotation\(r, quotation \|\| \{\}\);/);
 });
+
+test('blank offer fields remain blank and the warning identifies each missing value', () => {
+  context.renderQuotation({}, {
+    line_items: [
+      { line_number: 1, references: { article_number: '7716704738' },
+        description: 'Article gratuit', quantity: 1, pricing: { unit_price: 0 }, amounts: {} },
+      { line_number: 2, references: { article_number: '7716704739' },
+        description: 'Prix absent', quantity: 3, pricing: { eco_participation_unit: 1.5 }, amounts: {} },
+    ],
+    sections: [], totals: {}, validation: { status: 'WARNING' },
+  });
+  const rows = node('#quoteLinesTable tbody').children;
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].children[5].value, '0.00 EUR');
+  assert.equal(rows[0].children[7].value, null);
+  assert.equal(rows[1].children[5].value, null);
+  assert.equal(rows[1].children[6].value, '1.50 EUR');
+  const issues = node('quoteValidation').children[1].children.map(child => child.textContent);
+  assert.ok(issues.some(issue => issue.includes('7716704738') && issue.includes('montant HT') && !issue.includes('prix unitaire')));
+  assert.ok(issues.some(issue => issue.includes('7716704739') && issue.includes('prix unitaire') && issue.includes('montant HT')));
+});

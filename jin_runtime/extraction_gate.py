@@ -212,7 +212,9 @@ def apply_extraction_gate(payload: dict[str, Any]) -> dict[str, Any]:
         if recipient_address:
             address_value = (recipient_address.get("value") if isinstance(recipient_address, dict)
                              else recipient_address) or ""
-            require(not re.match(r"^\s*(?:F-)?\d{5}\b", str(address_value), re.I),
+            require(not re.match(
+                r"^\s*(?:F-)?(?:\d{5}|\d{2})\s+[A-ZÀ-ÖØ-Ý][A-ZÀ-ÖØ-Ý'\- ]*\s*$",
+                str(address_value)),
                     "QUOTATION_RECIPIENT_ADDRESS_INCOMPLETE", "quotation.recipient.address")
         require(bool(quotation.get("line_items")), "QUOTATION_LINES_MISSING", "quotation.line_items")
         require((quotation.get("validation") or {}).get("status") == "PASS",

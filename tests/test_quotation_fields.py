@@ -12,7 +12,8 @@ def _write(page, x, y, text):
     page.insert_text((x, y), text, fontsize=9)
 
 
-def _offer_pdf(*, incomplete=False, two_page_line=False, locality_only=False):
+def _offer_pdf(*, incomplete=False, two_page_line=False, locality_only=False,
+               recipient_location="84000 AVIGNON"):
     doc = pymupdf.open()
     first = doc.new_page(width=595, height=842)
     _write(first, 55, 45, "elm.leblanc SAS")
@@ -26,7 +27,7 @@ def _offer_pdf(*, incomplete=False, two_page_line=False, locality_only=False):
     _write(first, 325, 165, "Societe : CLIENT TEST")
     _write(first, 325, 180, "A l'attention de : Lea Client")
     _write(first, 325, 195, "Adresse :" if locality_only else "Adresse : 24 rue Exemple")
-    _write(first, 325, 210, "84000 AVIGNON")
+    _write(first, 325, 210, recipient_location)
     _write(first, 55, 250, "Affaire / projet : Projet Test")
     _write(first, 55, 265, "Offre n° : OF-2026-42")
     _write(first, 55, 280, "Date de l'offre : 19/10/2026")
@@ -147,6 +148,83 @@ def test_locality_only_recipient_address_is_preserved_but_marked_incomplete():
     reasons = {item["code"] for item in payload["extraction_decision"]["reasons"]}
     assert "QUOTATION_RECIPIENT_ADDRESS_INCOMPLETE" in reasons
     assert "QUOTATION_RECIPIENT_ADDRESS_MISSING" not in reasons
+
+
+def test_department_locality_recipient_is_preserved_without_inventing_a_street():
+    payload = _extract(_offer_pdf(locality_only=True, recipient_location="73 CHAMBERY"))
+    assert payload["quotation_extraction"]["recipient"]["address"]["value"] == "73 CHAMBERY"
+    reasons = {item["code"] for item in payload["extraction_decision"]["reasons"]}
+    assert "QUOTATION_RECIPIENT_ADDRESS_INCOMPLETE" in reasons
+    assert "QUOTATION_RECIPIENT_ADDRESS_MISSING" not in reasons
+
+
+def _offer_with_boundary_price_and_blank_fields():
+    doc = pymupdf.open()
+    first = doc.new_page(width=612, height=792)
+    _write(first, 245, 100, "Offre de prix")
+    second = doc.new_page(width=612, height=792)
+    _write(second, 170, 110, "Equipements")
+    _write(second, 55, 125, "Code article")
+    _write(second, 180, 125, "Designation")
+    _write(second, 55, 690, "7716704737")
+    _write(second, 115, 690, "Article au bas de page")
+    _write(second, 340, 711, "10,00")
+    _write(second, 395, 711, "2")
+    _write(second, 460, 711, "20,00")
+    third = doc.new_page(width=612, height=792)
+    _write(third, 390, 66, "Sous-total HT")
+    _write(third, 460, 66, "20,00")
+    _write(third, 170, 100, "Autres produits")
+    _write(third, 55, 115, "Code article")
+    _write(third, 180, 115, "Designation")
+    _write(third, 55, 145, "7716704738")
+    _write(third, 115, 145, "Article gratuit sans total")
+    _write(third, 340, 158, "0,00")
+    _write(third, 395, 158, "1")
+    _write(third, 55, 185, "7716704739")
+    _write(third, 115, 185, "Article sans prix")
+    _write(third, 395, 196, "3")
+    _write(third, 442, 196, "1,50")
+    _write(third, 55, 225, "7716704740")
+    _write(third, 115, 225, "Article suivant")
+    _write(third, 340, 225, "5,00")
+    _write(third, 395, 225, "1")
+    _write(third, 460, 225, "5,00")
+    _write(third, 55, 245, "7716704741")
+    _write(third, 115, 245, "Article sans quantite")
+    _write(third, 340, 245, "6,00")
+    _write(third, 460, 245, "6,00")
+    _write(third, 390, 280, "Sous-total HT")
+    _write(third, 460, 280, "11,00")
+    _write(third, 170, 330, "Prix Total net hors taxes et hors eco-participation")
+    _write(third, 450, 330, "31,00")
+    _write(third, 170, 345, "Total eco-participation net hors taxes")
+    _write(third, 450, 345, "4,50")
+    _write(third, 170, 360, "PRIX TOTAL NET (hors taxes)")
+    _write(third, 450, 360, "35,50")
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_boundary_price_and_cross_page_subtotal_do_not_shift_later_articles():
+    offer = _extract(_offer_with_boundary_price_and_blank_fields())["quotation_extraction"]
+    items = offer["line_items"]
+    assert [item["references"]["article_number"] for item in items] == [
+        "7716704737", "7716704738", "7716704739", "7716704740", "7716704741"]
+    assert (items[0]["quantity"], items[0]["pricing"]["unit_price"], items[0]["amounts"]["net"]) == (2, 10, 20)
+    assert (items[1]["quantity"], items[1]["pricing"]["unit_price"], items[1]["amounts"]) == (1, 0, {})
+    assert items[2]["quantity"] == 3
+    assert "unit_price" not in items[2]["pricing"]
+    assert items[2]["pricing"]["eco_participation_unit"] == 1.5
+    assert items[2]["amounts"] == {}
+    assert (items[3]["quantity"], items[3]["pricing"]["unit_price"], items[3]["amounts"]["net"]) == (1, 5, 5)
+    assert items[4]["quantity"] is None
+    assert items[4]["pricing"]["unit_price"] == 6
+    assert items[4]["amounts"]["net"] == 6
+    assert [section["subtotal"] for section in offer["sections"]] == [20, 11]
+    assert offer["validation"]["totals_match"] is True
+    assert offer["validation"]["status"] == "WARNING"
 
 
 def test_continuation_page_and_overlapping_price_row_are_not_lost_or_duplicated():
