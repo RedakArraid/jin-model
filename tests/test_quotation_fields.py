@@ -12,7 +12,7 @@ def _write(page, x, y, text):
     page.insert_text((x, y), text, fontsize=9)
 
 
-def _offer_pdf(*, incomplete=False, two_page_line=False):
+def _offer_pdf(*, incomplete=False, two_page_line=False, locality_only=False):
     doc = pymupdf.open()
     first = doc.new_page(width=595, height=842)
     _write(first, 55, 45, "elm.leblanc SAS")
@@ -25,7 +25,7 @@ def _offer_pdf(*, incomplete=False, two_page_line=False):
     _write(first, 55, 195, "E-mail : camille@example.test")
     _write(first, 325, 165, "Societe : CLIENT TEST")
     _write(first, 325, 180, "A l'attention de : Lea Client")
-    _write(first, 325, 195, "Adresse : 24 rue Exemple")
+    _write(first, 325, 195, "Adresse :" if locality_only else "Adresse : 24 rue Exemple")
     _write(first, 325, 210, "84000 AVIGNON")
     _write(first, 55, 250, "Affaire / projet : Projet Test")
     _write(first, 55, 265, "Offre n° : OF-2026-42")
@@ -137,6 +137,16 @@ def test_incomplete_offer_stays_review_required():
     assert "QUOTATION_VALIDATION_INCOMPLETE" in {
         item["code"] for item in payload["extraction_decision"]["reasons"]
     }
+
+
+def test_locality_only_recipient_address_is_preserved_but_marked_incomplete():
+    payload = _extract(_offer_pdf(locality_only=True))
+    address = payload["quotation_extraction"]["recipient"]["address"]
+    assert address["value"] == "84000 AVIGNON"
+    assert address["evidence"]["page"] == 1
+    reasons = {item["code"] for item in payload["extraction_decision"]["reasons"]}
+    assert "QUOTATION_RECIPIENT_ADDRESS_INCOMPLETE" in reasons
+    assert "QUOTATION_RECIPIENT_ADDRESS_MISSING" not in reasons
 
 
 def test_continuation_page_and_overlapping_price_row_are_not_lost_or_duplicated():

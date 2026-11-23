@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>JIN Model – Document AI</title>
-  <link rel="stylesheet" href="styles.css?v=5.13.3" />
+  <link rel="stylesheet" href="styles.css?v=5.17.0" />
 </head>
 <body>
 
@@ -12,7 +12,7 @@
   <div class="brand">
     <div class="eyebrow">EXTRACTION DOCUMENTAIRE · CPU LOCAL</div>
     <h1>JIN Model</h1>
-    <div class="brand-subtitle">Commandes clients, adresses et références commerciales</div>
+    <div class="brand-subtitle">Commandes clients, offres de prix, adresses et références commerciales</div>
   </div>
   <div class="topbar-actions">
     <a class="studio-link" href="studio.html">JIN Studio</a>
@@ -77,6 +77,58 @@
 
         <section id="extractionChecks" class="result-section review-panel hidden"></section>
 
+        <div id="quoteSections" class="hidden">
+          <section class="result-section" id="secQuoteSummary">
+            <h3>Offre de prix</h3>
+            <div id="quoteSummary" class="kv-grid"></div>
+          </section>
+          <section class="result-section" id="secQuoteParties">
+            <h3>Émetteur et destinataire</h3>
+            <div id="quoteParties" class="cards"></div>
+          </section>
+          <section class="result-section" id="secQuoteProject">
+            <h3>Projet</h3>
+            <div id="quoteProject" class="kv-grid"></div>
+            <ul id="quoteProjectNotes" class="quote-notes"></ul>
+          </section>
+          <section class="result-section" id="secQuoteLines">
+            <div class="section-heading">
+              <h3>Articles proposés</h3>
+              <span class="section-hint">Quantités proposées dans l’offre, non commandées</span>
+            </div>
+            <div class="table-wrap">
+              <table id="quoteLinesTable" class="wide-table">
+                <thead><tr><th>#</th><th>Code article</th><th>Désignation</th><th>Gamme</th>
+                  <th>Qté</th><th>PU HT</th><th>Éco-part. / unité</th><th>Montant HT</th><th>Source</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+          <section class="result-section" id="secQuoteSections">
+            <h3>Sous-totaux par gamme</h3>
+            <div class="table-wrap">
+              <table id="quoteSectionsTable" class="wide-table">
+                <thead><tr><th>Gamme</th><th>Sous-total HT</th><th>Source</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+          <section class="result-section" id="secQuoteTotals">
+            <h3>Montants et contrôles</h3>
+            <div id="quoteTotals" class="kv-grid"></div>
+            <div id="quoteValidation" class="quote-validation"></div>
+          </section>
+          <section class="result-section" id="secQuotePeriod">
+            <h3>Période de l’offre</h3>
+            <div id="quotePeriod" class="kv-grid"></div>
+          </section>
+          <section class="result-section" id="secQuoteTerms">
+            <h3>Conditions de l’offre</h3>
+            <div id="quoteTerms"></div>
+          </section>
+        </div>
+
+        <div id="orderSections">
         <div class="result-section" id="secSummary">
           <h3>Commande</h3>
           <div id="summary" class="kv-grid"></div>
@@ -154,6 +206,7 @@
           <h3>Conditions commerciales</h3>
           <div id="commercial" class="kv-grid"></div>
         </div>
+        </div>
 
         <details class="json-details">
           <summary>JSON complet</summary>
@@ -168,6 +221,6 @@
 <div class="drag-overlay hidden" id="dragOverlay">Déposer ici</div>
 
 <script src="vendor/pdfjs-3.11.174/pdf.min.js"></script>
-    <script src="app.js?v=5.16.9"></script>
+    <script src="app.js?v=5.17.0"></script>
 </body>
 </html>

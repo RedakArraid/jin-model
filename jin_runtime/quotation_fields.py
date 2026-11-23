@@ -114,6 +114,19 @@ def _header(rows: list[dict[str, Any]], first_page: Any) -> dict[str, Any]:
     recipient_name = _labeled(header_rows, r"\bSoci[eé]t[eé]\s*:\s*(.+)$", 320, 610)
     recipient_attention = _labeled(header_rows, r"\bl'attention\s+de\s*:\s*(.+)$", 320, 610)
     recipient_address = _labeled(header_rows, r"\bAdresse\s*:\s*(.+)$", 320, 610)
+    if not recipient_address:
+        # Some quotations leave the street line blank but print a locality
+        # directly below "Adresse :". Preserve the partial source value.
+        address_label = next((row for row in header_rows
+                              if re.fullmatch(r"Adresse\s*:\s*", _column(row, 320, 610), re.I)), None)
+        if address_label:
+            following = next((row for row in header_rows
+                              if 0 < row["cy"] - address_label["cy"] < 18
+                              and re.match(r"\d{5}\b", _column(row, 320, 610))), None)
+            if following:
+                words = [word for word in following["words"] if 320 <= word[0] < 610]
+                recipient_address = _field(_column(following, 320, 610),
+                                           {**following, "words": words})
     if recipient_address:
         address_row = next((row for row in header_rows
                             if row["page"] == recipient_address["evidence"]["page"]

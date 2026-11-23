@@ -78,6 +78,9 @@ const lineReferenceLabel = (line, includeCommercial = true) => {
 const extractedValue = value => (
   value && typeof value === 'object' && 'value' in value ? value.value : value
 );
+const quotationOf = result => result?.quotation_extraction || result?.normalized_output?.quotation || null;
+const quotationField = value => extractedValue(value) ?? null;
+const quotationSource = evidence => evidence?.page ? `p. ${evidence.page}` : null;
 
 const uniqueValues = values => [...new Set(
   (values || []).map(extractedValue).filter(value => value != null && value !== '').map(String),
@@ -545,6 +548,7 @@ function collectBoxes(r) {
   const be = r.business_extractions || {};
   const b  = be.purchase_order      || {};
   const po = b.purchase_order       || {};
+  const quotation = r.quotation_extraction || r.normalized_output?.quotation || null;
   const corePages = new Map((b.pages || []).map(page => [page.page, page]));
   const blockPages = new Map((r.pages || []).map(page => [page.page, page]));
   const add = (bbox, page, label, type) => {
@@ -555,7 +559,7 @@ function collectBoxes(r) {
       // Only source-aligned core coordinates can be rescaled. OCR preprocessing
       // may crop or rotate: its pixel boxes remain in JSON until an inverse
       // transform is available. WeakFieldRouter already uses the original PDF.
-      const sourcePage = (type === 'block' ? blockPages : corePages).get(page);
+      const sourcePage = (type === 'block' || quotation ? blockPages : corePages).get(page);
       if (!sourcePage || corePageNeedsReprojection(sourcePage)) return;
       width = sourcePage.width;
       height = sourcePage.height;
@@ -569,6 +573,38 @@ function collectBoxes(r) {
     ];
     (byPage[page] = byPage[page] || []).push({ bbox: normalized, label, type });
   };
+
+  if (quotation) {
+    const quoteField = (field, label, type = 'field') => {
+      const evidence = field?.evidence;
+      if (evidence?.bbox) add(evidence.bbox, evidence.page, label, type);
+    };
+    for (const [field, label] of [
+      [quotation.number, 'N° offre'], [quotation.date, 'Date offre'],
+      [quotation.valid_until, 'Validité'], [quotation.project, 'Projet'],
+      [quotation.seller?.contact?.name, 'Contact'],
+      [quotation.seller?.contact?.phone, 'Téléphone'],
+      [quotation.seller?.contact?.email, 'E-mail'],
+      [quotation.seller?.commercial_contact, 'Commercial'],
+      [quotation.recipient?.name, 'Destinataire'],
+      [quotation.recipient?.attention, 'À l’attention de'],
+      [quotation.recipient?.address, 'Adresse'],
+      [quotation.recipient?.contact?.phone, 'Téléphone'],
+      [quotation.recipient?.contact?.email, 'E-mail'],
+      [quotation.project_details?.distributor, 'Distributeur'],
+      [quotation.project_details?.installer, 'Installateur'],
+      [quotation.project_details?.project, 'Projet'],
+      [quotation.period?.start, 'Début'], [quotation.period?.end, 'Fin'],
+    ]) quoteField(field, label);
+    for (const item of quotation.line_items || []) {
+      quoteField(item, `Article ${item.line_number}`, 'line');
+    }
+    for (const section of quotation.sections || []) {
+      quoteField(section, 'Sous-total', 'total');
+    }
+    // Generic OCR/text blocks are source material, not quotation fields.
+    return byPage;
+  }
 
   // Champs d'en-tête
   for (const [key, label] of [
@@ -694,6 +730,175 @@ function drawBox(svg, { bbox, label, type }, W, H) {
 }
 
 // ── Render ─────────────────────────────────────────────────────────────────
+function quotationValidationIssues(quotation) {
+  const validation = quotation.validation || {};
+  const issues = [];
+  for (const item of quotation.line_items || []) {
+    const quantity = Number(item.quantity);
+    const unitPrice = Number(item.pricing?.unit_price);
+    const amount = Number(item.amounts?.net);
+    if (item.quantity == null || item.pricing?.unit_price == null || item.amounts?.net == null) {
+      issues.push(`Article ${item.line_number || '?'} : quantité, prix ou montant manquant.`);
+    } else if (Number.isFinite(quantity * unitPrice - amount)
+               && Math.abs(quantity * unitPrice - amount) > .02) {
+      const delta = Math.abs(quantity * unitPrice - amount);
+      issues.push(`Article ${item.line_number || '?'} (${item.references?.article_number || 'référence inconnue'}) : ${fmt(quantity)} × ${unitMoney(unitPrice)} ≠ ${money(amount)} (écart ${money(delta)}).`);
+    }
+  }
+  const productSum = Number(validation.product_sum);
+  const beforeEco = Number(quotation.totals?.before_eco_participation);
+  if (validation.product_sum != null && quotation.totals?.before_eco_participation != null
+      && Math.abs(productSum - beforeEco) > .02) {
+    issues.push(`Somme des articles ${money(productSum)} ≠ total HT hors éco-participation ${money(beforeEco)}.`);
+  }
+  if (validation.status !== 'PASS' && !issues.length) {
+    issues.push('Les contrôles de cohérence de l’offre ne sont pas tous satisfaits.');
+  }
+  return issues;
+}
+
+function renderQuotation(r, quotation) {
+  const currency = quotation.totals?.currency || 'EUR';
+  const summary = document.getElementById('quoteSummary');
+  fillKv(summary, [
+    ['N° d’offre', quotationField(quotation.number)],
+    ['Date de l’offre', quotationField(quotation.date)],
+    ['Valable jusqu’au', quotationField(quotation.valid_until)],
+    ['Affaire / projet', quotationField(quotation.project)],
+    ['Confiance du N° d’offre', confidenceLabel(quotation.number?.confidence)],
+  ]);
+  if (!summary.children.length) {
+    fillKv(summary, [['Résultat', 'Offre détectée, mais aucune donnée structurée disponible.']]);
+  }
+  toggleSection('secQuoteSummary', true);
+
+  const parties = document.getElementById('quoteParties');
+  parties.replaceChildren();
+  for (const [label, party] of [['Émetteur de l’offre', quotation.seller], ['Destinataire', quotation.recipient]]) {
+    if (!party) continue;
+    const card = document.createElement('article');
+    card.className = 'card';
+    for (const [className, value] of [
+      ['role', label], ['name', quotationField(party.name) || 'Nom non extrait'],
+      ['addr', quotationField(party.address) || 'Adresse non extraite'],
+      ['contact', [quotationField(party.attention), quotationField(party.commercial_contact),
+        quotationField(party.contact?.name), quotationField(party.contact?.phone),
+        quotationField(party.contact?.email)].filter(Boolean).join(' · ')],
+      ['muted', party.siren ? `SIREN : ${party.siren}` : ''],
+    ]) {
+      const element = document.createElement('div');
+      element.className = className;
+      element.textContent = value;
+      card.appendChild(element);
+    }
+    parties.appendChild(card);
+  }
+  toggleSection('secQuoteParties', parties.children.length > 0);
+
+  const details = quotation.project_details || {};
+  const project = document.getElementById('quoteProject');
+  fillKv(project, [
+    ['Distributeur', quotationField(details.distributor)],
+    ['Installateur', quotationField(details.installer)],
+    ['Projet', quotationField(details.project)],
+    ['Données client', quotationField(details.customer_data)],
+  ]);
+  const notes = document.getElementById('quoteProjectNotes');
+  notes.replaceChildren();
+  for (const note of details.notes || []) {
+    const item = document.createElement('li');
+    item.textContent = note;
+    notes.appendChild(item);
+  }
+  toggleSection('secQuoteProject', project.children.length > 0 || notes.children.length > 0);
+
+  const lines = quotation.line_items || [];
+  const lineBody = document.querySelector('#quoteLinesTable tbody');
+  lineBody.replaceChildren();
+  for (const line of lines) {
+    const row = document.createElement('tr');
+    addTextCell(row, line.line_number);
+    addTextCell(row, line.references?.article_number, 'cell-primary');
+    addTextCell(row, line.description);
+    addTextCell(row, line.product_family);
+    addTextCell(row, line.quantity == null ? null : fmt(line.quantity));
+    addTextCell(row, unitMoney(line.pricing?.unit_price, line.pricing?.currency || currency));
+    addTextCell(row, unitMoney(line.pricing?.eco_participation_unit, line.pricing?.currency || currency));
+    addTextCell(row, money(line.amounts?.net, currency));
+    addTextCell(row, quotationSource(line.evidence));
+    lineBody.appendChild(row);
+  }
+  toggleSection('secQuoteLines', lines.length > 0);
+
+  const sectionBody = document.querySelector('#quoteSectionsTable tbody');
+  sectionBody.replaceChildren();
+  for (const section of quotation.sections || []) {
+    const row = document.createElement('tr');
+    addTextCell(row, section.name, 'cell-primary');
+    addTextCell(row, money(section.subtotal, section.currency || currency));
+    addTextCell(row, quotationSource(section.evidence));
+    sectionBody.appendChild(row);
+  }
+  toggleSection('secQuoteSections', sectionBody.children.length > 0);
+
+  const totals = quotation.totals || {};
+  const validation = quotation.validation || {};
+  const totalsEl = document.getElementById('quoteTotals');
+  fillKv(totalsEl, [
+    ['Total HT hors éco-participation', money(totals.before_eco_participation, currency)],
+    ['Éco-participation HT', money(totals.eco_participation, currency)],
+    ['Total net HT', money(totals.total_net, currency)],
+    ['Somme des articles', money(validation.product_sum, currency)],
+    ['Somme des sous-totaux', money(validation.section_sum, currency)],
+    ['Éco-participation recalculée', money(validation.eco_sum, currency)],
+  ]);
+  const check = document.getElementById('quoteValidation');
+  const issues = quotationValidationIssues(quotation);
+  check.className = `quote-validation ${validation.status === 'PASS' ? 'ok' : 'warning'}`;
+  check.replaceChildren();
+  const label = document.createElement('strong');
+  label.textContent = validation.status === 'PASS'
+    ? 'Contrôles de l’offre satisfaits.'
+    : 'Contrôles de l’offre à vérifier : les écarts peuvent aussi provenir des arrondis imprimés.';
+  check.appendChild(label);
+  if (issues.length) {
+    const list = document.createElement('ul');
+    for (const issue of issues) {
+      const item = document.createElement('li');
+      item.textContent = issue;
+      list.appendChild(item);
+    }
+    check.appendChild(list);
+  }
+  toggleSection('secQuoteTotals', totalsEl.children.length > 0 || validation.status != null);
+
+  const period = quotation.period || {};
+  const periodEl = document.getElementById('quotePeriod');
+  fillKv(periodEl, [
+    ['Type', period.kind], ['Code', period.code],
+    ['Début', quotationField(period.start)], ['Fin', quotationField(period.end)],
+  ]);
+  toggleSection('secQuotePeriod', periodEl.children.length > 0);
+
+  const termsEl = document.getElementById('quoteTerms');
+  termsEl.replaceChildren();
+  for (const [key, title] of [
+    ['introduction', 'Introduction'], ['documentation', 'Documentation'],
+    ['warranties', 'Garanties'], ['delivery', 'Livraison'], ['conditions', 'Conditions'],
+  ]) {
+    if (!quotation.terms?.[key]) continue;
+    const panel = document.createElement('details');
+    panel.className = 'quote-terms';
+    const heading = document.createElement('summary');
+    heading.textContent = title;
+    const body = document.createElement('p');
+    body.textContent = quotation.terms[key];
+    panel.append(heading, body);
+    termsEl.appendChild(panel);
+  }
+  toggleSection('secQuoteTerms', termsEl.children.length > 0);
+}
+
 function render(r) {
   const be  = r.business_extractions || {};
   const b   = be.purchase_order || {};   // PurchaseOrderResult
@@ -705,9 +910,22 @@ function render(r) {
   const com = Object.keys(b.commercial || {}).length ? b.commercial : (cleanOrder.commercial_terms || {});
   const log = Object.keys(b.logistics || {}).length ? b.logistics : (cleanOrder.logistics || {});
   const cur = pick(po, ['currency.value']) || tot.currency || 'EUR';
+  const quotation = quotationOf(r);
+  const isQuotation = cleanDocument.type === 'quotation'
+    || r.document?.primary_document_type === 'quotation' || Boolean(quotation);
 
   // ── Metrics bar ──
-  fillMetrics([
+  fillMetrics(isQuotation ? [
+    ['Type', 'Offre de prix'],
+    ['Décision', pick(r, ['extraction_decision.status', 'quality.decision'], '—')],
+    ['Confiance du type', confidenceLabel(cleanDocument.classification?.confidence
+      ?? r.quality?.classification_confidence)],
+    ['Score technique global', pick(r, ['quality.overall_confidence', 'overall_confidence'])],
+    ['Contrôle offre', quotation?.validation?.status],
+    ['Articles proposés', quotation?.line_items?.length],
+    ['Pages', pick(r, ['document.page_count', 'page_count'])],
+    ['Runtime', r.runtime_layer_version || clean.generator?.runtime || '—'],
+  ] : [
     ['Type',          pick(r, ['document.detected_document_type', 'detected_document_type'], cleanDocument.type)],
     ['Décision',      pick(r, ['extraction_decision.status', 'quality.decision'], '—')],
     ['Score technique', pick(r, ['quality.overall_confidence',    'overall_confidence'])],
@@ -731,7 +949,9 @@ function render(r) {
     heading.textContent = 'Extraction à vérifier';
     checksEl.appendChild(heading);
     const labels = {
-      CORE_REVIEW_REQUIRED: 'Le moteur signale une incertitude.',
+      CORE_REVIEW_REQUIRED: isQuotation
+        ? 'Le moteur documentaire général demande une revue ; consultez les contrôles de l’offre ci-dessous.'
+        : 'Le moteur signale une incertitude.',
       BUSINESS_REVIEW_REQUIRED: 'Les informations de commande restent à vérifier.',
       BUSINESS_VALIDATION_INCOMPLETE: 'Les contrôles de commande ne sont pas tous satisfaits.',
       ORDER_EXTRACTION_MISSING: 'La commande n’a pas pu être structurée.',
@@ -767,6 +987,15 @@ function render(r) {
       FIELD_CANDIDATES_DISAGREE: 'Des valeurs différentes ont été trouvées sur plusieurs pages.',
       ENRICHMENT_UNAVAILABLE: 'Une étape d’extraction n’a pas abouti.',
       NOT_A_STRUCTURED_PURCHASE_ORDER: 'Ce document n’est pas une commande structurée validable.',
+      QUOTATION_NUMBER_MISSING: 'Numéro d’offre non extrait.',
+      QUOTATION_DATE_MISSING: 'Date de l’offre non extraite.',
+      QUOTATION_VALIDITY_MISSING: 'Date de validité non extraite.',
+      QUOTATION_SELLER_MISSING: 'Émetteur de l’offre non identifié.',
+      QUOTATION_RECIPIENT_MISSING: 'Destinataire de l’offre non identifié.',
+      QUOTATION_RECIPIENT_ADDRESS_MISSING: 'Adresse du destinataire non extraite.',
+      QUOTATION_RECIPIENT_ADDRESS_INCOMPLETE: 'Adresse du destinataire partielle : voie manquante.',
+      QUOTATION_LINES_MISSING: 'Aucun article proposé extrait.',
+      QUOTATION_VALIDATION_INCOMPLETE: 'Des écarts ont été relevés dans les articles ou les totaux de l’offre.',
     };
     const list = document.createElement('ul');
     for (const reason of reasons) {
@@ -779,6 +1008,14 @@ function render(r) {
       list.appendChild(item);
     }
     checksEl.appendChild(list);
+  }
+
+  toggleSection('quoteSections', isQuotation);
+  toggleSection('orderSections', !isQuotation);
+  if (isQuotation) {
+    renderQuotation(r, quotation || {});
+    document.getElementById('jsonView').textContent = JSON.stringify(r, null, 2);
+    return;
   }
 
   // ── Commande summary ──

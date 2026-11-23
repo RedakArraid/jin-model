@@ -150,6 +150,26 @@ test('generic blocks use their own declared page dimensions', () => {
   assert.deepEqual(plain(collectBoxes(payload)[1][0].bbox), [100, 100, 200, 200]);
 });
 
+test('quotation overlays show sourced offer fields and articles, not every PDF block', () => {
+  const payload = {
+    pages: [{ page: 1, width: 612, height: 792 }, { page: 2, width: 612, height: 792 }],
+    blocks: [{ source: { page: 1, bbox: [10, 10, 100, 20] } }],
+    quotation_extraction: {
+      number: { evidence: { page: 1, bbox: [100, 250, 175, 262] } },
+      recipient: { name: { evidence: { page: 1, bbox: [365, 160, 435, 173] } } },
+      line_items: [{ line_number: 1, evidence: { page: 2, bbox: [56, 370, 98, 382] } }],
+      sections: [{ evidence: { page: 2, bbox: [400, 550, 509, 560] } }],
+    },
+  };
+  const boxes = collectBoxes(payload);
+  assert.deepEqual(plain(boxes[1].map(box => box.label)), ['N° offre', 'Destinataire']);
+  assert.deepEqual(plain(boxes[2].map(box => box.type)), ['line', 'total']);
+  const svg = element('svg');
+  drawBox(svg, boxes[2][0], 612, 792);
+  near(svg.children[0].attributes.x, 56);
+  near(svg.children[0].attributes.y, 370);
+});
+
 test('invalid or out-of-page boxes do not produce SVG coordinates', () => {
   for (const bbox of [[100, 200, 90, 220], [NaN, 20, 30, 40], [0, 0, 596, 842], [0, -1, 30, 40]]) {
     assert.deepEqual(plain(collectBoxes(orderPayload(595, 841, bbox))), {});
