@@ -198,6 +198,20 @@ def apply_extraction_gate(payload: dict[str, Any]) -> dict[str, Any]:
                 reasons.append({"code": "ADDRESS_REFERENCE_SUGGESTION", "path": path})
             elif reference_status in {"STREET_MATCH_NUMBER_NOT_FOUND"}:
                 reasons.append({"code": "ADDRESS_NUMBER_NOT_FOUND_IN_REFERENCE", "path": path})
+    elif doc_type == "quotation":
+        quotation = payload.get("quotation_extraction") or {}
+        require(bool(quotation.get("number")), "QUOTATION_NUMBER_MISSING", "quotation.number")
+        require(bool(quotation.get("date")), "QUOTATION_DATE_MISSING", "quotation.date")
+        require(bool(quotation.get("valid_until")), "QUOTATION_VALIDITY_MISSING", "quotation.valid_until")
+        require(bool((quotation.get("seller") or {}).get("name")),
+                "QUOTATION_SELLER_MISSING", "quotation.seller.name")
+        require(bool((quotation.get("recipient") or {}).get("name")),
+                "QUOTATION_RECIPIENT_MISSING", "quotation.recipient.name")
+        require(bool((quotation.get("recipient") or {}).get("address")),
+                "QUOTATION_RECIPIENT_ADDRESS_MISSING", "quotation.recipient.address")
+        require(bool(quotation.get("line_items")), "QUOTATION_LINES_MISSING", "quotation.line_items")
+        require((quotation.get("validation") or {}).get("status") == "PASS",
+                "QUOTATION_VALIDATION_INCOMPLETE", "quotation.validation")
     else:
         # A successful HTTP response or a clean arithmetic audit is not proof of
         # a supported, complete purchase-order extraction.

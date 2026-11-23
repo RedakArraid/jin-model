@@ -101,6 +101,26 @@
       },
       "additionalProperties": false
     },
+    "quotation": {
+      "type": "object",
+      "description": "Structured supplier offer; not a customer purchase order.",
+      "properties": {
+        "number": {"$ref": "#/$defs/extracted_field"},
+        "date": {"$ref": "#/$defs/extracted_field"},
+        "valid_until": {"$ref": "#/$defs/extracted_field"},
+        "project": {"$ref": "#/$defs/extracted_field"},
+        "seller": {"type": "object"},
+        "recipient": {"type": "object"},
+        "project_details": {"type": "object"},
+        "line_items": {"type": "array", "items": {"$ref": "#/$defs/line_item"}},
+        "sections": {"type": "array", "items": {"type": "object"}},
+        "totals": {"type": "object"},
+        "period": {"type": "object"},
+        "terms": {"type": "object"},
+        "validation": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
     "quality": {
       "type": "object",
       "properties": {

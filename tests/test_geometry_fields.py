@@ -778,6 +778,21 @@ class GeometryFieldTests(unittest.TestCase):
         fields = extract_geometry_suggestions(lines)["anchored_fields"]
         self.assertEqual(fields["order_number"]["value"], "2346887 / 3389453/03")
 
+    def test_number_reference_commande_spanning_header_keeps_leading_group(self):
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((40, 235), "Date")
+        page.insert_text((114, 235), "N° / Référence Commande")
+        page.insert_text((28, 255), "20/11/2026")
+        page.insert_text((113, 255), "259 426 / VAM 240626-1037")
+        data = doc.tobytes()
+        doc.close()
+
+        lines, _ = _extract_first_page_lines(data, "fra+eng+deu")
+        number = extract_geometry_suggestions(lines)["anchored_fields"]["order_number"]
+        self.assertEqual(number["value"], "259 426 / VAM 240626-1037")
+        self.assertEqual(number["source_text"], number["value"])
+
     def test_commande_a_distance_is_not_promoted_as_an_order_number(self):
         doc = fitz.open()
         page = doc.new_page(width=595, height=842)

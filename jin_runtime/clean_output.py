@@ -2472,6 +2472,7 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
             "commercial_terms": po.get("commercial"), "logistics": po.get("logistics"),
             "tax_identifiers": po.get("tax_identifiers"),
         } if po else None,
+        "quotation": payload.get("quotation_extraction"),
         "quality": {
             "classification_confidence": source_quality.get("classification_confidence"),
             "decision": decision.get("status"), "requires_review": decision.get("requires_review", True),
@@ -2488,6 +2489,7 @@ def build_clean_output(payload: dict[str, Any], source_filename: str | None = No
         "reference_data": payload.get("reference_data"),
     }
     clean["order"] = _normalize_extracted_spacing(clean["order"])
+    clean["quotation"] = _normalize_extracted_spacing(clean["quotation"])
     clean["document"]["references"] = _normalize_extracted_spacing(clean["document"]["references"])
     clean["quality"]["order_number"] = _normalize_extracted_spacing(clean["quality"]["order_number"])
     compact = _compact(clean)

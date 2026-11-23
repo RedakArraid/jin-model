@@ -31,6 +31,8 @@ spatiale, pas la version actuelle du runtime.
   portes de validation, shadow, monitoring et checklist VM.
 - [Qualité des sorties](OUTPUT_QUALITY.md) : porte qualité, lignes, dates,
   rôles, adresses, TVA et preuves.
+- [Extraction des offres de prix](QUOTATION_EXTRACTION.md) : contrat distinct
+  des bons de commande, champs extraits et contrôles des montants.
 - [Apprentissage statistique](STATISTICAL_LEARNING.md) : séparation entre
   modèles préentraînés, suggestions et mémoire de feedback.
 - [Contrat de feedback humain](FEEDBACK_CONTRACT_V1.md) : authentification,

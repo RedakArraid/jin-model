@@ -437,13 +437,33 @@ def _explicit_order_number_v3(rows):
 
     def collect_reference_column(label_row, reference, command):
         """Read the complete cell below an exact ``Référence Commande`` header."""
+        # ``N° / Référence Commande`` is one visual header spanning one cell.
+        # Start beneath its N° marker, not beneath Référence: otherwise a
+        # grouped identifier such as ``259 426 / VAM ...`` loses ``259``.
+        left_edge = reference["bbox"][0] - 10
+        label_tokens = label_row["tokens"]
+        reference_index = next(
+            (index for index, token in enumerate(label_tokens) if token is reference),
+            None,
+        )
+        if reference_index is not None:
+            for index in range(reference_index - 1, -1, -1):
+                marker = label_tokens[index]
+                if reference["bbox"][0] - marker["bbox"][0] > 60:
+                    break
+                if _norm(marker["text"]) not in {"N", "NO", "NUMERO"}:
+                    continue
+                between = label_tokens[index + 1 : reference_index]
+                if all(not _norm(token["text"]) for token in between):
+                    left_edge = marker["bbox"][0] - 10
+                    break
         for following in rows[label_row["index"] + 1 : label_row["index"] + 3]:
             if following["cy"] - label_row["cy"] > 45:
                 break
             selected = []
             previous = None
             for token in following["tokens"]:
-                if token["bbox"][0] < reference["bbox"][0] - 10:
+                if token["bbox"][0] < left_edge:
                     continue
                 if token["bbox"][0] > command["bbox"][2] + 45:
                     break

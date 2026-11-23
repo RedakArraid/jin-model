@@ -29,6 +29,7 @@ from jin_runtime.weak_field_reconciliation import reconcile_weak_fields
 from jin_runtime.generic_document_fields import enrich_generic_document_fields
 from jin_runtime.commercial_references import enrich_commercial_references
 from jin_runtime.grouped_order_fields import enrich_grouped_order_fields
+from jin_runtime.quotation_fields import extract_quotation
 from jin_runtime.studio_api import create_studio_router
 from uda import api as core_api
 
@@ -237,6 +238,8 @@ async def extract(request: Request) -> Response:
         payload = enrich_generic_document_fields(payload)
         payload = enrich_commercial_references(payload)
         payload = enrich_grouped_order_fields(payload)
+        if pdf_data:
+            payload = extract_quotation(pdf_data, payload)
         payload = apply_extraction_gate(payload)
         payload.setdefault("runtime_layer_version", __version__)
         payload["normalized_output"] = build_clean_output(payload, source_filename=source_filename)
