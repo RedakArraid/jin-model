@@ -11,6 +11,42 @@ import unicodedata
 from typing import Any
 
 
+# Keep promotion and final auditing aligned: an explicit grouped header is as
+# authoritative as an inline number, not a weak fallback that geometry may erase.
+STRONG_ORDER_NUMBER_METHODS = frozenset({
+    "explicit_attached_numero_below_order_title",
+    "explicit_order_label",
+    "explicit_composite_erp_order_id",
+    "explicit_n_de_commande",
+    "inline_transaction_header",
+    "spatial_order_number",
+    "native_table_anchor",
+    "multiblock_order_number",
+    "below_numero_label_grouped_erp_value",
+    "po_number_composite_duplicate_cleanup_v60",
+    "explicit_reference_commande_column_v60",
+    "explicit_date_piece_order_column_v60",
+})
+
+_TIME_OF_DAY = r"(?:[01]?\d|2[0-3])(?:\s*H(?:\s*[0-5]\d)?|\s*:\s*[0-5]\d)"
+_TIME_RANGE = re.compile(
+    rf"(?<![A-Z0-9._/\-]){_TIME_OF_DAY}\s*(?:[-–—]|A|AU|TO)\s*{_TIME_OF_DAY}(?![A-Z0-9])"
+)
+
+
+def contains_time_range(value: Any) -> bool:
+    """Recognize explicit reception/opening hours, not digit-only ID groups.
+
+    Both endpoints need a time marker (H or colon); identifiers such as
+    PO-0800-1145 or AB8H0011H45 remain valid candidates.
+    """
+    text = "".join(
+        char for char in unicodedata.normalize("NFKD", str(value or ""))
+        if not unicodedata.combining(char)
+    ).upper()
+    return bool(_TIME_RANGE.search(text))
+
+
 def normalize_identifier(value: Any) -> str:
     # Preserve leading zeroes, punctuation and O/0 or I/1 distinctions.
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(value or ""))).upper()
@@ -100,6 +136,8 @@ def _plausible_corroborating_candidate(value: Any) -> bool:
     """
     text = " ".join(str(value or "").split()).strip()
     identifier = normalize_identifier(text)
+    if contains_time_range(text):
+        return False
     if len(identifier) < 5 or sum(char.isdigit() for char in identifier) < 2:
         return False
     # French/European amounts: 079,10, 1 079,10, 1.079,10, 1079,10 EUR.
@@ -204,7 +242,7 @@ def check_order_number(po: dict[str, Any], suggestions: dict[str, Any]) -> dict[
     if not identifier:
         issues.append("ORDER_NUMBER_MISSING")
     else:
-        if len(identifier) > 128 or re.fullmatch(r"(?:\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}[-/]\d{2}[-/]\d{2})", identifier):
+        if contains_time_range(value) or len(identifier) > 128 or re.fullmatch(r"(?:\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}[-/]\d{2}[-/]\d{2})", identifier):
             issues.append("ORDER_NUMBER_FORMAT_SUSPICIOUS")
         evidence_method = str(evidence.get("extraction_method") or "")
         source_supported = _source_contains(identifier, evidence.get("source_text"))
@@ -229,19 +267,6 @@ def check_order_number(po: dict[str, Any], suggestions: dict[str, Any]) -> dict[
             or (original.get("extraction_method") if isinstance(original, dict) else "")
             or ""
         )
-        strong_original_methods = {
-            "explicit_attached_numero_below_order_title",
-            "explicit_order_label",
-            "explicit_composite_erp_order_id",
-            "explicit_n_de_commande",
-            "inline_transaction_header",
-            "spatial_order_number",
-            "native_table_anchor",
-            "multiblock_order_number",
-            "po_number_composite_duplicate_cleanup_v60",
-            "explicit_reference_commande_column_v60",
-            "explicit_date_piece_order_column_v60",
-        }
         if (
             original_value
             and not (
@@ -250,7 +275,7 @@ def check_order_number(po: dict[str, Any], suggestions: dict[str, Any]) -> dict[
             )
             and _plausible_corroborating_candidate(original_value)
             and normalize_identifier(original_value) != identifier
-            and (not original_method or original_method in strong_original_methods)
+            and (not original_method or original_method in STRONG_ORDER_NUMBER_METHODS)
         ):
             issues.append("ORDER_NUMBER_REPLACED_DIFFERENT_CORE_VALUE")
         seen = set()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import re, unicodedata
 from typing import Any
+from jin_runtime.order_numbers import contains_time_range
 
 STREET_TYPES={'RUE','R','AVENUE','AV','BOULEVARD','BD','ROUTE','RTE','CHEMIN','CHE','CHEM','DEPARTEMENTALE','ALLEE','IMPASSE','PLACE','QUAI','COURS','PASSAGE','SQUARE','VOIE','RONDPOINT','MONTEE','TRAVERSE'}
 ZONE_PREFIXES={'ZI','ZA','ZAC','ZAE','PARC','ZONE'}
@@ -394,7 +395,7 @@ def _explicit_order_number_v3(rows):
             # ``COMMANDE     124 126 AV STALINGRAD``). Street numbers are not
             # customer purchase-order identifiers.
             return None
-        if DATE_RE.fullmatch(value):
+        if DATE_RE.fullmatch(value) or contains_time_range(value):
             return None
         compact = _norm(value)
         digits = sum(char.isdigit() for char in compact)
@@ -417,6 +418,18 @@ def _explicit_order_number_v3(rows):
                 vertical_gap = value_top - label["bbox"][3]
                 if (0 <= vertical_gap <= 35
                         and abs(value_left - label["bbox"][0]) <= 40):
+                    # A new label/cell in the same column breaks ownership.
+                    # In particular, Fax/Mail in the agency block above a
+                    # COMMANDE N° box must not disqualify its grouped PO value.
+                    # A fax label directly above its own value still vetoes it.
+                    intervening = any(
+                        label["bbox"][3] < between["cy"] < value_top
+                        and any(abs(item["bbox"][0] - value_left) <= 40
+                                for item in between["tokens"])
+                        for between in rows
+                    )
+                    if intervening:
+                        continue
                     return None
         return _field(value, _union_bbox_v3(selected), selected[0], 0.998) | {
             "source": "geometry_explicit_order_label_v3",
@@ -452,6 +465,8 @@ def _explicit_order_number_v3(rows):
             if not selected:
                 continue
             value = " ".join(token["text"].strip().strip(":;") for token in selected)
+            if contains_time_range(value):
+                continue
             compact = _norm(value)
             if len(compact) < 5 or sum(char.isdigit() for char in compact) < 4:
                 continue
@@ -513,6 +528,15 @@ def _explicit_order_number_v3(rows):
             return candidate
 
     for row in rows:
+        # Instructions to repeat an order reference are not label/value cells.
+        # Otherwise REFERENCE COMMANDE COMPLETE can consume the reception
+        # hours underneath, even though their text is perfectly source-backed.
+        if re.search(
+            r"\b(?:ACCUSE\s+DE\s+RECEPTION\s+DE\s+COMMANDE|"
+            r"COMMANDE\s+COMPLETE|(?:RAPPELER|MENTIONNER|REPORTER)\b.*\bCOMMANDE)\b",
+            _deaccent(row["text"]).upper(),
+        ):
+            continue
         command_indexes = [
             index for index, norm in enumerate(row["norms"])
             if norm == "COMMANDE"

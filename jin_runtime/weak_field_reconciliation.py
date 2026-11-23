@@ -16,6 +16,7 @@ import unicodedata
 from typing import Any
 
 from jin_runtime.output_quality import _find_purchase_order
+from jin_runtime.order_numbers import STRONG_ORDER_NUMBER_METHODS, contains_time_range
 
 
 ORDER_TYPES = {"purchase_order", "purchase_order_with_terms"}
@@ -599,6 +600,8 @@ def _date_field_from_anchor(candidate: dict[str, Any]) -> dict[str, Any] | None:
 
 def _plausible_order_candidate(candidate: dict[str, Any]) -> bool:
     value = str(candidate.get("value") or "").strip()
+    if contains_time_range(value):
+        return False
     compact = _compact(value)
     if len(compact) < 5 or sum(char.isdigit() for char in compact) < 4:
         return False
@@ -1190,19 +1193,6 @@ def reconcile_weak_fields(payload: dict[str, Any]) -> dict[str, Any]:
             or (current.get("extraction_method") if isinstance(current, dict) else "")
             or ""
         )
-        strong_core_methods = {
-            "explicit_attached_numero_below_order_title",
-            "explicit_order_label",
-            "explicit_composite_erp_order_id",
-            "explicit_n_de_commande",
-            "inline_transaction_header",
-            "spatial_order_number",
-            "native_table_anchor",
-            "multiblock_order_number",
-            "po_number_composite_duplicate_cleanup_v60",
-            "explicit_reference_commande_column_v60",
-            "explicit_date_piece_order_column_v60",
-        }
         current_is_contact = _source_labels_contact_number(payload, current_value)
         current_compact = _compact(current_value)
         candidate_compact = _compact(candidate_value)
@@ -1230,7 +1220,7 @@ def reconcile_weak_fields(payload: dict[str, Any]) -> dict[str, Any]:
         if not current_value or (
             explicit and _compact(current_value) != _compact(candidate_value)
             and (
-                current_method not in strong_core_methods
+                current_method not in STRONG_ORDER_NUMBER_METHODS
                 or current_is_contact
                 or override_multiblock_ocr
                 or geometry_matches_header_identity
