@@ -1099,7 +1099,18 @@ def _extract_geometry_table_items_v46(pages, config: dict, default_currency: str
                         r"reserve\s+de\s+propriete\b|conditions\s+generales\b|notre\s+droit\b|\*)",
                         folded_cont,
                     ))
+                    # A section heading for the *next* customer order is not
+                    # a wrapped designation of the preceding product.  Reset
+                    # the continuation owner so a wrapped heading suffix on
+                    # the following row cannot be appended either.
+                    next_order_heading=bool(re.search(
+                        r"^pour\s+.+?\s*/\s*(?:cmde|commande)\s+[^/]+\s*/\s*ref\s*:",
+                        folded_cont,
+                    ))
                     if commercial_note:
+                        continue
+                    if next_order_heading:
+                        current=None
                         continue
                     if footer_or_instruction:
                         current=None
@@ -3670,13 +3681,16 @@ def _dual_reference_stacked_native_table_items_v67(table, default_currency: str 
 
     supplier_col = col(lambda h, c: c in {
         "reffour", "reffournisseur", "referencefour", "referencefournisseur",
+        "rfrencefournisseur", "rfrencefour",
         "supplierref", "supplierreference", "vendorref", "vendorreference",
     })
     customer_col = col(lambda h, c: c in {
         "reference", "referencearticle", "article", "code", "material",
+        "notrereference", "notrerfrence", "ourreference",
     })
-    desc_col = col(lambda h, c: "designation" in c or "description" in c or "libelle" in c)
-    qty_col = col(lambda h, c: "quantite" in c or c in {"qty", "quantity"})
+    desc_col = col(lambda h, c: "designation" in c or "dsignation" in c or "description" in c or "libelle" in c)
+    qty_col = col(lambda h, c: "quantite" in c or c in {"qty", "quantity", "qte", "qt"})
+    uom_col = col(lambda h, c: c in {"ua", "uom", "unite", "unit"})
     price_col = col(lambda h, c: c in {"prixht", "prixnetht", "puht", "prixunitaire"} or "prixht" in c)
     amount_col = col(lambda h, c: "montantht" in c or "montantnet" in c or "linetotal" in c)
     gross_col = col(lambda h, c: c in {"ppht", "prixpublicht", "tarifht", "grossprice"} or "ppht" in c)
@@ -3696,13 +3710,27 @@ def _dual_reference_stacked_native_table_items_v67(table, default_currency: str 
             row[desc_col] if desc_col < len(row) else None,
             n,
         )
+        if n == 1:
+            # A single native product row has independent quantity/price cells;
+            # its designation can contain only one lexical word after a code,
+            # followed by a wrapped customer-routing note.  The stacked-row
+            # splitter intentionally demands two words and would drop it.
+            designation = str(row[desc_col] if desc_col < len(row) else "")
+            designation = re.split(r"\(\s*client\s+\d+\b", designation, maxsplit=1, flags=re.I)[0]
+            designation = " ".join(designation.split()).strip()
+            if re.match(r"^\d{7,15}(?:\s*[|\-]\s*|\s+)[^\W\d_]", designation):
+                descriptions = [designation]
         if len(descriptions) != n:
             continue
+        descriptions = [re.split(
+            r"\(\s*client\s+\d+\b", description, maxsplit=1, flags=re.I
+        )[0].strip() for description in descriptions]
 
         prices = [parse_number(x) for x in _split_cell_lines(row[price_col] if price_col < len(row) else None)]
         amounts = [parse_number(x) for x in _split_cell_lines(row[amount_col] if amount_col < len(row) else None)]
         gross = [parse_number(x) for x in _split_cell_lines(row[gross_col] if gross_col is not None and gross_col < len(row) else None)]
         qty_raw = _split_cell_lines(row[qty_col] if qty_col < len(row) else None)
+        unit_raw = _split_cell_lines(row[uom_col] if uom_col is not None and uom_col < len(row) else None)
         quantities = []
         for value in qty_raw:
             match = re.match(r"\s*([-+]?\d[\d .']*(?:[,.]\d+)?)\s*([^\W\d_]{1,8})?\s*$", value)
@@ -3729,8 +3757,17 @@ def _dual_reference_stacked_native_table_items_v67(table, default_currency: str 
         valid = True
         for i, customer_ref in enumerate(customer_refs):
             supplier_ref = supplier_by_index[i]
-            primary_ref = supplier_ref or customer_ref
+            designation = descriptions[i]
+            leading = re.match(r"^(\d{7,15})(?:\s*[|\-]\s*|\s+)(?=[^\W\d_])", designation)
+            leading_ref = leading.group(1) if leading else None
+            # The designation's leading, delimited code is a separate article
+            # identifier. Keep the explicitly labelled supplier and customer
+            # references as well; a repeated account/reference cell must not
+            # overwrite a distinct 10/11-digit product identifier.
+            primary_ref = leading_ref or supplier_ref or customer_ref
             quantity, uom = quantities[i]
+            if not uom and i < len(unit_raw):
+                uom = unit_raw[i]
             price, amount = prices[i], amounts[i]
             if not primary_ref or quantity is None or price is None or amount is None:
                 valid = False
@@ -3745,7 +3782,7 @@ def _dual_reference_stacked_native_table_items_v67(table, default_currency: str 
                 article_number=primary_ref,
                 customer_material_number=customer_ref or None,
                 supplier_material_number=supplier_ref or None,
-                description=descriptions[i],
+                description=designation[leading.end():].strip(" |-") if leading else designation,
                 quantity=quantity,
                 ordered_quantity=quantity,
                 uom=uom,
@@ -4404,6 +4441,121 @@ def _repair_issuer_masthead_and_vendor_code_v5201(po, pages, config: dict):
                     break
             if _fold(po.supplier.code) not in {"", "page", "date", "fournisseur", "supplier"}:
                 break
+    return po, repairs
+
+
+def _repair_supplier_order_mastheads_v5204(po, pages, config: dict):
+    """Resolve an issuer and vendor printed in opposite header columns.
+
+    Require the supplier-order title, an issuer masthead agreeing with the
+    delivery party or an independently supported legal-footer identity, and a
+    vendor masthead immediately above the vendor postal address.
+    """
+    from po_ocr.extract import all_rows
+
+    if not pages or not re.search(
+        r"\bcommande\s+fournisseur\b", _fold(pages[0].text or "")
+    ):
+        return po, 0
+    page = pages[0]
+    rows = [row for row in all_rows([page], y_factor=0.50)
+            if _row_center_safe(row) < page.height * 0.43]
+    if not rows:
+        return po, 0
+
+    def column(row, *, left):
+        words = [word for word in row.words if
+                 ((word.bbox[0] + word.bbox[2]) / 2 < page.width * 0.50)
+                 == left]
+        return " ".join(word.text for word in words).strip()
+
+    legal_name = " ".join(str(po.buyer.legal_name or "").split())
+    footer_lines = [line for pg in pages for line in str(pg.text or "").splitlines()]
+    legal_tokens = _fold(legal_name).split()
+    legal_supported = bool(legal_tokens and len(_fold(legal_name)) >= 7 and any(
+        all(token in _fold(line).split() for token in legal_tokens)
+        and re.search(r"\b(?:siret|capital|rcs)\b", _fold(line))
+        for line in footer_lines
+    ))
+    issuer = next((column(row, left=True) for row in rows
+                   if legal_supported and _fold(column(row, left=True)) == _fold(legal_name)), None)
+    if not issuer:
+        ship_name = " ".join(str(po.ship_to.name or "").split())
+        issuer = next((column(row, left=True) for row in rows
+                       if ship_name and _fold(column(row, left=True)) == _fold(ship_name)), None)
+    if not issuer:
+        return po, 0
+    supplier_postal = str(po.supplier.address.postal_code or "")
+    vendor = None
+    if supplier_postal:
+        for index, row in enumerate(rows):
+            right = column(row, left=False)
+            if not re.search(rf"\b{re.escape(supplier_postal)}\b", right):
+                continue
+            for preceding in reversed(rows[max(0, index - 4):index]):
+                candidate = column(preceding, left=False)
+                if (
+                    2 <= _row_center_safe(row) - _row_center_safe(preceding) <= 42
+                    and _company_name_quality_v48(candidate) >= 0.60
+                    and not re.search(r"\d|\b(?:rue|avenue|route|boulevard|chemin)\b", _fold(candidate))
+                    and _fold(candidate) != _fold(issuer)
+                ):
+                    vendor = candidate
+                    break
+            if vendor:
+                break
+    if not vendor:
+        return po, 0
+
+    repairs = 0
+    if _fold(po.buyer.name) != _fold(issuer):
+        po.buyer.name = issuer
+        po.buyer.legal_name = issuer
+        repairs += 1
+    # Repeated, matching street and postal lines in the issuer masthead and
+    # delivery block establish the same physical address.  This also removes
+    # product text mistakenly captured as the buyer's postal address.
+    ship_address = po.ship_to.address
+    ship_lines = [str(value).strip() for value in (
+        ship_address.raw_lines or [ship_address.line1, ship_address.line2]
+    ) if value and str(value).strip()]
+    left_header = [_fold(column(row, left=True)) for row in rows]
+    if len(ship_lines) >= 2 and all(
+        any(_fold(source) == printed for printed in left_header)
+        for source in ship_lines[:2]
+    ):
+        po.buyer.address = po.ship_to.address.model_copy(deep=True)
+        po.buyer.address.line1 = ship_lines[0]
+        po.buyer.address.line2 = ship_lines[1]
+        postal = re.match(r"^(\d{5})\s+(.+)$", ship_lines[1])
+        if postal:
+            po.buyer.address.postal_code = postal.group(1)
+            po.buyer.address.city = postal.group(2).strip()
+    current_supplier_tokens = _fold(po.supplier.name).split()
+    vendor_tokens = _fold(vendor).split()
+    partial_vendor_name = bool(current_supplier_tokens) and all(
+        token in vendor_tokens for token in current_supplier_tokens
+    ) and len(current_supplier_tokens) < len(vendor_tokens)
+    if _fold(po.supplier.name) != _fold(vendor) and (
+        _bad_party_name(po.supplier.name)
+        or re.match(r"^\s*[:/\d]", str(po.supplier.name or ""))
+        or partial_vendor_name
+    ):
+        po.supplier.name = vendor
+        po.supplier.legal_name = vendor
+        repairs += 1
+    if repairs and len(str(po.buyer.contact.name or "")) > 100:
+        po.buyer.contact.name = None
+    # The two printed blocks have their own contact numbers.  Generic header
+    # reading can copy the vendor number to both roles; the independently
+    # labelled delivery block supplies the issuer's number when its identity
+    # agrees with the masthead.
+    ship_phone = po.ship_to.contact.phone or po.ship_to.phone
+    if ship_phone and _fold(po.buyer.contact.phone or po.buyer.phone) == _fold(
+        po.supplier.contact.phone or po.supplier.phone
+    ):
+        po.buyer.phone = ship_phone
+        po.buyer.contact.phone = ship_phone
     return po, repairs
 
 
@@ -5322,6 +5474,28 @@ def _enhance_totals_from_native_tables(po, tables, default_currency: str = "EUR"
     # far safer than choosing the right-most number from a row that also contains weight.
     for table in tables:
         data=table.data or []
+        # Some PDF exporters put monetary labels in one native row and their
+        # values in the immediately following row, often beside unrelated
+        # payment/weight cells.  Bind each amount to its own column so the
+        # merchandise subtotal cannot be mistaken for the document net.
+        for header_row, value_row in zip(data, data[1:]):
+            if len(header_row) != len(value_row):
+                continue
+            for label, raw_value in zip(header_row, value_row):
+                low = _fold(str(label or ""))
+                if not re.search(r"\btotal\s+h\.?\s*t\.?\b", low):
+                    continue
+                if re.search(r"\b(?:ttc|tva|taxe|poids)\b", low):
+                    continue
+                value = _parse_native_decimal(raw_value)
+                if value is None:
+                    continue
+                if "marchandise" in low or "product" in low:
+                    po.totals.subtotal = value
+                    po.totals.total_product_lines = value
+                else:
+                    po.totals.total_net = value
+                    po.totals.total_before_tax = value
         if len(data) >= 2:
             headers=[_fold(str(x or "")) for x in data[0]]
             vals=[_parse_native_decimal(x) for x in data[1]]
@@ -6145,6 +6319,32 @@ def _enhance_strict_order_number_v47(po, pages, config: dict):
             add(compact_check["value"], 8.9, compact["row"], "compact_order_header_verified_ocr", compact["words"])
 
     # Same-row explicit labels: "N° de commande : 11035CA...".
+    # The complete supplier-order title can carry its identifier on the same
+    # baseline: "COMMANDE FOURNISSEUR N° 16 123". The generic COMMANDE
+    # matcher stops at FOURNISSEUR and can otherwise promote a postal line.
+    for row in rows:
+        if _row_center_safe(row) > pg.height * 0.30:
+            break
+        match = re.search(
+            r"\bCOMMANDE\s+FOURNISSEUR\s+N\s*[°ºo]?\s*[:#.-]?\s*"
+            r"(\d{1,4}(?:\s+\d{2,6})?)\b",
+            row.text, flags=re.I,
+        )
+        if not match:
+            continue
+        ordered = sorted(row.words, key=lambda word: word.bbox[0])
+        marker = next((idx for idx, word in enumerate(ordered)
+                       if re.sub(r"[^a-z]", "", _fold(word.text)) in {"n", "no"}
+                       and any(_fold(previous.text) == "fournisseur"
+                               for previous in ordered[max(0, idx - 2):idx])), None)
+        if marker is None:
+            continue
+        values = match.group(1).split()
+        selected = ordered[marker + 1:marker + 1 + len(values)]
+        if [word.text for word in selected] == values:
+            add(match.group(1), 11.6, row,
+                "explicit_supplier_order_title_number", selected)
+
     explicit_patterns=[
         (r"\bN\s*[°ºo]?\s+DE\s+COMMANDE\s*[:#.-]?\s*([A-Za-z0-9][A-Za-z0-9._/-]{2,63})", 8.0, "explicit_n_de_commande"),
         (r"\b(?:BON\s+DE\s+COMMANDE|PURCHASE\s+ORDER)\s*(?:N\s*[°ºo]?|NO|#)?\s*[:#.-]?\s*([A-Za-z0-9][A-Za-z0-9 ._/-]{2,63})", 9.6, "explicit_order_label"),
@@ -9411,6 +9611,9 @@ def enhance_purchase_order_with_native_structure(po, tables, pages, config: dict
     )
     po, parser_diag["issuer_masthead_vendor_code_repairs"] = (
         _repair_issuer_masthead_and_vendor_code_v5201(po, pages, config)
+    )
+    po, parser_diag["supplier_order_masthead_repairs"] = (
+        _repair_supplier_order_mastheads_v5204(po, pages, config)
     )
     po, parser_diag["explicit_supplier_header_repairs"] = (
         _repair_supplier_from_explicit_header_v5202(po, pages, config)

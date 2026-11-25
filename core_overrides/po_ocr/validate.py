@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date
-from collections import Counter
 
 from .models import PurchaseOrderResult
 
@@ -209,12 +208,25 @@ def validate(result: PurchaseOrderResult, cfg: dict) -> PurchaseOrderResult:
                 warnings.append("Line numbers are not strictly increasing")
 
     if cfg.get("duplicate_line_warning", True) and result.lines:
-        signatures=[]
+        signatures={}
+        dup=set()
         for line in result.lines:
             sig=(line.material_number or line.article_number or line.product_code, line.description, line.quantity, line.unit_price, line.line_total)
             if any(v is not None for v in sig):
-                signatures.append(sig)
-        dup=[sig for sig,count in Counter(signatures).items() if count>1]
+                for previous in signatures.setdefault(sig, []):
+                    # Repeated products in distinct printed rows, especially
+                    # across suborders/pages, are not extraction duplicates.
+                    if line.page is not None and previous.page is not None and line.page != previous.page:
+                        continue
+                    if line.bbox and previous.bbox and line.page is not None and previous.page is not None:
+                        top=max(line.bbox[1],previous.bbox[1])
+                        bottom=min(line.bbox[3],previous.bbox[3])
+                        height=min(line.bbox[3]-line.bbox[1],previous.bbox[3]-previous.bbox[1])
+                        if height <= 0 or bottom-top < height * 0.5:
+                            continue
+                    dup.add(sig)
+                    break
+                signatures[sig].append(line)
         checks["duplicate_lines"]={"count":len(dup),"valid":not dup}
         if dup:
             warnings.append(f"Potential duplicate line items detected: {len(dup)} signature(s)")

@@ -428,6 +428,16 @@ def recover_explicit_role_blocks(result, pages: list[PageResult]):
         # Group labels on the same header line; their x positions define column boundaries.
         for role,anchor in anchors:
             ax1,ay1,ax2,ay2=anchor["bbox"]
+            # "Commandé par le dépôt : ..." is a table-section attribution,
+            # not an address block headed "Commande par".  Treating it as a
+            # buyer anchor can consume all following product descriptions and
+            # overwrite an explicitly recovered issuer masthead.
+            if role == "buyer" and anchor["text"] == "commande par" and any(
+                abs(segment["bbox"][1] - ay1) <= 3 * unit
+                and re.search(r"\bcommande\s+par\s+le\s+depot\b", _fold(segment["text"]))
+                for segment in segments
+            ):
+                continue
             label_ids = {id(word) for _, label in anchors for word in label["words"]}
             label_height = max(w.bbox[3] - w.bbox[1] for w in anchor["words"])
             sidebar = ay2 - ay1 > 1.5 * label_height

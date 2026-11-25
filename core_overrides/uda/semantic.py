@@ -339,6 +339,15 @@ def _transaction_title(text: str) -> str | None:
             if re.match(r"^(?:facture\s+a\b|devis\s+(?:valable|complementaire)\b)", heading):
                 continue
             return kind
+        # Native PDF reading order can place the delivery-address label and
+        # the independently printed order title on the same text line.  The
+        # explicit title still outranks a quotation mentioned later in notes.
+        if re.match(
+            r"^adresse\s+(?:de\s+)?(?:livraison|facturation)\s+"
+            r"(?:bon\s+de\s+commande|commande\s+(?:fournisseur|achat|regroupee))\b",
+            heading,
+        ):
+            return "purchase_order"
         # OCR can concatenate the issuer's letterhead and a title printed in
         # another column. Keep a terminal uppercase title as title evidence.
         # Requiring the phrase at the end avoids ordinary mentions in prose.

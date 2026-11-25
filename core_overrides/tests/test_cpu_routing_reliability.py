@@ -284,6 +284,32 @@ def test_other_transaction_titles_are_not_orders_because_of_table_or_reference(h
     assert detect_document_type(text, "text") == expected
 
 
+def test_delivery_label_colliding_with_order_title_beats_quotation_note():
+    text = (
+        "Est Sanitaire\nAdresse de livraison COMMANDE FOURNISSEUR : 2 754 / ESTSANITAIRE\n"
+        "Date commande : 25/11/2026\noffre de prix MSP-290726-1426\n"
+        + PRODUCT_TABLE
+    )
+    page = classify_page(text)
+    assert page["type"] == "purchase_order"
+    assert page["explicit_document_title"] == "purchase_order"
+    assert detect_document_type(text, "pdf") == "purchase_order"
+
+
+def test_supplier_order_title_routes_all_continuation_pages_as_order():
+    first = (
+        "Est Sanitaire\nAdresse de livraison COMMANDE FOURNISSEUR : 2 754 / ESTSANITAIRE\n"
+        "offre de prix MSP-290726-1426\n" + PRODUCT_TABLE
+    )
+    continuation = (
+        "Est Sanitaire\nPage 2 / 3\nN° Cde : 2 754 / ESTSANITAIRE\n"
+        + PRODUCT_TABLE
+    )
+    pages = _pages(first, continuation, continuation.replace("Page 2 / 3", "Page 3 / 3"))
+    assert [page["type"] for page in pages] == ["purchase_order"] * 3
+    assert aggregate_page_classifications(pages)["primary_document_type"] == "purchase_order"
+
+
 def test_quote_table_inherits_quote_title_without_manufacturing_order():
     pages = _pages(QUOTE_HEADER, PRODUCT_TABLE, QUOTE_TERMS)
     assert [page["type"] for page in pages[:2]] == ["quotation", "quotation"]

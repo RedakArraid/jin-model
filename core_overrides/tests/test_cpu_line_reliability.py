@@ -18,6 +18,8 @@ from po_ocr.models import (
     Totals,
 )
 from po_ocr.config import load_config
+from po_ocr.address_roles import recover_explicit_role_blocks
+from po_ocr.validate import validate
 from po_ocr.pdf_native import (
     _needs_hybrid_ocr,
     _native_text_is_private_use_garbled,
@@ -73,6 +75,7 @@ from uda.business import (
     _repair_scanned_supplier_order_header_roles_v5176,
     _repair_issuer_name_from_legal_footer_v5177,
     _repair_issuer_masthead_and_vendor_code_v5201,
+    _repair_supplier_order_mastheads_v5204,
     _reconcile_printed_net_with_lines_and_tax_v5201,
     _reconcile_explicit_eco_tax_total_v5176,
     _rexellike_product_fee_table,
@@ -389,6 +392,127 @@ def test_top_left_issuer_and_explicit_vendor_column_fix_party_roles():
     assert po.buyer.address.line1 == "28 rue sepat"
     assert po.buyer.address.line2 == "82370 CAMPSAS"
     assert po.supplier.code == "BOS000"
+
+
+def test_supplier_order_opposite_mastheads_repair_parties_and_phone():
+    page = _page([
+        (129, [("ELM", 297, 323), ("LEBLANC", 326, 378)]),
+        (141, [("Est", 18, 40), ("Sanitaire", 42, 94),
+               ("124/126", 297, 342), ("RUE", 345, 370),
+               ("DE", 373, 389), ("STALINGRAD", 392, 480)]),
+        (156, [("93711", 297, 330), ("DRANCY", 333, 383),
+               ("CEDEX", 386, 430)]),
+        (170, [("11", 18, 30), ("rue", 33, 53), ("des", 56, 76),
+               ("tuileries", 79, 134)]),
+        (185, [("67460", 18, 53), ("Souffelweyersheim", 56, 159)]),
+        (230, [("COMMANDE", 40, 125), ("FOURNISSEUR", 130, 230),
+               (":", 234, 239), ("2", 245, 252), ("754", 256, 280)]),
+    ])
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    po.buyer.name = "1 P - R32+R410A"
+    po.buyer.address.line1 = "7733702226 Unite ext. Mini VRF"
+    po.buyer.contact.phone = "08 20 00 30 00"
+    po.supplier.name = ": 2 754 / ESTSANITAIRE"
+    po.supplier.address.postal_code = "93711"
+    po.supplier.contact.phone = "08 20 00 30 00"
+    po.ship_to.name = "Est Sanitaire"
+    po.ship_to.contact.phone = "03 88 32 86 52"
+    po.ship_to.address.raw_lines = ["11 rue des tuileries", "67460 Souffelweyersheim"]
+
+    _, repaired = _repair_supplier_order_mastheads_v5204(po, [page], {})
+
+    assert repaired == 2
+    assert po.buyer.name == "Est Sanitaire"
+    assert po.supplier.name == "ELM LEBLANC"
+    assert po.buyer.contact.phone == "03 88 32 86 52"
+    assert po.buyer.address.line1 == "11 rue des tuileries"
+    assert po.buyer.address.postal_code == "67460"
+
+
+def test_ordering_depot_caption_inside_table_does_not_replace_buyer():
+    page = _page([
+        (250, [("Adresse", 39, 90), ("de", 94, 110),
+               ("livraison", 114, 195)]),
+        (270, [("Est", 40, 65), ("Sanitaire", 68, 125)]),
+        (285, [("11", 40, 52), ("rue", 55, 75),
+               ("des", 78, 97), ("tuileries", 100, 155)]),
+        (300, [("67460", 40, 75), ("Souffelweyersheim", 78, 180)]),
+        (536, [("Commande", 113, 169), ("par", 171, 193),
+               ("le", 196, 207), ("depot", 210, 245),
+               ("Est", 250, 272), ("Sanitaire", 275, 332)]),
+        (560, [("1", 115, 122), ("P", 126, 136), ("-", 140, 145),
+               ("R32+R410A", 150, 222)]),
+        (580, [("11", 115, 130), ("rue", 134, 156),
+               ("des", 160, 181), ("tuileries", 185, 236)]),
+        (600, [("67460", 115, 151), ("Souffelweyersheim", 155, 265)]),
+    ])
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    po.buyer.name = "Est Sanitaire"
+
+    recover_explicit_role_blocks(po, [page])
+
+    assert po.buyer.name == "Est Sanitaire"
+
+
+def test_next_suborder_heading_does_not_extend_previous_product_description():
+    page = _page([
+        (180, [("Reference", 10, 65), ("Designation", 90, 160),
+               ("Quantite", 325, 365), ("PU", 445, 475),
+               ("Montant", 530, 580)]),
+        (220, [("7736200422", 10, 75), ("Mise", 90, 114),
+               ("en", 118, 130), ("service", 134, 170),
+               ("1,00", 335, 365), ("640,00", 450, 480),
+               ("640,00", 550, 580)]),
+        (232, [("interieures", 90, 145)]),
+        (248, [("Pour", 90, 113), ("LAEUFFER", 116, 175),
+               ("/", 179, 183), ("Cmde", 187, 217),
+               ("4", 221, 227), ("457", 230, 251),
+               ("/", 255, 259), ("Ref:", 263, 290),
+               ("PATISSERIE", 294, 362)]),
+        (260, [("VENTE", 90, 127)]),
+        (285, [("7733704057", 10, 75), ("PAC", 90, 115),
+               ("AIR/AIR", 118, 165), ("1,00", 335, 365),
+               ("1011,47", 450, 488), ("1011,47", 540, 580)]),
+    ])
+
+    lines, _ = _extract_geometry_table_items_v46([page], {})
+
+    assert len(lines) == 2
+    assert lines[0].description == "Mise en service interieures"
+    assert lines[1].description == "PAC AIR/AIR"
+
+
+def test_repeated_product_in_distinct_source_rows_is_not_extraction_duplicate():
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=2, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    base = dict(material_number="7733702253", description="Facade cassette",
+                quantity=2, unit_price=109.35, line_total=218.70)
+    po.lines = [
+        LineItem(**base, page=1, bbox=(10, 220, 570, 230)),
+        LineItem(**base, page=2, bbox=(10, 220, 570, 230)),
+    ]
+    validate(po, {"duplicate_line_warning": True})
+    assert po.validation.checks["duplicate_lines"] == {"count": 0, "valid": True}
+
+    po.lines[1].page = 1
+    po.lines[1].bbox = (10, 260, 570, 270)
+    validate(po, {"duplicate_line_warning": True})
+    assert po.validation.checks["duplicate_lines"] == {"count": 0, "valid": True}
+
+    po.lines[1].bbox = (10, 220, 570, 230)
+    validate(po, {"duplicate_line_warning": True})
+    assert po.validation.checks["duplicate_lines"] == {"count": 1, "valid": False}
 
 
 def test_dual_reference_receipt_date_table_recovers_lines_dates_and_descriptions():
@@ -2855,6 +2979,99 @@ def test_native_table_preserves_two_identical_physical_product_rows():
         "EL8716747368", "EL8716747368", "EL87167712590",
     ]
     assert [line.line_number for line in lines] == ["1", "2", "3"]
+
+
+def test_damaged_dual_reference_headers_keep_all_pages_and_distinct_article_roles():
+    headers = ["Notre\nR�f�rence", "D�signation", "R�f�rence\nFournisseur",
+               "Qt�", "U A", "Prix Unitaire", "Montant HT"]
+    first = SimpleNamespace(
+        data=[headers,
+              ["31250414", "5868830|APPAREIL DE REGULATION", "5868830",
+               "1,000", "PIECE", "100,00", "100,00"],
+              ["342660002505", "8718582125 - Circuit imprime",
+               "342660002505", "1,000", "PIECE", "20,00", "20,00"]],
+        source=SimpleNamespace(page=1), confidence=0.98,
+    )
+    second = SimpleNamespace(
+        data=[headers,
+              ["342660000135", "8738903384 - Pompe UPMO\n"
+               "(Client 34290000428 BONNIN / commande client 159965000 / Ligne 1 / )",
+               "IPCOMP19", "1,000", "PIECE", "185,82", "185,82"]],
+        source=SimpleNamespace(page=2), confidence=0.98,
+    )
+    lines, charges = _native_table_line_items_and_charges([first, second])
+
+    assert charges == []
+    assert [line.page for line in lines] == [1, 1, 2]
+    assert [line.material_number for line in lines] == ["5868830", "8718582125", "8738903384"]
+    assert [line.customer_material_number for line in lines] == [
+        "31250414", "342660002505", "342660000135",
+    ]
+    assert [line.supplier_material_number for line in lines] == [
+        "5868830", "342660002505", "IPCOMP19",
+    ]
+    assert [line.uom for line in lines] == ["PIECE"] * 3
+    assert [line.description for line in lines] == [
+        "APPAREIL DE REGULATION", "Circuit imprime", "Pompe UPMO",
+    ]
+    assert round(sum(line.line_total for line in lines), 2) == 305.82
+
+
+def test_footer_grid_binds_total_ht_to_value_below_its_own_column():
+    table = SimpleNamespace(
+        data=[
+            ["Port", "Poids (KG)", "R�glement", "Ech�ance", ""],
+            ["Franco", "", "VIREMENT SEPA", "20 Jours", ""],
+            ["Frais", "Volume (m3)", "", "Total HT Marchandise : ( EURO )",
+             "Total HT : ( EURO )"],
+            ["", "", "", "3 203,11", "3 203,11"],
+        ],
+        source=SimpleNamespace(page=2), confidence=0.98,
+    )
+    po = SimpleNamespace(additional_charges=[], totals=Totals(currency="EUR"))
+
+    _enhance_totals_from_native_tables(po, [table])
+
+    assert po.totals.subtotal == 3203.11
+    assert po.totals.total_net == 3203.11
+    assert po.totals.total_before_tax == 3203.11
+    assert po.additional_charges == []
+
+
+def test_supplier_order_number_and_legal_masthead_survive_delivery_depot():
+    page = _page([
+        (25, [("SAS", 242, 260), ("VCFM", 262, 287)]),
+        (132, [("Command�", 27, 84), ("par", 87, 103),
+               ("COMMANDE", 309, 367), ("FOURNISSEUR", 370, 440),
+               ("N°", 520, 531), ("16", 534, 544), ("123", 547, 563)]),
+        (157, [("25400", 27, 52), ("Exincourt", 54, 91)]),
+        (195, [("DEPOT", 33, 60), ("DE", 62, 73), ("LIVRAISON", 75, 117)]),
+        (230, [("SAS", 309, 328), ("E", 331, 340), ("L", 342, 350),
+               ("M", 352, 362), ("LEBLANC", 365, 423)]),
+        (255, [("93711", 309, 342), ("DRANCY", 344, 394), ("CEDEX", 396, 440)]),
+        (790, [("VCFM", 20, 52), ("-", 54, 58), ("SAS", 60, 80),
+               ("au", 82, 95), ("capital", 97, 133), ("Siret", 135, 165)]),
+    ])
+    po = PurchaseOrderResult(document=DocumentMeta(
+        id="x", filename="x.pdf", extension="pdf", file_size=1, sha256="x",
+        page_count=1, is_pdf=True, processing_timestamp="2026-01-01T00:00:00Z",
+        model_version="test",
+    ))
+    po.purchase_order.number.value = "25400 Exincourt"
+    po.buyer.name = "DEPOT DE LIVRAISON"
+    po.buyer.legal_name = "SAS VCFM"
+    po.ship_to.name = "Agence de EXINCOURT"
+    po.supplier.name = "SAS LEBLANC"
+    po.supplier.address.postal_code = "93711"
+
+    _enhance_strict_order_number_v47(po, [page], {})
+    _, repairs = _repair_supplier_order_mastheads_v5204(po, [page], {})
+
+    assert po.purchase_order.number.value == "16 123"
+    assert po.purchase_order.number.evidence.extraction_method == "explicit_supplier_order_title_number"
+    assert po.buyer.name == "SAS VCFM"
+    assert po.supplier.name == "SAS E L M LEBLANC"
+    assert repairs == 2
 
 
 def test_dual_reference_stacked_table_uses_supplier_reference_and_extracts_port_charge():
